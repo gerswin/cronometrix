@@ -32,13 +32,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Admin can create departments with salary, schedule, and lunch mode; each employee belongs to exactly one department
   4. Admin can adjust global tolerance sliders and bonus minutes; rule changes take effect on next cycle only
   5. Every administrative mutation (user, employee, department, rule) produces an immutable audit log entry in the database
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
-- [ ] 01-01: Database migrations — libSQL schema with UTC epochs, audit triggers, row versioning, Turso sync wired
-- [ ] 01-02: Auth service — JWT issuance/validation, Argon2id password hashing, RBAC middleware (Admin/Supervisor/Viewer)
-- [ ] 01-03: Employee and department API — CRUD endpoints with RBAC enforcement, soft-delete, 1:1 employee-department constraint
-- [ ] 01-04: Global rules API — tolerance and bonus minutes configuration endpoints
+- [ ] 01-01-PLAN.md — Scaffold Rust project, database schema, audit triggers, Turso sync
+- [ ] 01-02-PLAN.md — JWT auth service, RBAC middleware, setup wizard backend
+- [ ] 01-03-PLAN.md — Employee, department, and global rules CRUD endpoints
+- [ ] 01-04-PLAN.md — Next.js frontend scaffold, setup wizard UI, login page
 
 ### Phase 2: Device Integration
 **Goal**: The system maintains live alertStream connections to all registered Hikvision devices, captures attendance events in real time, and operators can manage device configuration from the backend
