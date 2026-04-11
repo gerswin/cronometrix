@@ -35,6 +35,10 @@ Accurate, auditable time tracking that turns raw biometric events into payroll-r
 - [ ] Audit trail panel with immutable change history and evidence viewer
 - [ ] Reports and pre-payroll export (Excel/PDF) by period
 - [ ] Role-based access: Admin (full), Supervisor (edit timesheets, view reports), Viewer (read-only)
+- [ ] Hardware-bound licensing: machine fingerprint + DO Functions license server + signed JWT cached locally
+- [ ] One-command installer script (`curl | bash`) for Linux servers with Docker
+- [ ] Docker Compose deployment (api + web + cloudflared services)
+- [ ] Cloudflare tunnel auto-registration with `{client}.cronometrix.com` subdomain
 
 ### Out of Scope
 
@@ -60,6 +64,9 @@ Accurate, auditable time tracking that turns raw biometric events into payroll-r
 - **Hardware dependency:** Must support Hikvision ISAPI protocol — this is non-negotiable
 - **Audit compliance:** Every mutation to attendance records must generate an immutable audit log entry with justification
 - **Desktop option (future):** Architecture should allow wrapping in Tauri later for desktop deployment
+- **Deployment:** Docker Compose on Linux servers, one-command install via shell script
+- **Licensing:** Hardware-bound via DO Functions — prevents unauthorized cloning across servers
+- **Network access:** Cloudflare tunnel per client → `{client-slug}.cronometrix.com`
 
 ## Key Decisions
 
@@ -70,6 +77,9 @@ Accurate, auditable time tracking that turns raw biometric events into payroll-r
 | SQLite + Turso for persistence | Local-first operation, async cloud sync per client, no shared infrastructure needed | — Pending |
 | Independent client installations | Simpler architecture, no multi-tenant complexity, each client owns their data | — Pending |
 | 3-role RBAC (Admin/Supervisor/Viewer) | Balance between access control and simplicity for v1 | — Pending |
+| Hardware-bound licensing via DO Functions | Prevent unauthorized cloning, machine fingerprint + signed JWT | — Pending |
+| Docker Compose + shell installer | One-command deployment on Linux, minimal client-side ops knowledge needed | — Pending |
+| Cloudflare tunnel per client | Remote access without VPN, `{client}.cronometrix.com` subdomains | — Pending |
 
 ## Evolution
 
@@ -89,4 +99,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-11 after initialization*
+*Last updated: 2026-04-11 after initialization (added licensing, deployment, Cloudflare tunnel)*
