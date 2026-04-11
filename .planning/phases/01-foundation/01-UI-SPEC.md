@@ -1,7 +1,8 @@
 ---
 phase: 1
 slug: foundation
-status: draft
+status: approved
+reviewed_at: 2026-04-11
 shadcn_initialized: false
 preset: none
 created: 2026-04-11
@@ -54,13 +55,13 @@ Exceptions: Touch targets for form submit button minimum 44px height (accessibil
 | Role | Size | Weight | Line Height | Usage |
 |------|------|--------|-------------|-------|
 | Body | 16px | 400 (regular) | 1.5 | Form helper text, descriptive copy |
-| Label | 14px | 500 (medium) | 1.4 | Form field labels, input annotations |
+| Label | 14px | 600 (semibold) | 1.4 | Form field labels, input annotations |
 | Heading | 24px | 600 (semibold) | 1.2 | Wizard card title ("Create admin account") |
 | Display | 14px | 400 (regular) | 1.4 | Error messages, validation feedback |
 
 **Font stack:** `Inter, ui-sans-serif, system-ui, sans-serif`
 
-**Weight constraint:** Only 2 weights in use — 400 (regular) and 600 (semibold). Label uses 500 only if Inter variable font is loaded; fall back to 600 if weight 500 unavailable.
+**Weight constraint:** Only 2 weights in use — 400 (regular) and 600 (semibold).
 
 ---
 
