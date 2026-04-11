@@ -778,22 +778,25 @@ CREATE INDEX IF NOT EXISTS idx_employees_name ON employees(name);
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Turso sync when Turso is unavailable at startup**
    - What we know: `db.sync().await` can fail if TURSO_DATABASE_URL is unreachable
    - What's unclear: Should startup fail hard, or should the service start with local-only mode and retry sync in background?
    - Recommendation: Start in degraded mode (local only) if sync fails; log warning; background retry with tokio::spawn. DATA-04 only requires local SQLite to be authoritative, which holds.
+   - RESOLVED: Degraded local-only mode with background retry (implemented in Plan 01-01 init_db_local)
 
 2. **actor_id attribution in SQLite triggers**
    - What we know: Triggers have no session context; they fire on SQL events without application-layer metadata
    - What's unclear: Whether to implement a `temp.actor_id` session variable table or accept service-layer double-write
    - Recommendation: Use double-write for Phase 1 (trigger creates the row, service layer updates actor_id in the same transaction). This is a single atomic transaction so no partial-write risk.
+   - RESOLVED: NULL actor_id for Phase 1 triggers; service-layer double-write updates actor_id in same transaction
 
 3. **libSQL connection pooling**
    - What we know: libsql `Database::connect()` is cheap to call; each connection is independent
    - What's unclear: Whether to pool connections or create per-request connections
    - Recommendation: Create a connection per request from the shared `Arc<Database>`. libSQL embedded replica does not benefit from connection pooling the way network databases do — the WAL file handles concurrency.
+   - RESOLVED: Per-request connection from Arc<Database> via state.db.connect() in handlers
 
 ---
 
