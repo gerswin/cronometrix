@@ -32,13 +32,14 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Admin can create departments with salary, schedule, and lunch mode; each employee belongs to exactly one department
   4. Admin can adjust global tolerance sliders and bonus minutes; rule changes take effect on next cycle only
   5. Every administrative mutation (user, employee, department, rule) produces an immutable audit log entry in the database
-**Plans:** 4 plans
+**Plans:** 5 plans
 
 Plans:
+- [ ] 01-00-PLAN.md — Test infrastructure (Wave 0): shared fixtures, test stubs, dev-dependencies
 - [ ] 01-01-PLAN.md — Scaffold Rust project, database schema, audit triggers, Turso sync
 - [ ] 01-02-PLAN.md — JWT auth service, RBAC middleware, setup wizard backend
 - [ ] 01-03-PLAN.md — Employee, department, and global rules CRUD endpoints
-- [ ] 01-04-PLAN.md — Next.js frontend scaffold, setup wizard UI, login page
+- [ ] 01-04-PLAN.md — Next.js frontend scaffold, setup wizard UI, login page, RBAC verification
 
 ### Phase 2: Device Integration
 **Goal**: The system maintains live alertStream connections to all registered Hikvision devices, captures attendance events in real time, and operators can manage device configuration from the backend
@@ -144,11 +145,11 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/4 | Not started | - |
+| 1. Foundation | 0/5 | Not started | - |
 | 2. Device Integration | 0/3 | Not started | - |
 | 3. Time Calculation Engine | 0/3 | Not started | - |
 | 4. Frontend UI | 0/4 | Not started | - |
