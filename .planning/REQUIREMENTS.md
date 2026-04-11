@@ -144,17 +144,77 @@
 
 ## Traceability
 
-Which phases cover which requirements. Updated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (Populated by roadmapper) | | |
+| DATA-01 | Phase 1 | Pending |
+| DATA-02 | Phase 1 | Pending |
+| DATA-03 | Phase 1 | Pending |
+| DATA-04 | Phase 1 | Pending |
+| AUTH-01 | Phase 1 | Pending |
+| AUTH-02 | Phase 1 | Pending |
+| AUTH-03 | Phase 1 | Pending |
+| AUTH-04 | Phase 1 | Pending |
+| AUTH-05 | Phase 1 | Pending |
+| EMP-01 | Phase 1 | Pending |
+| EMP-02 | Phase 1 | Pending |
+| EMP-03 | Phase 1 | Pending |
+| EMP-04 | Phase 1 | Pending |
+| DEPT-01 | Phase 1 | Pending |
+| DEPT-02 | Phase 1 | Pending |
+| DEPT-03 | Phase 1 | Pending |
+| RULE-01 | Phase 1 | Pending |
+| RULE-02 | Phase 1 | Pending |
+| RULE-03 | Phase 1 | Pending |
+| DEV-01 | Phase 2 | Pending |
+| DEV-02 | Phase 2 | Pending |
+| DEV-03 | Phase 2 | Pending |
+| DEV-04 | Phase 2 | Pending |
+| EVT-01 | Phase 2 | Pending |
+| EVT-02 | Phase 2 | Pending |
+| EVT-03 | Phase 2 | Pending |
+| EVT-04 | Phase 2 | Pending |
+| CALC-01 | Phase 3 | Pending |
+| CALC-02 | Phase 3 | Pending |
+| CALC-03 | Phase 3 | Pending |
+| CALC-04 | Phase 3 | Pending |
+| CALC-05 | Phase 3 | Pending |
+| CALC-06 | Phase 3 | Pending |
+| LEAVE-01 | Phase 3 | Pending |
+| LEAVE-02 | Phase 3 | Pending |
+| LEAVE-03 | Phase 3 | Pending |
+| LEAVE-04 | Phase 3 | Pending |
+| DASH-01 | Phase 4 | Pending |
+| DASH-02 | Phase 4 | Pending |
+| DASH-03 | Phase 4 | Pending |
+| TS-01 | Phase 4 | Pending |
+| TS-02 | Phase 4 | Pending |
+| TS-03 | Phase 4 | Pending |
+| TS-04 | Phase 4 | Pending |
+| TS-05 | Phase 4 | Pending |
+| PAY-01 | Phase 5 | Pending |
+| PAY-02 | Phase 5 | Pending |
+| PAY-03 | Phase 5 | Pending |
+| PAY-04 | Phase 5 | Pending |
+| LIC-01 | Phase 6 | Pending |
+| LIC-02 | Phase 6 | Pending |
+| LIC-03 | Phase 6 | Pending |
+| LIC-04 | Phase 6 | Pending |
+| LIC-05 | Phase 6 | Pending |
+| DEPL-01 | Phase 6 | Pending |
+| DEPL-02 | Phase 6 | Pending |
+| DEPL-03 | Phase 6 | Pending |
+| DEPL-04 | Phase 6 | Pending |
+| ENRL-01 | Phase 7 | Pending |
+| ENRL-02 | Phase 7 | Pending |
+| ENRL-03 | Phase 7 | Pending |
+| ENRL-04 | Phase 7 | Pending |
+| ENRL-05 | Phase 7 | Pending |
 
 **Coverage:**
 - v1 requirements: 48 total
-- Mapped to phases: 0
-- Unmapped: 48 ⚠️
+- Mapped to phases: 48
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-11*
-*Last updated: 2026-04-11 after initial definition*
+*Last updated: 2026-04-11 — traceability table populated after roadmap creation*
