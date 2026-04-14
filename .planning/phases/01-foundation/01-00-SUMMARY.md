@@ -180,6 +180,12 @@ None — no external service configuration required for test infrastructure.
 
 No new security-relevant surface introduced. TEST_JWT_SECRET is only compiled into test binaries (never into release binary). Disposition: accept (T-01-00 in plan threat register).
 
+## Self-Check: PASSED
+
+- All 13 files verified present on disk
+- Task commits 2804ba6 and e51278a verified in git log
+- cargo test reports 0 passed, 19 ignored (all stubs compile correctly)
+
 ---
 *Phase: 01-foundation*
 *Completed: 2026-04-14*
