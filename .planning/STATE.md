@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-foundation-01-01-PLAN.md
-last_updated: "2026-04-14T17:33:47.270Z"
+stopped_at: Completed 01-foundation-01-02-PLAN.md
+last_updated: "2026-04-14T17:41:49.466Z"
 last_activity: 2026-04-14
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 5
-  completed_plans: 2
-  percent: 40
+  completed_plans: 3
+  percent: 60
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 01 (foundation) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-04-14
 
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01-foundation P00 | 25 | 2 tasks | 12 files |
 | Phase 01-foundation P01 | 8 | 2 tasks | 13 files |
+| Phase 01-foundation P02 | 6 | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,9 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: lib.rs added to expose pub modules — binary crates cannot be referenced from integration test crates without a library target
 - [Phase 01-foundation]: Test fixture uses unique temp file DB not :memory: — sqlite3_open_v2(':memory:') creates isolated DB per connection causing migrations to be invisible to subsequent connections
 - [Phase 01-foundation]: tracing-subscriber env-filter feature must be explicitly enabled for with_env_filter() — not included in plan Cargo.toml spec
+- [Phase 01-foundation]: SameSite=Lax (not Strict) on refresh cookie: allows third-party link navigation in on-premise deployments while still blocking CSRF POST attacks
+- [Phase 01-foundation]: refresh/logout routes not behind require_auth Bearer middleware — they self-authenticate via refresh cookie; Bearer middleware would block legitimate refresh flows
+- [Phase 01-foundation]: jsonwebtoken rust_crypto feature enabled to avoid rustls CryptoProvider panic in test environments without a full TLS stack
 
 ### Pending Todos
 
@@ -84,6 +88,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-14T17:33:47.268Z
-Stopped at: Completed 01-foundation-01-01-PLAN.md
+Last session: 2026-04-14T17:41:49.464Z
+Stopped at: Completed 01-foundation-01-02-PLAN.md
 Resume file: None
