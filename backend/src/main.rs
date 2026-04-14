@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::State, routing::{get, post}, Json, Router};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::errors::AppError;
+use cronometrix_api::setup;
 use cronometrix_api::state::AppState;
 use cronometrix_api::db;
 
@@ -30,8 +32,20 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
     };
 
+    // Public routes — no auth required
+    let public_routes = Router::new()
+        .route("/health", get(health))
+        .route("/auth/login", post(auth::handlers::login))
+        .route("/setup/status", get(setup::handlers::setup_status))
+        .route("/setup/init", post(setup::handlers::setup_init));
+
+    // Cookie-authenticated routes (refresh/logout validate via refresh cookie, not Bearer)
+    let cookie_auth_routes = Router::new()
+        .route("/auth/refresh", post(auth::handlers::refresh))
+        .route("/auth/logout", post(auth::handlers::logout));
+
     let app = Router::new()
-        .route("/api/v1/health", get(health))
+        .nest("/api/v1", public_routes.merge(cookie_auth_routes))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());
