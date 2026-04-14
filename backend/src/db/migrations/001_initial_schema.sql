@@ -1,0 +1,3 @@
+-- Placeholder: Schema migration will be populated by Plan 01-01.
+-- This file exists so that include_str!() in test fixtures compiles during Wave 0.
+-- DO NOT add real schema here — Plan 01-01 owns this file.
