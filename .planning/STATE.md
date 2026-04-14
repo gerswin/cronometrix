@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 01-foundation-01-03-PLAN.md
-last_updated: "2026-04-14T17:51:12.662Z"
+status: verifying
+stopped_at: "Checkpoint: Task 3 human-verify in 01-foundation-01-04-PLAN.md"
+last_updated: "2026-04-14T18:00:15.571Z"
 last_activity: 2026-04-14
 progress:
   total_phases: 7
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 5
-  completed_plans: 4
-  percent: 80
+  completed_plans: 5
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 
 Phase: 01 (foundation) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-14
 
 Progress: [░░░░░░░░░░] 0%
@@ -56,6 +56,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-foundation P01 | 8 | 2 tasks | 13 files |
 | Phase 01-foundation P02 | 6 | 2 tasks | 12 files |
 | Phase 01-foundation P03 | 35 | 3 tasks | 15 files |
+| Phase 01-foundation P04 | 8 | 2 tasks | 31 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,10 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: Soft delete verification in tests uses REST API (GET by id) not direct DB connection — libsql::Database does not implement Clone
 - [Phase 01-foundation]: Dynamic WHERE clause with positional param indexing for optional filters — avoids SQL injection without ORM
 - [Phase 01-foundation]: effective_from always updated on any PATCH to global_rules — per RULE-03, any rule change resets the effective period
+- [Phase 01-foundation]: proxy.ts (not middleware.ts): Next.js 16 renamed Middleware to Proxy — function export also renamed to `proxy`
+- [Phase 01-foundation]: Metadata in layout.tsx not page.tsx: Next.js 16 forbids metadata export from client components ('use client')
+- [Phase 01-foundation]: Providers component: QueryClientProvider must be a client component, isolated from server Root Layout
+- [Phase 01-foundation]: frontend/.git removed: create-next-app creates its own git repo; removed to track files in monorepo
 
 ### Pending Todos
 
@@ -92,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-14T17:51:12.660Z
-Stopped at: Completed 01-foundation-01-03-PLAN.md
+Last session: 2026-04-14T18:00:15.569Z
+Stopped at: Checkpoint: Task 3 human-verify in 01-foundation-01-04-PLAN.md
 Resume file: None
