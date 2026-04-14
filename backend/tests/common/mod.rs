@@ -16,14 +16,14 @@ pub async fn test_db() -> libsql::Database {
 
     // Apply migrations manually (same SQL as production migrations)
     // During Wave 0 these are placeholders; Plan 01-01 populates them with real SQL
-    let schema_sql = include_str!("../src/db/migrations/001_initial_schema.sql");
+    let schema_sql = include_str!("../../src/db/migrations/001_initial_schema.sql");
     if !schema_sql.trim().starts_with("-- Placeholder") {
         conn.execute_batch(schema_sql)
             .await
             .expect("Failed to apply schema migration");
     }
 
-    let triggers_sql = include_str!("../src/db/migrations/002_audit_triggers.sql");
+    let triggers_sql = include_str!("../../src/db/migrations/002_audit_triggers.sql");
     if !triggers_sql.trim().starts_with("-- Placeholder") {
         conn.execute_batch(triggers_sql)
             .await
