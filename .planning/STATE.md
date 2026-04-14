@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-foundation-01-02-PLAN.md
-last_updated: "2026-04-14T17:41:49.466Z"
+stopped_at: Completed 01-foundation-01-03-PLAN.md
+last_updated: "2026-04-14T17:51:12.662Z"
 last_activity: 2026-04-14
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 5
-  completed_plans: 3
-  percent: 60
+  completed_plans: 4
+  percent: 80
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 01 (foundation) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-04-14
 
@@ -55,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-foundation P00 | 25 | 2 tasks | 12 files |
 | Phase 01-foundation P01 | 8 | 2 tasks | 13 files |
 | Phase 01-foundation P02 | 6 | 2 tasks | 12 files |
+| Phase 01-foundation P03 | 35 | 3 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: SameSite=Lax (not Strict) on refresh cookie: allows third-party link navigation in on-premise deployments while still blocking CSRF POST attacks
 - [Phase 01-foundation]: refresh/logout routes not behind require_auth Bearer middleware — they self-authenticate via refresh cookie; Bearer middleware would block legitimate refresh flows
 - [Phase 01-foundation]: jsonwebtoken rust_crypto feature enabled to avoid rustls CryptoProvider panic in test environments without a full TLS stack
+- [Phase 01-foundation]: Soft delete verification in tests uses REST API (GET by id) not direct DB connection — libsql::Database does not implement Clone
+- [Phase 01-foundation]: Dynamic WHERE clause with positional param indexing for optional filters — avoids SQL injection without ORM
+- [Phase 01-foundation]: effective_from always updated on any PATCH to global_rules — per RULE-03, any rule change resets the effective period
 
 ### Pending Todos
 
@@ -88,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-14T17:41:49.464Z
-Stopped at: Completed 01-foundation-01-02-PLAN.md
+Last session: 2026-04-14T17:51:12.660Z
+Stopped at: Completed 01-foundation-01-03-PLAN.md
 Resume file: None
