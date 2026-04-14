@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-00-PLAN.md — Test infrastructure (Wave 0): shared fixtures, test stubs, dev-dependencies
-- [ ] 01-01-PLAN.md — Scaffold Rust project, database schema, audit triggers, Turso sync
+- [x] 01-01-PLAN.md — Scaffold Rust project, database schema, audit triggers, Turso sync
 - [ ] 01-02-PLAN.md — JWT auth service, RBAC middleware, setup wizard backend
 - [ ] 01-03-PLAN.md — Employee, department, and global rules CRUD endpoints
 - [ ] 01-04-PLAN.md — Next.js frontend scaffold, setup wizard UI, login page, RBAC verification
