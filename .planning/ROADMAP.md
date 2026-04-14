@@ -32,10 +32,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Admin can create departments with salary, schedule, and lunch mode; each employee belongs to exactly one department
   4. Admin can adjust global tolerance sliders and bonus minutes; rule changes take effect on next cycle only
   5. Every administrative mutation (user, employee, department, rule) produces an immutable audit log entry in the database
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 
 Plans:
-- [ ] 01-00-PLAN.md — Test infrastructure (Wave 0): shared fixtures, test stubs, dev-dependencies
+- [x] 01-00-PLAN.md — Test infrastructure (Wave 0): shared fixtures, test stubs, dev-dependencies
 - [ ] 01-01-PLAN.md — Scaffold Rust project, database schema, audit triggers, Turso sync
 - [ ] 01-02-PLAN.md — JWT auth service, RBAC middleware, setup wizard backend
 - [ ] 01-03-PLAN.md — Employee, department, and global rules CRUD endpoints
@@ -149,7 +149,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/5 | Not started | - |
+| 1. Foundation | 1/5 | In Progress|  |
 | 2. Device Integration | 0/3 | Not started | - |
 | 3. Time Calculation Engine | 0/3 | Not started | - |
 | 4. Frontend UI | 0/4 | Not started | - |

@@ -45,22 +45,22 @@
 
 ### Employee Management
 
-- [ ] **EMP-01**: Admin can create an employee with unique ID, name, department assignment, and status
-- [ ] **EMP-02**: Admin can search and filter employees by name, department, and status
-- [ ] **EMP-03**: Admin can deactivate an employee (soft delete — no hard deletes)
-- [ ] **EMP-04**: Each employee belongs to exactly one department (1:1 relationship)
+- [x] **EMP-01**: Admin can create an employee with unique ID, name, department assignment, and status
+- [x] **EMP-02**: Admin can search and filter employees by name, department, and status
+- [x] **EMP-03**: Admin can deactivate an employee (soft delete — no hard deletes)
+- [x] **EMP-04**: Each employee belongs to exactly one department (1:1 relationship)
 
 ### Department Management
 
-- [ ] **DEPT-01**: Admin can create a department with base salary and shift schedule (start/end times)
-- [ ] **DEPT-02**: Admin can configure lunch mode per department (fixed deduction or explicit punch)
-- [ ] **DEPT-03**: Admin can edit department settings (salary, schedule, lunch mode)
+- [x] **DEPT-01**: Admin can create a department with base salary and shift schedule (start/end times)
+- [x] **DEPT-02**: Admin can configure lunch mode per department (fixed deduction or explicit punch)
+- [x] **DEPT-03**: Admin can edit department settings (salary, schedule, lunch mode)
 
 ### Global Rules
 
-- [ ] **RULE-01**: Admin can configure tolerance margins via visual sliders (late arrival, early departure)
-- [ ] **RULE-02**: Admin can configure bonus minutes (grace period applied automatically)
-- [ ] **RULE-03**: Rule changes take effect on the next calculation cycle (not retroactive)
+- [x] **RULE-01**: Admin can configure tolerance margins via visual sliders (late arrival, early departure)
+- [x] **RULE-02**: Admin can configure bonus minutes (grace period applied automatically)
+- [x] **RULE-03**: Rule changes take effect on the next calculation cycle (not retroactive)
 
 ### Timesheet Editor
 
@@ -85,11 +85,11 @@
 
 ### Access Control (RBAC)
 
-- [ ] **AUTH-01**: User can log in with username and password
-- [ ] **AUTH-02**: Admin role has full access to all features
-- [ ] **AUTH-03**: Supervisor role can edit timesheets, manage employees, and view reports
-- [ ] **AUTH-04**: Viewer role has read-only access to dashboards and reports
-- [ ] **AUTH-05**: User session persists across browser refresh (JWT-based)
+- [x] **AUTH-01**: User can log in with username and password
+- [x] **AUTH-02**: Admin role has full access to all features
+- [x] **AUTH-03**: Supervisor role can edit timesheets, manage employees, and view reports
+- [x] **AUTH-04**: Viewer role has read-only access to dashboards and reports
+- [x] **AUTH-05**: User session persists across browser refresh (JWT-based)
 
 ### Licensing & Deployment
 
@@ -105,10 +105,10 @@
 
 ### Data Persistence
 
-- [ ] **DATA-01**: All data stored locally in SQLite via libSQL
-- [ ] **DATA-02**: Data syncs asynchronously to Turso cloud for remote access and backup
-- [ ] **DATA-03**: Local SQLite is authoritative — cloud is a replica, not the primary
-- [ ] **DATA-04**: Every administrative mutation generates an immutable audit log entry (backend)
+- [x] **DATA-01**: All data stored locally in SQLite via libSQL
+- [x] **DATA-02**: Data syncs asynchronously to Turso cloud for remote access and backup
+- [x] **DATA-03**: Local SQLite is authoritative — cloud is a replica, not the primary
+- [x] **DATA-04**: Every administrative mutation generates an immutable audit log entry (backend)
 
 ## v2 Requirements
 
@@ -146,25 +146,25 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DATA-01 | Phase 1 | Pending |
-| DATA-02 | Phase 1 | Pending |
-| DATA-03 | Phase 1 | Pending |
-| DATA-04 | Phase 1 | Pending |
-| AUTH-01 | Phase 1 | Pending |
-| AUTH-02 | Phase 1 | Pending |
-| AUTH-03 | Phase 1 | Pending |
-| AUTH-04 | Phase 1 | Pending |
-| AUTH-05 | Phase 1 | Pending |
-| EMP-01 | Phase 1 | Pending |
-| EMP-02 | Phase 1 | Pending |
-| EMP-03 | Phase 1 | Pending |
-| EMP-04 | Phase 1 | Pending |
-| DEPT-01 | Phase 1 | Pending |
-| DEPT-02 | Phase 1 | Pending |
-| DEPT-03 | Phase 1 | Pending |
-| RULE-01 | Phase 1 | Pending |
-| RULE-02 | Phase 1 | Pending |
-| RULE-03 | Phase 1 | Pending |
+| DATA-01 | Phase 1 | Complete |
+| DATA-02 | Phase 1 | Complete |
+| DATA-03 | Phase 1 | Complete |
+| DATA-04 | Phase 1 | Complete |
+| AUTH-01 | Phase 1 | Complete |
+| AUTH-02 | Phase 1 | Complete |
+| AUTH-03 | Phase 1 | Complete |
+| AUTH-04 | Phase 1 | Complete |
+| AUTH-05 | Phase 1 | Complete |
+| EMP-01 | Phase 1 | Complete |
+| EMP-02 | Phase 1 | Complete |
+| EMP-03 | Phase 1 | Complete |
+| EMP-04 | Phase 1 | Complete |
+| DEPT-01 | Phase 1 | Complete |
+| DEPT-02 | Phase 1 | Complete |
+| DEPT-03 | Phase 1 | Complete |
+| RULE-01 | Phase 1 | Complete |
+| RULE-02 | Phase 1 | Complete |
+| RULE-03 | Phase 1 | Complete |
 | DEV-01 | Phase 2 | Pending |
 | DEV-02 | Phase 2 | Pending |
 | DEV-03 | Phase 2 | Pending |
