@@ -1,6 +1,10 @@
 pub mod auth;
+pub mod common;
 pub mod config;
 pub mod db;
+pub mod departments;
+pub mod employees;
 pub mod errors;
+pub mod rules;
 pub mod setup;
 pub mod state;

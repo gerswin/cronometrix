@@ -1,0 +1,294 @@
+use libsql::{Connection, params};
+use uuid::Uuid;
+
+use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
+use crate::errors::AppError;
+
+use super::models::{CreateEmployeeRequest, Employee, EmployeeListQuery, UpdateEmployeeRequest};
+
+/// Map a libSQL row to an Employee struct.
+fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
+    Ok(Employee {
+        id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+        employee_code: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+        name: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
+        department_id: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
+        status: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
+        deleted_at: epoch_to_iso_opt(row.get(5).map_err(|e| AppError::Internal(e.into()))?),
+        version: row.get(6).map_err(|e| AppError::Internal(e.into()))?,
+        created_at: epoch_to_iso(row.get(7).map_err(|e| AppError::Internal(e.into()))?),
+        updated_at: epoch_to_iso(row.get(8).map_err(|e| AppError::Internal(e.into()))?),
+    })
+}
+
+/// Create a new employee, validating that the referenced department exists and is active.
+/// Returns Conflict with EMPLOYEE_CODE_EXISTS if employee_code is not unique.
+/// Returns NotFound with DEPARTMENT_NOT_FOUND if department does not exist or is inactive.
+pub async fn create(
+    conn: &Connection,
+    req: CreateEmployeeRequest,
+) -> Result<Employee, AppError> {
+    // EMP-04: Validate department exists and is active
+    let dept_check = conn
+        .query(
+            "SELECT id FROM departments WHERE id = ?1 AND status = 'active'",
+            params![req.department_id.clone()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    if dept_check.is_none() {
+        return Err(AppError::NotFound {
+            code: "DEPARTMENT_NOT_FOUND",
+            message: format!("Department '{}' not found or is inactive", req.department_id),
+        });
+    }
+
+    let id = Uuid::new_v4().to_string();
+
+    let result = conn
+        .execute(
+            "INSERT INTO employees (id, employee_code, name, department_id, status, version, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
+            params![id.clone(), req.employee_code.clone(), req.name.clone(), req.department_id.clone()],
+        )
+        .await;
+
+    match result {
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
+                return Err(AppError::Conflict {
+                    code: "EMPLOYEE_CODE_EXISTS",
+                    message: format!("Employee code '{}' is already in use", req.employee_code),
+                });
+            }
+            return Err(AppError::Internal(e.into()));
+        }
+        Ok(_) => {}
+    }
+
+    get_by_id(conn, &id).await
+}
+
+/// List employees with optional pagination and filters.
+/// Pagination clamped: limit 1..=100 (default 20), offset >= 0 (default 0) per D-12.
+pub async fn list(
+    conn: &Connection,
+    query: EmployeeListQuery,
+) -> Result<PaginatedResponse<Employee>, AppError> {
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    // Build dynamic WHERE predicates
+    let mut predicates: Vec<String> = Vec::new();
+    let mut count_values: Vec<libsql::Value> = Vec::new();
+    let mut fetch_values: Vec<libsql::Value> = Vec::new();
+
+    // Status filter (default to active if not specified)
+    let status = query.status.unwrap_or_else(|| "active".to_string());
+    predicates.push(format!("status = ?{}", predicates.len() + 1));
+    count_values.push(libsql::Value::Text(status.clone()));
+    fetch_values.push(libsql::Value::Text(status));
+
+    if let Some(name) = &query.name {
+        predicates.push(format!("name LIKE ?{}", predicates.len() + 1));
+        let pattern = format!("%{}%", name);
+        count_values.push(libsql::Value::Text(pattern.clone()));
+        fetch_values.push(libsql::Value::Text(pattern));
+    }
+
+    if let Some(dept_id) = &query.department_id {
+        predicates.push(format!("department_id = ?{}", predicates.len() + 1));
+        count_values.push(libsql::Value::Text(dept_id.clone()));
+        fetch_values.push(libsql::Value::Text(dept_id.clone()));
+    }
+
+    let where_clause = if predicates.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", predicates.join(" AND "))
+    };
+
+    // Count total matching rows
+    let count_sql = format!("SELECT COUNT(*) FROM employees {}", where_clause);
+    let total: i64 = conn
+        .query(&count_sql, libsql::params_from_iter(count_values))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("COUNT query returned no rows")))?
+        .get(0)
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    // Fetch page
+    let fetch_sql = format!(
+        "SELECT id, employee_code, name, department_id, status, deleted_at, version, created_at, updated_at \
+         FROM employees {} ORDER BY name ASC LIMIT ?{} OFFSET ?{}",
+        where_clause,
+        fetch_values.len() + 1,
+        fetch_values.len() + 2
+    );
+
+    fetch_values.push(libsql::Value::Integer(limit));
+    fetch_values.push(libsql::Value::Integer(offset));
+
+    let mut rows = conn
+        .query(&fetch_sql, libsql::params_from_iter(fetch_values))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut data = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+        data.push(row_to_employee(row)?);
+    }
+
+    Ok(PaginatedResponse {
+        data,
+        total,
+        limit,
+        offset,
+    })
+}
+
+/// Get a single employee by ID. Returns NotFound with EMPLOYEE_NOT_FOUND if missing.
+pub async fn get_by_id(conn: &Connection, id: &str) -> Result<Employee, AppError> {
+    let row = conn
+        .query(
+            "SELECT id, employee_code, name, department_id, status, deleted_at, version, created_at, updated_at \
+             FROM employees WHERE id = ?1",
+            params![id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::NotFound {
+            code: "EMPLOYEE_NOT_FOUND",
+            message: format!("Employee '{}' not found", id),
+        })?;
+
+    row_to_employee(row)
+}
+
+/// Update an employee using optimistic concurrency (D-04).
+/// Returns Conflict with VERSION_CONFLICT if the version does not match.
+pub async fn update(
+    conn: &Connection,
+    id: &str,
+    req: UpdateEmployeeRequest,
+) -> Result<Employee, AppError> {
+    // Validate that the department exists if being changed
+    if let Some(ref dept_id) = req.department_id {
+        let dept_check = conn
+            .query(
+                "SELECT id FROM departments WHERE id = ?1 AND status = 'active'",
+                params![dept_id.clone()],
+            )
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .next()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        if dept_check.is_none() {
+            return Err(AppError::NotFound {
+                code: "DEPARTMENT_NOT_FOUND",
+                message: format!("Department '{}' not found or is inactive", dept_id),
+            });
+        }
+    }
+
+    // Build dynamic SET clause
+    let mut sets: Vec<String> = Vec::new();
+    let mut values: Vec<libsql::Value> = Vec::new();
+
+    if let Some(name) = req.name {
+        sets.push(format!("name = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(name));
+    }
+
+    if let Some(dept_id) = req.department_id {
+        sets.push(format!("department_id = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(dept_id));
+    }
+
+    if sets.is_empty() {
+        // Nothing to update — return current state
+        return get_by_id(conn, id).await;
+    }
+
+    sets.push("updated_at = unixepoch()".to_string());
+    sets.push("version = version + 1".to_string());
+
+    let set_clause = sets.join(", ");
+    let version_param = values.len() + 1;
+    let id_param = values.len() + 2;
+
+    values.push(libsql::Value::Integer(req.version));
+    values.push(libsql::Value::Text(id.to_string()));
+
+    let sql = format!(
+        "UPDATE employees SET {} WHERE id = ?{} AND version = ?{}",
+        set_clause, id_param, version_param
+    );
+
+    let rows_affected = conn
+        .execute(&sql, libsql::params_from_iter(values))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    if rows_affected == 0 {
+        // Could be version conflict or missing row — check
+        let exists = conn
+            .query("SELECT id FROM employees WHERE id = ?1", params![id.to_string()])
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .next()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        if exists.is_none() {
+            return Err(AppError::NotFound {
+                code: "EMPLOYEE_NOT_FOUND",
+                message: format!("Employee '{}' not found", id),
+            });
+        }
+
+        return Err(AppError::Conflict {
+            code: "VERSION_CONFLICT",
+            message: "Employee was modified by another request. Fetch the latest version and retry.".to_string(),
+        });
+    }
+
+    get_by_id(conn, id).await
+}
+
+/// Soft-delete an employee by setting status=inactive and deleted_at per D-03.
+/// Returns NotFound with EMPLOYEE_NOT_FOUND if not found or already inactive.
+pub async fn deactivate(conn: &Connection, id: &str) -> Result<(), AppError> {
+    let rows_affected = conn
+        .execute(
+            "UPDATE employees SET status = 'inactive', deleted_at = unixepoch(), \
+             updated_at = unixepoch(), version = version + 1 \
+             WHERE id = ?1 AND status = 'active'",
+            params![id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    if rows_affected == 0 {
+        return Err(AppError::NotFound {
+            code: "EMPLOYEE_NOT_FOUND",
+            message: format!("Employee '{}' not found or already inactive", id),
+        });
+    }
+
+    Ok(())
+}
