@@ -1,34 +1,26 @@
-/// Create an in-memory libSQL database with all migrations applied.
-/// Each test gets its own isolated database instance.
+use cronometrix_api::db::run_migrations;
+
+/// Create a temporary file-based libSQL database with all migrations applied.
+/// Each test gets its own isolated database instance via a unique temp path.
 ///
-/// NOTE: These include_str! macros reference placeholder files during Wave 0.
-/// Plan 01-01 overwrites the placeholders with real SQL. After Plan 01-01,
-/// the db_tests (schema, audit, epoch) will pass. Before that, only
-/// compilation is guaranteed.
+/// NOTE: We use a temp file (not :memory:) because each call to db.connect() on
+/// an :memory: database opens a NEW isolated SQLite connection with no shared state.
+/// A temp file ensures all connections see the same schema.
 pub async fn test_db() -> libsql::Database {
-    // Use in-memory SQLite for tests — fast, isolated, no cleanup needed
-    let db = libsql::Builder::new_local(":memory:")
+    // Generate a unique temp path per call so tests are isolated from each other
+    let tmp_path = format!("/tmp/cronometrix_test_{}.db", uuid::Uuid::new_v4());
+
+    let db = libsql::Builder::new_local(&tmp_path)
         .build()
         .await
         .expect("Failed to create test database");
 
     let conn = db.connect().expect("Failed to connect to test database");
 
-    // Apply migrations manually (same SQL as production migrations)
-    // During Wave 0 these are placeholders; Plan 01-01 populates them with real SQL
-    let schema_sql = include_str!("../../src/db/migrations/001_initial_schema.sql");
-    if !schema_sql.trim().starts_with("-- Placeholder") {
-        conn.execute_batch(schema_sql)
-            .await
-            .expect("Failed to apply schema migration");
-    }
-
-    let triggers_sql = include_str!("../../src/db/migrations/002_audit_triggers.sql");
-    if !triggers_sql.trim().starts_with("-- Placeholder") {
-        conn.execute_batch(triggers_sql)
-            .await
-            .expect("Failed to apply audit trigger migration");
-    }
+    // Run migrations via the same production code path
+    run_migrations(&conn)
+        .await
+        .expect("Failed to run migrations in test database");
 
     db
 }
@@ -59,7 +51,6 @@ pub fn test_access_token(user_id: &str, role: &str) -> String {
 
 /// Create a test admin user directly in the database.
 /// Returns the user ID.
-/// NOTE: Only works after Plan 01-01 populates the real schema migration.
 pub async fn create_test_admin(db: &libsql::Database) -> String {
     let conn = db.connect().expect("Failed to connect");
     let user_id = uuid::Uuid::new_v4().to_string();

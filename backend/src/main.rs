@@ -1,14 +1,12 @@
-mod config;
-mod db;
-mod errors;
-mod state;
-
 use std::sync::Arc;
 
 use axum::{extract::State, routing::get, Json, Router};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::{config::Config, errors::AppError, state::AppState};
+use cronometrix_api::config::Config;
+use cronometrix_api::errors::AppError;
+use cronometrix_api::state::AppState;
+use cronometrix_api::db;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

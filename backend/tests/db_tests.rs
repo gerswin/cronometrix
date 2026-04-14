@@ -1,7 +1,6 @@
 mod common;
 
 #[tokio::test]
-#[ignore = "Requires real schema migration from Plan 01-01 (placeholder SQL during Wave 0)"]
 async fn schema_creates_all_tables() {
     let db = common::test_db().await;
     let conn = db.connect().unwrap();
@@ -9,24 +8,23 @@ async fn schema_creates_all_tables() {
     // Verify all 5 core tables exist
     let tables = ["users", "departments", "employees", "global_rules", "audit_log"];
     for table in tables {
-        let result = conn
+        let mut rows = conn
             .query(
                 &format!(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='{}'",
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{}'",
                     table
                 ),
                 (),
             )
             .await
             .unwrap();
-        // result is a Rows iterator; check it has at least one row
-        drop(result);
-        // Table existence will be verified when real SQL is in place
+        let row = rows.next().await.unwrap().unwrap();
+        let count: i64 = row.get(0).unwrap();
+        assert_eq!(count, 1, "Table '{}' should exist after migration", table);
     }
 }
 
 #[tokio::test]
-#[ignore = "Requires real schema migration from Plan 01-01 (placeholder SQL during Wave 0)"]
 async fn audit_triggers_fire_on_employee_insert() {
     let db = common::test_db().await;
     let conn = db.connect().unwrap();
@@ -64,7 +62,6 @@ async fn audit_triggers_fire_on_employee_insert() {
 }
 
 #[tokio::test]
-#[ignore = "Requires real schema migration from Plan 01-01 (placeholder SQL during Wave 0)"]
 async fn utc_epoch_storage_verified() {
     let db = common::test_db().await;
     let conn = db.connect().unwrap();
