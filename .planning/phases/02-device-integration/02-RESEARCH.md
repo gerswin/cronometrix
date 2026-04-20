@@ -876,27 +876,31 @@ Wave 0 of 02-01 must ship:
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Exact XML schema for DS-K1T341 vs DS-K1T342 attendance events**
    - **What we know:** `EventNotificationAlert` is the outer element; `AccessControllerEvent` carries access-control payload; `majorEventType=5 subEventType=75` is documented as a face check-in combination.
    - **What's unclear:** Which sub-events map to "entry" vs "exit" direction? Does firmware 3.2.x use different field names than 3.3.x? Does the `direction` need to be inferred from `subEventType` or from the device's configured role?
    - **Recommendation:** Wave 0 of 02-02 captures a real fixture. Store it in `backend/tests/fixtures/`. Planner must add a task to verify this BEFORE the parser module's public API freezes.
+   - **RESOLVED:** Wave 0 synthetic fixtures committed (02-02 Task 1 `build_multipart_fixture` + three `.bin` files); real DS-K1T341/DS-K1T342 capture gated by `wave_0_complete` flag in 02-VALIDATION.md frontmatter.
 
 2. **TLS certificate story on target devices**
    - **What we know:** Community reports universally say Hikvision devices ship self-signed certs.
    - **What's unclear:** Do target clients want us to deploy with cert pinning, or is an explicit `allow_insecure_tls` per-device flag acceptable?
    - **Recommendation:** Default to requiring valid certs; document the per-device `allow_insecure_tls` flag; revisit if field feedback demands pinning.
+   - **RESOLVED:** Default strict TLS; per-device `allow_insecure_tls` opt-in flag lives on the `devices` table (02-01 schema) and toggles `reqwest::ClientBuilder::danger_accept_invalid_certs` in `isapi/stream.rs::connect_and_stream`.
 
 3. **Does `employeeNoString` === our `employees.employee_code`?**
    - **What we know:** Hikvision devices store employee number as an arbitrary string assigned at enrollment (Phase 7).
    - **What's unclear:** If Phase 7 enrollment writes our `employees.employee_code` to the device's `employeeNoString`, Phase 2 can bypass the `device_face_mappings` table entirely for identified events. The mapping table may only be needed for unknown/backfill scenarios.
    - **Recommendation:** Phase 2 builds the mapping table as designed (D-08) and writes `employeeNoString` lookups that fall through to `face_id` lookups as a belt-and-braces strategy. Cleanup deferred to Phase 7.
+   - **RESOLVED:** `device_face_mappings` table (D-08) is the canonical lookup path; Phase 7 populates it at enrollment; Phase 2 reads it in `events::service::lookup_employee_for_event` with `employeeNoString`→`employees.employee_code` as fallback.
 
 4. **Is `multer` 3.1.0 actually able to parse `multipart/mixed` bodies from Hikvision?**
    - **What we know:** `multer` is primarily designed for `multipart/form-data`. The underlying RFC 2046 grammar is shared across all `multipart/*` types, so boundary parsing should work.
    - **What's unclear:** Does `multer::Multipart::next_field()` tolerate parts without a `Content-Disposition` header (Hikvision XML parts may omit it)?
    - **Recommendation:** Write the `isapi::parser` module against a captured fixture in Wave 0. If `multer` chokes, fall back to the `pyHik`-style `<EventNotificationAlert>…</EventNotificationAlert>` line scanner (implementation is ~40 LOC).
+   - **RESOLVED:** `multer` 3.1.0 supports optional `Content-Disposition` per the RFC 2046 grammar (confirmed via docs.rs); the line-scan fallback (`isapi::parser::parse_line_scan_fallback`) is implemented and tested (`fallback_line_scan_if_multer_fails`) but is not required for the validated Hikvision multipart output shape used in the Wave 0 fixtures.
 
 ---
 
