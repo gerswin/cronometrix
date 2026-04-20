@@ -23,6 +23,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         server_host: "127.0.0.1".to_string(),
         server_port: 3001,
         turso_sync_interval_secs: 300,
+        device_creds_key: common::test_device_creds_key(),
     });
 
     let state = AppState {

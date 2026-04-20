@@ -4,30 +4,37 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+aes-gcm = "0.10.3"
+anyhow = "1"
 axum = { version = "0.8.8", features = ["macros"] }
 axum-extra = { version = "0.12.5", features = ["cookie"] }
-tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
-tower = "0.5"
-libsql = "0.9.30"
+base64 = "0.22.1"
+chrono = { version = "0.4", features = ["serde"] }
+diqwest = "3.2.0"
+dotenvy = "0.15"
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+libsql = "0.9.30"
 password-auth = "1"
+rand = "0.8.5"
+reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "stream", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7.18"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-anyhow = "1"
-thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
 validator = { version = "0.20", features = ["derive"] }
-dotenvy = "0.15"
-sha2 = "0.10"
-time = "0.3"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full", "test-util"] }
-tower = { version = "0.5", features = ["util"] }
+axum-test = "16"
 http-body-util = "0.1"
 serde_json = "1"
-axum-test = "16"
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6.5"

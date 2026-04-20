@@ -38,6 +38,18 @@ pub enum AppError {
         message: String,
     },
 
+    #[error("gateway timeout")]
+    Timeout {
+        code: &'static str,
+        message: String,
+    },
+
+    #[error("bad gateway")]
+    BadGateway {
+        code: &'static str,
+        message: String,
+    },
+
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -63,6 +75,12 @@ impl IntoResponse for AppError {
             }
             AppError::Validation { code, message } => {
                 (StatusCode::UNPROCESSABLE_ENTITY, *code, message.clone())
+            }
+            AppError::Timeout { code, message } => {
+                (StatusCode::GATEWAY_TIMEOUT, *code, message.clone())
+            }
+            AppError::BadGateway { code, message } => {
+                (StatusCode::BAD_GATEWAY, *code, message.clone())
             }
             AppError::Internal(e) => {
                 // Log the internal error but don't expose details to clients

@@ -15,6 +15,20 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_audit_triggers",
         include_str!("migrations/002_audit_triggers.sql"),
     ),
+    (
+        "003_devices",
+        include_str!("migrations/003_devices.sql"),
+    ),
+    // 004 is reserved for attendance_events in Plan 02-02; intentionally skipped
+    // here to keep the ordering stable across plans.
+    (
+        "005_command_audit_log",
+        include_str!("migrations/005_command_audit_log.sql"),
+    ),
+    (
+        "006_devices_audit_triggers",
+        include_str!("migrations/006_devices_audit_triggers.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded

@@ -1,5 +1,19 @@
 use cronometrix_api::db::run_migrations;
 
+/// Deterministic 32-byte key (base64) used by every test that spins up a Config
+/// with device-credential crypto wired in. DO NOT use in production.
+pub const TEST_DEVICE_CREDS_KEY_B64: &str = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+
+pub fn test_device_creds_key() -> [u8; 32] {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    STANDARD
+        .decode(TEST_DEVICE_CREDS_KEY_B64)
+        .expect("test key is valid base64")
+        .as_slice()
+        .try_into()
+        .expect("test key decodes to 32 bytes")
+}
+
 /// Create a temporary file-based libSQL database with all migrations applied.
 /// Each test gets its own isolated database instance via a unique temp path.
 ///
