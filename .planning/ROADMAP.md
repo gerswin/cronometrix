@@ -54,7 +54,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 02-01: Device Manager API — register, edit, disable, ISAPI command dispatch with encrypted credential storage
+- [x] 02-01: Device Manager API — register, edit, disable, ISAPI command dispatch with encrypted credential storage
 - [ ] 02-02: alertStream listener — one tokio task per device, supervisor/reconnect loop with exponential backoff, multipart XML parser
 - [ ] 02-03: Event processor — deduplication (30-second idempotency window), face_id-to-employee mapping, AttendanceEvent persistence
 
