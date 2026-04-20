@@ -10,6 +10,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::departments;
+use cronometrix_api::devices;
 use cronometrix_api::employees;
 use cronometrix_api::errors::AppError;
 use cronometrix_api::rules;
@@ -58,6 +59,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/departments", get(departments::handlers::list_departments))
         .route("/departments/{id}", get(departments::handlers::get_department))
         .route("/rules", get(rules::handlers::get_rules))
+        .route("/devices", get(devices::handlers::list_devices))
+        .route("/devices/{id}", get(devices::handlers::get_device))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
@@ -72,12 +75,16 @@ async fn main() -> anyhow::Result<()> {
             auth::rbac::require_supervisor_or_above,
         ));
 
-    // Admin-only routes: delete employees, manage departments and rules
+    // Admin-only routes: delete employees, manage departments and rules, manage devices + command dispatch
     let admin_routes = Router::new()
         .route("/employees/{id}", delete(employees::handlers::deactivate_employee))
         .route("/departments", post(departments::handlers::create_department))
         .route("/departments/{id}", patch(departments::handlers::update_department))
         .route("/rules", patch(rules::handlers::update_rules))
+        .route("/devices", post(devices::handlers::create_device))
+        .route("/devices/{id}", patch(devices::handlers::update_device))
+        .route("/devices/{id}", delete(devices::handlers::deactivate_device))
+        .route("/devices/{id}/commands", post(devices::handlers::dispatch_command))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,

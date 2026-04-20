@@ -80,3 +80,36 @@ pub async fn create_test_admin(db: &libsql::Database) -> String {
 
     user_id
 }
+
+/// Create a test supervisor user. Returns the user ID. Used by the command-dispatch
+/// forbidden tests and any future Supervisor-scoped write tests.
+pub async fn create_test_supervisor(db: &libsql::Database) -> String {
+    let conn = db.connect().expect("Failed to connect");
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let username = format!("testsupervisor-{}", &user_id[..8]);
+
+    conn.execute(
+        "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) VALUES (?1, ?2, 'Test Supervisor', ?3, 'supervisor', 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![user_id.clone(), username, "$argon2id$v=19$m=19456,t=2,p=1$placeholder_test_hash"],
+    )
+    .await
+    .expect("Failed to create test supervisor");
+
+    user_id
+}
+
+/// Create a test viewer user. Returns the user ID.
+pub async fn create_test_viewer(db: &libsql::Database) -> String {
+    let conn = db.connect().expect("Failed to connect");
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let username = format!("testviewer-{}", &user_id[..8]);
+
+    conn.execute(
+        "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) VALUES (?1, ?2, 'Test Viewer', ?3, 'viewer', 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![user_id.clone(), username, "$argon2id$v=19$m=19456,t=2,p=1$placeholder_test_hash"],
+    )
+    .await
+    .expect("Failed to create test viewer");
+
+    user_id
+}
