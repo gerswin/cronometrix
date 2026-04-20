@@ -1,13 +1,11 @@
 //! Wave 0 test fixture: minimal tokio TCP server that mimics a Hikvision
 //! alertStream endpoint by serving a canned multipart/mixed body after the
 //! HTTP/1.1 200 response line. Plan 02-03 extends this helper with:
-//!   - digest auth (401 -> authed 200)
-//!   - mid-stream delays (reconnect/backoff testing)
-//!   - multi-connection scenarios
+//!   - digest auth (401 -> authed 200) — `spawn_mock_hikvision_digest`
+//!   - always-401 error path — `spawn_mock_hikvision_401`
 //!
-//! The plain variant in this module is deliberately minimal so Plan 02-02
-//! can verify fixture bytes and the mock topology without dragging parser
-//! work forward.
+//! The plain variant in this module remains available for simple tests that
+//! don't need the digest challenge cycle.
 
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,6 +40,127 @@ pub async fn spawn_mock_hikvision_plain(body: Vec<u8>, boundary: &str) -> Socket
             );
             let _ = sock.write_all(response_head.as_bytes()).await;
             let _ = sock.write_all(&body).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    addr
+}
+
+/// Digest-auth-enforcing mock. Implements the minimal RFC 2617 subset needed
+/// for `diqwest` to complete a challenge cycle:
+///   1. First request -> 401 with `WWW-Authenticate: Digest realm="..." nonce="..."`
+///   2. Second request (with Authorization header) -> 200 + canned body
+///
+/// We do NOT validate the client's digest response hash — the goal is to
+/// exercise the CHALLENGE cycle, not the crypto correctness (`diqwest`
+/// upstream has its own unit tests for that). Any Authorization header on
+/// request 2 is accepted.
+///
+/// Accepts up to 2 sequential connections per spawn so `connect_and_stream`
+/// can reconnect once within the same test (diqwest opens a NEW connection
+/// for the authed retry on some reqwest versions — close+retry is safer
+/// than buffering).
+pub async fn spawn_mock_hikvision_digest(
+    body: Vec<u8>,
+    boundary: &str,
+    _username: &str,
+    _password: &str,
+) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+    let boundary = boundary.to_string();
+
+    tokio::spawn(async move {
+        // diqwest issues the challenge retry on a FRESH connection after
+        // the 401 closes the first one (the client's HTTP connection pool
+        // re-establishes for the qop=auth retry). Handle up to 4 connects
+        // so the test is tolerant of reqwest's pool semantics.
+        for _ in 0..4 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+
+            // Read until we see the end-of-headers marker. For a GET with
+            // digest auth headers, the full request is <2KB so a single
+            // 8KB buffer is plenty, BUT we keep reading if the first read
+            // doesn't contain "\r\n\r\n" (Linux TCP sometimes splits).
+            let mut accumulated = Vec::new();
+            loop {
+                let mut chunk = [0u8; 4096];
+                match sock.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        accumulated.extend_from_slice(&chunk[..n]);
+                        if accumulated.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                        if accumulated.len() >= 16 * 1024 {
+                            break; // safety — never buffer more than 16KB headers
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // HTTP headers are case-insensitive; reqwest/hyper emits them
+            // lowercase (`authorization:`). Match case-insensitively.
+            let req_lower = String::from_utf8_lossy(&accumulated).to_ascii_lowercase();
+
+            if req_lower.contains("authorization: digest") {
+                let response_head = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                     Content-Type: multipart/mixed; boundary={}\r\n\
+                     Connection: close\r\n\
+                     Content-Length: {}\r\n\r\n",
+                    boundary,
+                    body.len()
+                );
+                let _ = sock.write_all(response_head.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+                let _ = sock.shutdown().await;
+                return;
+            } else {
+                // Use a FIXED nonce so diqwest can compute the response
+                // deterministically. Any nonce value works — the mock does
+                // not validate the client's MD5 hash. Keep the WWW-
+                // Authenticate header minimal — some digest-auth crates
+                // reject unknown directives.
+                let challenge = "HTTP/1.1 401 Unauthorized\r\n\
+                     WWW-Authenticate: Digest realm=\"Hikvision\", qop=\"auth\", nonce=\"0123456789abcdef\"\r\n\
+                     Content-Length: 0\r\n\
+                     Connection: close\r\n\r\n";
+                let _ = sock.write_all(challenge.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        }
+    });
+
+    addr
+}
+
+/// Always-401 mock. Used for the `connect_and_stream_fails_cleanly_on_401`
+/// test — returns a 401 without a digest challenge so `diqwest` exhausts
+/// its retry cycle and bubbles the error back up.
+pub async fn spawn_mock_hikvision_401(_username: &str) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+
+    tokio::spawn(async move {
+        // Accept up to 2 connections — diqwest may retry once.
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            // 401 with a malformed/absent challenge so diqwest gives up.
+            let resp = b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = sock.write_all(resp).await;
             let _ = sock.shutdown().await;
         }
     });

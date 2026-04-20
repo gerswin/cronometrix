@@ -377,10 +377,11 @@ pub async fn deactivate(conn: &Connection, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Load a device with its plaintext password. Used only by command dispatch.
+/// Load a device with its plaintext password. Used by command dispatch and
+/// the supervisor `Start`/`Restart` lifecycle branches.
 ///
 /// The returned `DeviceWithPlaintext` is NOT Serialize/Debug-leakable; callers
-/// must drop it as soon as the ISAPI call returns.
+/// must drop it as soon as the ISAPI call or stream completes.
 pub async fn get_decrypted(
     conn: &Connection,
     id: &str,
@@ -388,7 +389,8 @@ pub async fn get_decrypted(
 ) -> Result<DeviceWithPlaintext, AppError> {
     let row = conn
         .query(
-            "SELECT id, ip, port, scheme, username, encrypted_password, allow_insecure_tls \
+            "SELECT id, name, ip, port, scheme, username, encrypted_password, \
+                    direction, allow_insecure_tls, status, version \
              FROM devices WHERE id = ?1 AND status = 'active'",
             params![id.to_string()],
         )
@@ -403,23 +405,93 @@ pub async fn get_decrypted(
         })?;
 
     let device_id: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-    let ip: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
-    let port: i64 = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
-    let scheme: String = row.get(3).map_err(|e| AppError::Internal(e.into()))?;
-    let username: String = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
-    let encrypted: String = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
-    let allow_int: i64 = row.get(6).map_err(|e| AppError::Internal(e.into()))?;
+    let name: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
+    let ip: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
+    let port: i64 = row.get(3).map_err(|e| AppError::Internal(e.into()))?;
+    let scheme: String = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
+    let username: String = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
+    let encrypted: String = row.get(6).map_err(|e| AppError::Internal(e.into()))?;
+    let direction: String = row.get(7).map_err(|e| AppError::Internal(e.into()))?;
+    let allow_int: i64 = row.get(8).map_err(|e| AppError::Internal(e.into()))?;
+    let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
+    let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
 
     let password =
         crypto::decrypt_password(&encrypted, key).map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(DeviceWithPlaintext {
         id: device_id,
+        name,
         base_url: format!("{}://{}:{}", scheme, ip, port),
         username,
         password,
+        direction,
         allow_insecure_tls: allow_int != 0,
+        status,
+        version,
     })
+}
+
+/// List ALL active devices with their plaintext passwords. Used exclusively
+/// by the supervisor bootstrap path in `supervisor::Supervisor::run`.
+///
+/// Returns the same `DeviceWithPlaintext` shape as `get_decrypted` so both
+/// lifecycle paths (bootstrap + Start/Restart) share one codegen path.
+///
+/// Failures to decrypt an individual row are logged and that row is skipped;
+/// a single corrupt row (e.g. key rotation mid-migration) must not prevent
+/// the supervisor from starting up for the rest of the fleet.
+pub async fn list_active(
+    conn: &Connection,
+    key: &[u8; 32],
+) -> Result<Vec<DeviceWithPlaintext>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT id, name, ip, port, scheme, username, encrypted_password, \
+                    direction, allow_insecure_tls, status, version \
+             FROM devices WHERE status = 'active' AND deleted_at IS NULL \
+             ORDER BY created_at ASC",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+        let device_id: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
+        let name: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
+        let ip: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
+        let port: i64 = row.get(3).map_err(|e| AppError::Internal(e.into()))?;
+        let scheme: String = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
+        let username: String = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
+        let encrypted: String = row.get(6).map_err(|e| AppError::Internal(e.into()))?;
+        let direction: String = row.get(7).map_err(|e| AppError::Internal(e.into()))?;
+        let allow_int: i64 = row.get(8).map_err(|e| AppError::Internal(e.into()))?;
+        let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
+        let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
+
+        match crypto::decrypt_password(&encrypted, key) {
+            Ok(password) => out.push(DeviceWithPlaintext {
+                id: device_id,
+                name,
+                base_url: format!("{}://{}:{}", scheme, ip, port),
+                username,
+                password,
+                direction,
+                allow_insecure_tls: allow_int != 0,
+                status,
+                version,
+            }),
+            Err(e) => {
+                tracing::error!(
+                    device_id = %device_id,
+                    err = %e,
+                    "failed to decrypt device password during list_active — skipping"
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Append a command_audit_log row. Writes on every dispatch outcome (ok/error/timeout).

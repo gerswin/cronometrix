@@ -5,10 +5,13 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
+use cronometrix_api::db;
 use cronometrix_api::departments;
 use cronometrix_api::devices;
 use cronometrix_api::employees;
@@ -17,7 +20,7 @@ use cronometrix_api::events;
 use cronometrix_api::rules;
 use cronometrix_api::setup;
 use cronometrix_api::state::AppState;
-use cronometrix_api::db;
+use cronometrix_api::supervisor::{watchdog, Supervisor};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,10 +39,34 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Initializing database...");
     let db = db::init_db(&config).await?;
 
+    // Lifecycle channel: CRUD handlers -> Supervisor. Unbounded is safe because
+    // admin actions are human-rate (1 event per CRUD), and the supervisor
+    // drains the channel in its biased select loop.
+    let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
+
+    let shutdown = CancellationToken::new();
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
+        lifecycle_tx: Some(lifecycle_tx),
     };
+
+    // Start the supervisor: one tokio task per active device for alertStream
+    // consumption. Reconcile loop watches the lifecycle channel.
+    let supervisor = Supervisor::new(state.clone(), shutdown.clone());
+    let supervisor_handle = tokio::spawn(async move {
+        supervisor.run(lifecycle_rx).await;
+    });
+
+    // Start the watchdog: sweeps stale devices -> offline every 10s.
+    let watchdog_handle = tokio::spawn({
+        let s = state.clone();
+        let c = shutdown.clone();
+        async move {
+            watchdog::watchdog_task(s, c).await;
+        }
+    });
 
     // Public routes — no auth required
     let public_routes = Router::new()
@@ -111,7 +138,22 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Cronometrix API listening on {}", addr);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown({
+            let shutdown = shutdown.clone();
+            async move {
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::info!("ctrl_c received, initiating graceful shutdown");
+                shutdown.cancel();
+            }
+        })
+        .await?;
+
+    // Await supervisor + watchdog shutdown so all child reqwest streams drain
+    // before process exit.
+    let _ = supervisor_handle.await;
+    let _ = watchdog_handle.await;
+    tracing::info!("shutdown complete");
 
     Ok(())
 }

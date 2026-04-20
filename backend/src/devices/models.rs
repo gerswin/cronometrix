@@ -128,27 +128,40 @@ impl Command {
 }
 
 /// Internal-only struct carrying a plaintext password alongside the minimum
-/// metadata command dispatch needs. Constructed by `service::get_decrypted`.
+/// metadata command dispatch + supervisor tasks need. Constructed by
+/// `service::get_decrypted` or `service::list_active`.
 ///
 /// Security (RESEARCH § Security Domain rule #2):
 /// - does NOT derive `Serialize` (never leaves the process)
 /// - does NOT derive `Debug` — `Debug` is implemented manually below to redact the password
+///
+/// Plan 02-03 extension: added `name`, `direction`, `status`, `version` so
+/// the supervisor can spawn tasks from a single `list_active` call without a
+/// second lookup per device.
 pub struct DeviceWithPlaintext {
     pub id: String,
+    pub name: String,
     pub base_url: String,
     pub username: String,
     pub password: String, // plaintext — short-lived on the stack
+    pub direction: String,
     pub allow_insecure_tls: bool,
+    pub status: String,
+    pub version: i64,
 }
 
 impl std::fmt::Debug for DeviceWithPlaintext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeviceWithPlaintext")
             .field("id", &self.id)
+            .field("name", &self.name)
             .field("base_url", &self.base_url)
             .field("username", &self.username)
             .field("password", &"[redacted]")
+            .field("direction", &self.direction)
             .field("allow_insecure_tls", &self.allow_insecure_tls)
+            .field("status", &self.status)
+            .field("version", &self.version)
             .finish()
     }
 }

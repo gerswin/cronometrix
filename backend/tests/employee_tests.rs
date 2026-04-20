@@ -30,6 +30,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
     let state = AppState {
         db: Arc::new(db),
         config,
+        lifecycle_tx: None,
     };
 
     // Read-only routes for any authenticated user

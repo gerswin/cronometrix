@@ -44,6 +44,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
     let state = AppState {
         db: Arc::new(db),
         config,
+        lifecycle_tx: None,
     };
 
     let viewer_routes = Router::new()
@@ -423,6 +424,7 @@ async fn dispatch_door_open_writes_audit() {
     let state = AppState {
         db: db_arc.clone(),
         config,
+        lifecycle_tx: None,
     };
 
     let viewer_routes = Router::new()
@@ -526,6 +528,7 @@ async fn dispatch_timeout_returns_504() {
     let state = AppState {
         db: db_arc.clone(),
         config,
+        lifecycle_tx: None,
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -603,6 +606,7 @@ async fn dispatch_bad_gateway_on_500() {
     let state = AppState {
         db: db_arc.clone(),
         config,
+        lifecycle_tx: None,
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -748,6 +752,7 @@ async fn patch_updates_password_and_reencrypts() {
     let state = AppState {
         db: db_arc.clone(),
         config,
+        lifecycle_tx: None,
     };
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))

@@ -5,6 +5,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use libsql::params;
 use tokio::time::timeout;
 use validator::Validate;
 
@@ -13,6 +14,7 @@ use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
+use crate::supervisor::DeviceLifecycleEvent;
 
 use super::models::{
     Command, CommandRequest, CommandResult, CreateDeviceRequest, DeviceListQuery,
@@ -20,7 +22,57 @@ use super::models::{
 };
 use super::service::{self, CommandAuditOutcome};
 
+/// Send a lifecycle event to the supervisor if one is attached to AppState.
+/// No-op in contexts where the supervisor isn't running (Phase 1 / 02-01 /
+/// 02-02 test harnesses construct AppState with `lifecycle_tx: None`).
+fn emit_lifecycle(state: &AppState, ev: DeviceLifecycleEvent) {
+    if let Some(tx) = state.lifecycle_tx.as_ref() {
+        if let Err(e) = tx.send(ev.clone()) {
+            tracing::warn!(err = %e, event = ?ev, "failed to emit lifecycle event");
+        }
+    }
+}
+
+/// Columns needed to detect which fields changed during PATCH (Pitfall 7).
+/// Only connection-affecting changes trigger a Restart.
+struct PreUpdateSnapshot {
+    ip: String,
+    port: i64,
+    scheme: String,
+    username: String,
+    encrypted_password: String,
+    allow_insecure_tls: bool,
+    status: String,
+}
+
+async fn load_snapshot(conn: &libsql::Connection, id: &str) -> Result<Option<PreUpdateSnapshot>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT ip, port, scheme, username, encrypted_password, allow_insecure_tls, status \
+             FROM devices WHERE id = ?1",
+            params![id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? else {
+        return Ok(None);
+    };
+    let allow_int: i64 = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
+    Ok(Some(PreUpdateSnapshot {
+        ip: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+        port: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+        scheme: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
+        username: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
+        encrypted_password: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
+        allow_insecure_tls: allow_int != 0,
+        status: row.get(6).map_err(|e| AppError::Internal(e.into()))?,
+    }))
+}
+
 /// POST /api/v1/devices — Admin only. Returns 201 Created.
+///
+/// Emits `DeviceLifecycleEvent::Start(id)` after a successful write so the
+/// supervisor can spawn a per-device stream task without a process restart.
 pub async fn create_device(
     State(state): State<AppState>,
     Json(body): Json<CreateDeviceRequest>,
@@ -32,6 +84,8 @@ pub async fn create_device(
 
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
     let device = service::create(&conn, body, &state.config.device_creds_key).await?;
+
+    emit_lifecycle(&state, DeviceLifecycleEvent::Start(device.id.clone()));
 
     Ok((StatusCode::CREATED, Json(device)))
 }
@@ -57,6 +111,13 @@ pub async fn get_device(
 }
 
 /// PATCH /api/v1/devices/:id — Admin only.
+///
+/// Lifecycle semantics (Pitfall 7 — "device edit without supervisor restart"):
+/// - ip / port / scheme / username / password / allow_insecure_tls / status
+///   changing => emit Restart(id)
+/// - name / direction only => NO lifecycle event (connection is unaffected;
+///   `direction` is consumed by `ingest_pair` fresh from the new DB row each
+///   time an event arrives).
 pub async fn update_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -68,18 +129,78 @@ pub async fn update_device(
     })?;
 
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+
+    // Snapshot the pre-patch row so we can diff connection-affecting fields.
+    let pre = load_snapshot(&conn, &id).await?;
+
+    // Track whether the request itself touches a connection-affecting field.
+    // Password diff is a special case — we have the cleartext in `body`, and
+    // comparing to the existing CIPHERTEXT is ambiguous (the new ciphertext
+    // is a fresh nonce + AEAD tag even for the same password). We treat any
+    // `Some(_)` password field as a potential connection change to avoid
+    // missing a restart.
+    let req_touches_connection = body.ip.is_some()
+        || body.port.is_some()
+        || body.scheme.is_some()
+        || body.username.is_some()
+        || body.password.is_some()
+        || body.allow_insecure_tls.is_some()
+        || body.status.is_some();
+
     let device =
         service::update(&conn, &id, body, &state.config.device_creds_key).await?;
+
+    if req_touches_connection {
+        let changed = match pre {
+            Some(snap) => {
+                snap.ip != device.ip
+                    || snap.port != device.port
+                    || snap.scheme != device.scheme
+                    || snap.username != device.username
+                    || snap.allow_insecure_tls != device.allow_insecure_tls
+                    || snap.status != device.status
+                    || {
+                        // Password: re-fetch the current ciphertext to see if it changed.
+                        let mut rows = conn
+                            .query(
+                                "SELECT encrypted_password FROM devices WHERE id = ?1",
+                                params![id.clone()],
+                            )
+                            .await
+                            .map_err(|e| AppError::Internal(e.into()))?;
+                        if let Some(row) =
+                            rows.next().await.map_err(|e| AppError::Internal(e.into()))?
+                        {
+                            let new_ct: String =
+                                row.get(0).map_err(|e| AppError::Internal(e.into()))?;
+                            new_ct != snap.encrypted_password
+                        } else {
+                            false
+                        }
+                    }
+            }
+            None => true, // shouldn't happen — PATCH against missing row already errored
+        };
+        if changed {
+            emit_lifecycle(&state, DeviceLifecycleEvent::Restart(id.clone()));
+        }
+    }
+
     Ok(Json(device))
 }
 
 /// DELETE /api/v1/devices/:id — Admin only. Returns 204.
+///
+/// Emits `DeviceLifecycleEvent::Stop(id)` so the supervisor cancels the
+/// per-device task immediately — a deactivated device must not continue to
+/// accumulate events.
 pub async fn deactivate_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
     service::deactivate(&conn, &id).await?;
+    emit_lifecycle(&state, DeviceLifecycleEvent::Stop(id.clone()));
     Ok(StatusCode::NO_CONTENT)
 }
 

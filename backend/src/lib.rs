@@ -11,3 +11,4 @@ pub mod isapi;
 pub mod rules;
 pub mod setup;
 pub mod state;
+pub mod supervisor;
