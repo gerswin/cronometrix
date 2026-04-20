@@ -2,8 +2,8 @@
 phase: 2
 slug: device-integration
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-04-19
 ---
 
@@ -71,6 +71,59 @@ created: 2026-04-19
 | get_event_photo_rejects_path_traversal     | backend/tests/event_tests.rs  | T-2-06      |
 
 Plan 02-03 tests (supervisor, reconnect, parser) remain unmapped — that plan completes Phase 2 validation. `nyquist_compliant` stays false. `wave_0_complete` flips true after 02-03 lands the digest-auth mock variant and a real-device hardware smoke.
+
+### Plan 02-03 Task 1 — parser + stream consumer
+
+| Test Name                                          | Location                                              | Requirement |
+|----------------------------------------------------|-------------------------------------------------------|-------------|
+| deserialize_k1t341_fixture                         | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| strip_xmlns_removes_ver20                          | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| strip_xmlns_removes_ver10                          | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| is_heartbeat_detects_videoloss_inactive            | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| is_heartbeat_detects_explicit_heartbeat            | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| is_heartbeat_false_for_access_event                | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| is_heartbeat_false_for_videoloss_active            | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| direction_mapping_check_in_is_entry                | backend/src/isapi/events.rs (unit)                    | EVT-01      |
+| parses_k1t341_fixture_into_one_event_pair          | backend/src/isapi/parser.rs (unit)                    | EVT-01      |
+| parses_heartbeat_fixture_into_xml_only_pair        | backend/src/isapi/parser.rs (unit)                    | EVT-01      |
+| parses_unknown_face_fixture_into_one_event_pair    | backend/src/isapi/parser.rs (unit)                    | EVT-01      |
+| ignores_bytes_before_first_boundary                | backend/src/isapi/parser.rs (unit)                    | EVT-01      |
+| fallback_line_scan_if_multer_fails                 | backend/src/isapi/parser.rs (unit)                    | EVT-01      |
+| fallback_handles_multiple_events_in_same_buffer    | backend/src/isapi/parser.rs (unit)                    | EVT-01      |
+| fallback_returns_empty_for_garbage                 | backend/src/isapi/parser.rs (unit)                    | EVT-01      |
+| extract_boundary_multipart_mixed                   | backend/src/isapi/stream.rs (unit)                    | EVT-01      |
+| extract_boundary_quoted                            | backend/src/isapi/stream.rs (unit)                    | EVT-01      |
+| extract_boundary_form_data                         | backend/src/isapi/stream.rs (unit)                    | EVT-01      |
+| extract_boundary_rejects_non_multipart             | backend/src/isapi/stream.rs (unit)                    | EVT-01      |
+| connect_and_stream_persists_one_event              | backend/tests/listener_tests.rs                       | EVT-01      |
+| heartbeat_updates_last_seen_at_and_does_not_persist| backend/tests/listener_tests.rs                       | DEV-02, A3  |
+| unknown_face_persists_with_is_unknown              | backend/tests/listener_tests.rs                       | EVT-03, D-07|
+| second_identical_event_deduplicates                | backend/tests/listener_tests.rs                       | EVT-03      |
+| connect_and_stream_fails_cleanly_on_401            | backend/tests/listener_tests.rs                       | T-2-05      |
+| digest_auth_mock_serves_body_after_challenge       | backend/tests/listener_tests.rs (mock self-test)      | Wave 0      |
+
+### Plan 02-03 Task 2 — supervisor + watchdog + CRUD lifecycle
+
+| Test Name                                          | Location                                              | Requirement |
+|----------------------------------------------------|-------------------------------------------------------|-------------|
+| bootstrap_spawns_one_task_per_active_device        | backend/tests/supervisor_tests.rs                     | EVT-01      |
+| start_signal_spawns_new_task                       | backend/tests/supervisor_tests.rs                     | DEV-04      |
+| stop_signal_cancels_task                           | backend/tests/supervisor_tests.rs                     | DEV-04      |
+| restart_signal_stops_then_starts                   | backend/tests/supervisor_tests.rs                     | DEV-04      |
+| graceful_shutdown_within_5s                        | backend/tests/supervisor_tests.rs                     | EVT-01      |
+| watchdog_flips_device_offline_after_90s            | backend/tests/supervisor_tests.rs                     | DEV-02      |
+| watchdog_leaves_fresh_device_alone                 | backend/tests/supervisor_tests.rs                     | DEV-02      |
+| watchdog_flips_device_with_null_last_seen          | backend/tests/supervisor_tests.rs                     | DEV-02      |
+| backoff::doubling_from_initial_caps_at_60s_in_nine_steps | backend/tests/supervisor_tests.rs (unit)       | EVT-02      |
+| sleep_ms_with_jitter_within_25_percent             | backend/src/supervisor/task.rs (unit)                 | EVT-02      |
+| sleep_ms_with_jitter_handles_small_backoff         | backend/src/supervisor/task.rs (unit)                 | EVT-02      |
+| sleep_ms_with_jitter_zero_is_stable                | backend/src/supervisor/task.rs (unit)                 | EVT-02      |
+| backoff_cap_reachable_from_initial_in_nine_steps   | backend/src/supervisor/task.rs (unit)                 | EVT-02      |
+| post_device_emits_start_event                      | backend/tests/supervisor_tests.rs                     | DEV-04      |
+| patch_ip_emits_restart_event                       | backend/tests/supervisor_tests.rs                     | DEV-04      |
+| patch_name_only_does_not_emit_restart              | backend/tests/supervisor_tests.rs                     | DEV-04, Pit.7|
+| patch_password_emits_restart_event                 | backend/tests/supervisor_tests.rs                     | DEV-04      |
+| delete_device_emits_stop_event                     | backend/tests/supervisor_tests.rs                     | DEV-04      |
 
 ---
 
