@@ -1,0 +1,17 @@
+--MIME_boundary
+Content-Type: application/xml
+Content-Length: 481
+
+<EventNotificationAlert version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+  <ipAddress>192.168.1.10</ipAddress>
+  <portNo>80</portNo>
+  <protocol>HTTP</protocol>
+  <macAddress>aa:bb:cc:dd:ee:ff</macAddress>
+  <channelID>1</channelID>
+  <dateTime>2026-04-19T12:34:56+00:00</dateTime>
+  <activePostCount>1</activePostCount>
+  <eventType>videoloss</eventType>
+  <eventState>inactive</eventState>
+  <eventDescription>videoloss</eventDescription>
+</EventNotificationAlert>
+--MIME_boundary--

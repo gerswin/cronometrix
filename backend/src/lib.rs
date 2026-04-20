@@ -6,6 +6,7 @@ pub mod departments;
 pub mod devices;
 pub mod employees;
 pub mod errors;
+pub mod events;
 pub mod isapi;
 pub mod rules;
 pub mod setup;

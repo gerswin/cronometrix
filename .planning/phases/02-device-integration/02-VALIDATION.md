@@ -36,7 +36,41 @@ created: 2026-04-19
 
 ## Per-Task Verification Map
 
-Populated by planner. See `02-RESEARCH.md` § Validation Architecture for requirement → test mapping (DEV-01..04, EVT-01..04).
+### Plan 02-02 Task 1 — persist helper + Wave 0 fixtures
+
+| Test Name                                     | Location                                              | Requirement |
+|-----------------------------------------------|-------------------------------------------------------|-------------|
+| persist_dedup_within_30s                      | backend/src/events/service.rs (unit)                  | EVT-03      |
+| persist_cross_device_within_30s               | backend/src/events/service.rs (unit, D-05)            | EVT-03      |
+| persist_adjacent_buckets                      | backend/src/events/service.rs (unit)                  | EVT-03      |
+| persist_epoch_is_utc_integer                  | backend/src/events/service.rs (unit)                  | EVT-04      |
+| persist_raw_xml_round_trip                    | backend/src/events/service.rs (unit, D-12)            | EVT-04      |
+| persist_unknown_face_sets_is_unknown          | backend/src/events/service.rs (unit, D-07)            | EVT-03      |
+| persist_photo_written_on_insert               | backend/src/events/service.rs (unit, D-13)            | EVT-03      |
+| persist_photo_skipped_on_dedup                | backend/src/events/service.rs (unit, D-13)            | EVT-03      |
+| mock_hikvision_serves_canned_body             | backend/tests/common/mock_hikvision.rs (smoke)        | Wave 0      |
+| fixture_k1t341_exists_and_contains_event_xml  | backend/tests/common/mock_hikvision.rs (presence)     | Wave 0      |
+| fixture_heartbeat_exists_and_contains_marker  | backend/tests/common/mock_hikvision.rs (presence)     | Wave 0      |
+| fixture_unknown_face_has_face_id              | backend/tests/common/mock_hikvision.rs (presence)     | Wave 0      |
+
+### Plan 02-02 Task 2 — read API (filled in at end of Task 2)
+
+| Test Name                                  | Location                      | Requirement |
+|--------------------------------------------|-------------------------------|-------------|
+| list_events_empty_returns_empty_array      | backend/tests/event_tests.rs  | DEV-02      |
+| list_events_pagination_clamps_limit        | backend/tests/event_tests.rs  | DEV-02      |
+| list_events_filters_by_employee_id         | backend/tests/event_tests.rs  | DEV-02      |
+| list_events_filters_by_device_id           | backend/tests/event_tests.rs  | DEV-02      |
+| list_events_filters_by_time_range          | backend/tests/event_tests.rs  | DEV-02      |
+| list_events_viewer_can_read                | backend/tests/event_tests.rs  | DEV-02, D-15|
+| list_events_unauthenticated_401            | backend/tests/event_tests.rs  | DEV-02      |
+| get_event_by_id_404_if_missing             | backend/tests/event_tests.rs  | DEV-02      |
+| get_event_photo_returns_jpeg_bytes         | backend/tests/event_tests.rs  | DEV-02      |
+| get_event_photo_404_if_no_photo_path       | backend/tests/event_tests.rs  | DEV-02      |
+| get_event_photo_404_if_file_missing        | backend/tests/event_tests.rs  | DEV-02      |
+| get_event_photo_rejects_path_traversal     | backend/tests/event_tests.rs  | T-2-06      |
+
+Plan 02-03 tests (supervisor, reconnect, parser) remain unmapped — that plan completes Phase 2 validation. `nyquist_compliant` stays false. `wave_0_complete` flips true after 02-03 lands the digest-auth mock variant and a real-device hardware smoke.
 
 ---
 
