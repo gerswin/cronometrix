@@ -1,5 +1,7 @@
 use cronometrix_api::db::run_migrations;
 
+pub mod mock_hikvision;
+
 /// Deterministic 32-byte key (base64) used by every test that spins up a Config
 /// with device-credential crypto wired in. DO NOT use in production.
 pub const TEST_DEVICE_CREDS_KEY_B64: &str = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
@@ -112,4 +114,149 @@ pub async fn create_test_viewer(db: &libsql::Database) -> String {
     .expect("Failed to create test viewer");
 
     user_id
+}
+
+// =============================================================================
+// Wave 0 multipart/alertStream fixture helpers (Plan 02-02)
+// =============================================================================
+
+/// Build a fully-formed multipart/mixed body with the given XML and JPEG.
+/// Boundary is always "MIME_boundary" for test reproducibility. This matches
+/// 02-RESEARCH § alertStream Multipart Format.
+pub fn build_multipart_fixture(xml: &str, jpeg: Option<&[u8]>) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"--MIME_boundary\r\n");
+    out.extend_from_slice(b"Content-Type: application/xml\r\n");
+    out.extend_from_slice(format!("Content-Length: {}\r\n\r\n", xml.len()).as_bytes());
+    out.extend_from_slice(xml.as_bytes());
+    out.extend_from_slice(b"\r\n");
+    if let Some(img) = jpeg {
+        out.extend_from_slice(b"--MIME_boundary\r\n");
+        out.extend_from_slice(b"Content-Type: image/jpeg\r\n");
+        out.extend_from_slice(format!("Content-Length: {}\r\n\r\n", img.len()).as_bytes());
+        out.extend_from_slice(img);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"--MIME_boundary--\r\n");
+    out
+}
+
+/// Minimal synthetic JPEG magic-byte sequence. Starts with SOI (FFD8) followed by
+/// a JFIF APP0 header stub and EOI. NOT a renderable 1×1 image — just enough to
+/// pin the parser contract (tests only assert magic bytes).
+pub const MINI_JPEG: &[u8] = &[
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
+];
+
+/// Canonical DS-K1T341 event XML (one face check-in) used by the k1t341 fixture.
+pub fn k1t341_event_xml() -> String {
+    r#"<EventNotificationAlert version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+  <ipAddress>192.168.1.10</ipAddress>
+  <portNo>80</portNo>
+  <protocol>HTTP</protocol>
+  <macAddress>aa:bb:cc:dd:ee:ff</macAddress>
+  <channelID>1</channelID>
+  <dateTime>2026-04-19T12:34:56+00:00</dateTime>
+  <activePostCount>1</activePostCount>
+  <eventType>AccessControllerEvent</eventType>
+  <eventState>active</eventState>
+  <eventDescription>Access Controller Event</eventDescription>
+  <AccessControllerEvent>
+    <deviceName>DS-K1T341</deviceName>
+    <majorEventType>5</majorEventType>
+    <subEventType>75</subEventType>
+    <employeeNoString>EMP001</employeeNoString>
+    <name>John Doe</name>
+    <cardNo>0</cardNo>
+    <cardType>1</cardType>
+    <currentVerifyMode>face</currentVerifyMode>
+    <attendanceStatus>checkIn</attendanceStatus>
+    <faceID>42</faceID>
+    <pictureURL>/ISAPI/Intelligent/FDLib/pictureUpload?id=42</pictureURL>
+  </AccessControllerEvent>
+</EventNotificationAlert>"#
+        .to_string()
+}
+
+/// Canonical heartbeat XML (A3 — videoloss/inactive) for the heartbeat fixture.
+pub fn heartbeat_event_xml() -> String {
+    r#"<EventNotificationAlert version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+  <ipAddress>192.168.1.10</ipAddress>
+  <portNo>80</portNo>
+  <protocol>HTTP</protocol>
+  <macAddress>aa:bb:cc:dd:ee:ff</macAddress>
+  <channelID>1</channelID>
+  <dateTime>2026-04-19T12:34:56+00:00</dateTime>
+  <activePostCount>1</activePostCount>
+  <eventType>videoloss</eventType>
+  <eventState>inactive</eventState>
+  <eventDescription>videoloss</eventDescription>
+</EventNotificationAlert>"#
+        .to_string()
+}
+
+/// Unknown-face XML (faceID not in device_face_mappings) for the unknown_face fixture.
+pub fn unknown_face_event_xml() -> String {
+    r#"<EventNotificationAlert version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+  <ipAddress>192.168.1.10</ipAddress>
+  <portNo>80</portNo>
+  <protocol>HTTP</protocol>
+  <macAddress>aa:bb:cc:dd:ee:ff</macAddress>
+  <channelID>1</channelID>
+  <dateTime>2026-04-19T12:34:56+00:00</dateTime>
+  <activePostCount>1</activePostCount>
+  <eventType>AccessControllerEvent</eventType>
+  <eventState>active</eventState>
+  <eventDescription>Access Controller Event</eventDescription>
+  <AccessControllerEvent>
+    <deviceName>DS-K1T341</deviceName>
+    <majorEventType>5</majorEventType>
+    <subEventType>75</subEventType>
+    <employeeNoString></employeeNoString>
+    <name></name>
+    <cardNo>0</cardNo>
+    <cardType>1</cardType>
+    <currentVerifyMode>face</currentVerifyMode>
+    <attendanceStatus>checkIn</attendanceStatus>
+    <faceID>9999</faceID>
+    <pictureURL>/ISAPI/Intelligent/FDLib/pictureUpload?id=9999</pictureURL>
+  </AccessControllerEvent>
+</EventNotificationAlert>"#
+        .to_string()
+}
+
+/// Deterministically (re)generate the three canned multipart byte samples if
+/// any are missing from `tests/fixtures/`. Safe to call from any test — it is
+/// idempotent and only writes when a fixture is absent. The files produced are
+/// the same bytes regardless of machine, so they are safe to commit and CI-
+/// reproducible.
+pub fn ensure_fixtures_present() -> anyhow::Result<()> {
+    use std::fs;
+    use std::path::Path;
+
+    let root = Path::new("tests/fixtures");
+    if !root.exists() {
+        fs::create_dir_all(root)?;
+    }
+
+    let k1t341 = root.join("alertstream_k1t341.bin");
+    if !k1t341.exists() {
+        let body = build_multipart_fixture(&k1t341_event_xml(), Some(MINI_JPEG));
+        fs::write(&k1t341, body)?;
+    }
+
+    let heartbeat = root.join("alertstream_heartbeat.bin");
+    if !heartbeat.exists() {
+        let body = build_multipart_fixture(&heartbeat_event_xml(), None);
+        fs::write(&heartbeat, body)?;
+    }
+
+    let unknown = root.join("alertstream_unknown_face.bin");
+    if !unknown.exists() {
+        let body = build_multipart_fixture(&unknown_face_event_xml(), Some(MINI_JPEG));
+        fs::write(&unknown, body)?;
+    }
+
+    Ok(())
 }

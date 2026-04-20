@@ -19,8 +19,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "003_devices",
         include_str!("migrations/003_devices.sql"),
     ),
-    // 004 is reserved for attendance_events in Plan 02-02; intentionally skipped
-    // here to keep the ordering stable across plans.
+    (
+        "004_attendance_events",
+        include_str!("migrations/004_attendance_events.sql"),
+    ),
     (
         "005_command_audit_log",
         include_str!("migrations/005_command_audit_log.sql"),
