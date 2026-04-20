@@ -13,6 +13,7 @@ use cronometrix_api::departments;
 use cronometrix_api::devices;
 use cronometrix_api::employees;
 use cronometrix_api::errors::AppError;
+use cronometrix_api::events;
 use cronometrix_api::rules;
 use cronometrix_api::setup;
 use cronometrix_api::state::AppState;
@@ -61,6 +62,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/rules", get(rules::handlers::get_rules))
         .route("/devices", get(devices::handlers::list_devices))
         .route("/devices/{id}", get(devices::handlers::get_device))
+        .route("/events", get(events::handlers::list_events))
+        .route("/events/{id}", get(events::handlers::get_event))
+        .route("/events/{id}/photo", get(events::handlers::get_event_photo))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
