@@ -75,12 +75,14 @@ async fn build_test_app(db: libsql::Database) -> Router {
         server_port: 3001,
         turso_sync_interval_secs: 300,
         device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     });
 
     let state = AppState {
         db: Arc::new(db),
         config,
         lifecycle_tx: None,
+        recompute_tx: None,
     };
 
     let viewer_routes = Router::new()

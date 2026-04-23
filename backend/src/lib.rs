@@ -1,6 +1,9 @@
+pub mod anomalies;
 pub mod auth;
+pub mod calc;
 pub mod common;
 pub mod config;
+pub mod daily_records;
 pub mod db;
 pub mod departments;
 pub mod devices;
@@ -8,6 +11,7 @@ pub mod employees;
 pub mod errors;
 pub mod events;
 pub mod isapi;
+pub mod recompute;
 pub mod rules;
 pub mod setup;
 pub mod state;

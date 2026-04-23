@@ -100,6 +100,41 @@ pub async fn create_test_supervisor(db: &libsql::Database) -> String {
     user_id
 }
 
+/// Seed a department row with Phase 3 shift fields. Returns the generated department id.
+/// Mirrors the parameter order used by Plan 03-01 calc fixtures: shift_type / overnight
+/// flag / ordinary daily minutes / shift start / shift end.
+#[allow(dead_code)]
+pub async fn create_test_department_with_shift(
+    db: &libsql::Database,
+    name: &str,
+    shift_type: &str,          // "day" | "night" | "mixed"
+    is_overnight: bool,
+    ordinary_daily_minutes: i64,
+    shift_start: &str,         // "HH:MM"
+    shift_end: &str,           // "HH:MM"
+) -> String {
+    let conn = db.connect().expect("connect");
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO departments (id, name, base_salary_cents, shift_start_time, shift_end_time, \
+         lunch_mode, lunch_duration_min, shift_type, is_overnight_shift, ordinary_daily_minutes, \
+         status, version, created_at, updated_at) \
+         VALUES (?1, ?2, 0, ?3, ?4, 'fixed', 60, ?5, ?6, ?7, 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![
+            id.clone(),
+            name.to_string(),
+            shift_start.to_string(),
+            shift_end.to_string(),
+            shift_type.to_string(),
+            is_overnight as i64,
+            ordinary_daily_minutes,
+        ],
+    )
+    .await
+    .expect("seed department with shift");
+    id
+}
+
 /// Create a test viewer user. Returns the user ID.
 pub async fn create_test_viewer(db: &libsql::Database) -> String {
     let conn = db.connect().expect("Failed to connect");

@@ -43,6 +43,7 @@ fn make_config() -> Arc<Config> {
         server_port: 0,
         turso_sync_interval_secs: 300,
         device_creds_key: test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     })
 }
 
@@ -141,6 +142,7 @@ async fn bootstrap_spawns_one_task_per_active_device() {
         db: Arc::new(db),
         config,
         lifecycle_tx: Some(lifecycle_tx),
+        recompute_tx: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -252,6 +254,7 @@ async fn start_signal_spawns_new_task() {
         db: Arc::new(db),
         config: config.clone(),
         lifecycle_tx: Some(lifecycle_tx.clone()),
+        recompute_tx: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -317,6 +320,7 @@ async fn stop_signal_cancels_task() {
         db: Arc::new(db),
         config: config.clone(),
         lifecycle_tx: Some(lifecycle_tx.clone()),
+        recompute_tx: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -357,6 +361,7 @@ async fn restart_signal_stops_then_starts() {
         db: Arc::new(db),
         config: config.clone(),
         lifecycle_tx: Some(lifecycle_tx.clone()),
+        recompute_tx: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -437,6 +442,7 @@ async fn graceful_shutdown_within_5s() {
         db: Arc::new(db),
         config,
         lifecycle_tx: Some(_lifecycle_tx),
+        recompute_tx: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -482,6 +488,7 @@ async fn watchdog_flips_device_offline_after_90s() {
         db: Arc::new(db),
         config,
         lifecycle_tx: Some(_lifecycle_tx),
+        recompute_tx: None,
     };
 
     // Call run_once directly — avoids the 10s interval.
@@ -523,6 +530,7 @@ async fn watchdog_leaves_fresh_device_alone() {
         db: Arc::new(db),
         config,
         lifecycle_tx: Some(_lifecycle_tx),
+        recompute_tx: None,
     };
 
     let _ = watchdog::run_once(&state).await.unwrap();
@@ -565,6 +573,7 @@ async fn watchdog_flips_device_with_null_last_seen() {
         db: Arc::new(db),
         config,
         lifecycle_tx: Some(_lifecycle_tx),
+        recompute_tx: None,
     };
 
     let _ = watchdog::run_once(&state).await.unwrap();
@@ -630,6 +639,7 @@ async fn build_test_app(
         db: db_arc.clone(),
         config,
         lifecycle_tx: Some(lifecycle_tx),
+        recompute_tx: None,
     };
 
     let admin_routes = Router::new()

@@ -50,6 +50,9 @@ async fn main() -> anyhow::Result<()> {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
         lifecycle_tx: Some(lifecycle_tx),
+        // Plan 03-01 Task 1 scaffolds the field; Task 2 wires the RecomputeWorker
+        // and replaces None with Some(recompute_tx) here.
+        recompute_tx: None,
     };
 
     // Start the supervisor: one tokio task per active device for alertStream

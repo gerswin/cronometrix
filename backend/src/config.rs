@@ -17,6 +17,9 @@ pub struct Config {
     /// AES-256-GCM key for device credential encryption (D-01, D-02).
     /// 32 raw bytes, decoded from a base64 env var. Never cloned into logs.
     pub device_creds_key: [u8; 32],
+    /// IANA timezone for local-date arithmetic (Phase 3 attendance engine).
+    /// Parsed from `TZ` env var; defaults to `America/Caracas` (UTC-4, no DST).
+    pub timezone: chrono_tz::Tz,
 }
 
 impl fmt::Debug for Config {
@@ -32,6 +35,7 @@ impl fmt::Debug for Config {
             .field("server_port", &self.server_port)
             .field("turso_sync_interval_secs", &self.turso_sync_interval_secs)
             .field("device_creds_key", &"[redacted 32 bytes]")
+            .field("timezone", &self.timezone.name())
             .finish()
     }
 }
@@ -69,6 +73,15 @@ impl Config {
 
         let device_creds_key = load_device_creds_key()?;
 
+        // Phase 3: timezone used by the attendance engine + nightly reconcile
+        // cron. Target market Venezuela does not observe DST since May 2016, so
+        // `America/Caracas` gives unambiguous local-date arithmetic. Any future
+        // DST-observing market plugs in by setting TZ.
+        let tz_str = std::env::var("TZ").unwrap_or_else(|_| "America/Caracas".to_string());
+        let timezone = tz_str.parse::<chrono_tz::Tz>().map_err(|_| {
+            anyhow::anyhow!("Unknown IANA timezone in TZ env var: {}", tz_str)
+        })?;
+
         Ok(Config {
             database_path,
             turso_url,
@@ -78,6 +91,7 @@ impl Config {
             server_port,
             turso_sync_interval_secs,
             device_creds_key,
+            timezone,
         })
     }
 

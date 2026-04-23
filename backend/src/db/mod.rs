@@ -31,6 +31,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "006_devices_audit_triggers",
         include_str!("migrations/006_devices_audit_triggers.sql"),
     ),
+    (
+        "007_daily_records",
+        include_str!("migrations/007_daily_records.sql"),
+    ),
+    (
+        "008_daily_record_anomalies",
+        include_str!("migrations/008_daily_record_anomalies.sql"),
+    ),
+    (
+        "012_shift_type_to_departments",
+        include_str!("migrations/012_shift_type_to_departments.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded

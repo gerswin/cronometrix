@@ -65,6 +65,7 @@ fn make_config() -> Arc<Config> {
         server_port: 0,
         turso_sync_interval_secs: 300,
         device_creds_key: test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     })
 }
 
@@ -73,6 +74,7 @@ fn make_state(db: libsql::Database) -> AppState {
         db: Arc::new(db),
         config: make_config(),
         lifecycle_tx: None,
+        recompute_tx: None,
     }
 }
 

@@ -39,12 +39,14 @@ async fn build_test_app(db: libsql::Database) -> Router {
         server_port: 3001,
         turso_sync_interval_secs: 300,
         device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     });
 
     let state = AppState {
         db: Arc::new(db),
         config,
         lifecycle_tx: None,
+        recompute_tx: None,
     };
 
     let viewer_routes = Router::new()
@@ -419,12 +421,14 @@ async fn dispatch_door_open_writes_audit() {
         server_port: 3001,
         turso_sync_interval_secs: 300,
         device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     });
     let db_arc = Arc::new(db);
     let state = AppState {
         db: db_arc.clone(),
         config,
         lifecycle_tx: None,
+        recompute_tx: None,
     };
 
     let viewer_routes = Router::new()
@@ -523,12 +527,14 @@ async fn dispatch_timeout_returns_504() {
         server_port: 3001,
         turso_sync_interval_secs: 300,
         device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     });
     let db_arc = Arc::new(db);
     let state = AppState {
         db: db_arc.clone(),
         config,
         lifecycle_tx: None,
+        recompute_tx: None,
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -601,12 +607,14 @@ async fn dispatch_bad_gateway_on_500() {
         server_port: 3001,
         turso_sync_interval_secs: 300,
         device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     });
     let db_arc = Arc::new(db);
     let state = AppState {
         db: db_arc.clone(),
         config,
         lifecycle_tx: None,
+        recompute_tx: None,
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -748,11 +756,13 @@ async fn patch_updates_password_and_reencrypts() {
         server_port: 3001,
         turso_sync_interval_secs: 300,
         device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
     });
     let state = AppState {
         db: db_arc.clone(),
         config,
         lifecycle_tx: None,
+        recompute_tx: None,
     };
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))

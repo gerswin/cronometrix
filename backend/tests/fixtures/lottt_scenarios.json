@@ -1,0 +1,116 @@
+[
+  {
+    "description": "Normal day shift 09:00-17:00 with 60min lunch, no OT",
+    "shift_type": "day",
+    "is_overnight_shift": false,
+    "ordinary_daily_minutes": 480,
+    "shift_start": "09:00",
+    "shift_end": "17:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-20T13:00:00Z", "is_unknown": false},
+      {"direction": "exit",  "captured_at_iso": "2026-04-20T21:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 420,
+    "expected_overtime_minutes": 0,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_anomalies": []
+  },
+  {
+    "description": "Late arrival (+15min) with 10min tolerance + 0 bonus — arrival inside window; late_minutes counted",
+    "shift_type": "day",
+    "is_overnight_shift": false,
+    "ordinary_daily_minutes": 480,
+    "shift_start": "09:00",
+    "shift_end": "17:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-20T13:15:00Z", "is_unknown": false},
+      {"direction": "exit",  "captured_at_iso": "2026-04-20T21:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 405,
+    "expected_overtime_minutes": 0,
+    "expected_late_minutes": 15,
+    "expected_early_departure_minutes": 0,
+    "expected_anomalies": []
+  },
+  {
+    "description": "OT cap daily exceeded: work 11h ordinary_daily=480, total 660min > 600",
+    "shift_type": "day",
+    "is_overnight_shift": false,
+    "ordinary_daily_minutes": 480,
+    "shift_start": "08:00",
+    "shift_end": "19:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 0,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-20T12:00:00Z", "is_unknown": false},
+      {"direction": "exit",  "captured_at_iso": "2026-04-20T23:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 660,
+    "expected_overtime_minutes": 180,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_anomalies": ["OT_CAP_EXCEEDED_DAILY"]
+  },
+  {
+    "description": "Missing exit event — MISSING_EXIT anomaly, work_minutes=0",
+    "shift_type": "day",
+    "is_overnight_shift": false,
+    "ordinary_daily_minutes": 480,
+    "shift_start": "09:00",
+    "shift_end": "17:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-20T13:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 0,
+    "expected_overtime_minutes": 0,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_anomalies": ["MISSING_EXIT"]
+  },
+  {
+    "description": "Punch-mode lunch missing — falls back to lunch_duration_min AND raises LUNCH_PUNCH_MISSING",
+    "shift_type": "day",
+    "is_overnight_shift": false,
+    "ordinary_daily_minutes": 480,
+    "shift_start": "09:00",
+    "shift_end": "17:00",
+    "lunch_mode": "punch",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-20T13:00:00Z", "is_unknown": false},
+      {"direction": "exit",  "captured_at_iso": "2026-04-20T21:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 420,
+    "expected_overtime_minutes": 0,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_anomalies": ["LUNCH_PUNCH_MISSING"]
+  }
+]
