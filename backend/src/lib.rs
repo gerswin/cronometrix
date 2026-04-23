@@ -11,6 +11,7 @@ pub mod employees;
 pub mod errors;
 pub mod events;
 pub mod isapi;
+pub mod leaves;
 pub mod recompute;
 pub mod rules;
 pub mod setup;

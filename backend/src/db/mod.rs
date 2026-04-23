@@ -40,6 +40,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("migrations/008_daily_record_anomalies.sql"),
     ),
     (
+        "009_daily_record_overrides",
+        include_str!("migrations/009_daily_record_overrides.sql"),
+    ),
+    (
+        "010_leaves",
+        include_str!("migrations/010_leaves.sql"),
+    ),
+    (
+        "011_phase3_audit_triggers",
+        include_str!("migrations/011_phase3_audit_triggers.sql"),
+    ),
+    (
         "012_shift_type_to_departments",
         include_str!("migrations/012_shift_type_to_departments.sql"),
     ),

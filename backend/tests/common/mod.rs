@@ -135,6 +135,38 @@ pub async fn create_test_department_with_shift(
     id
 }
 
+/// Seed a leave row directly into the DB, bypassing the HTTP layer.
+/// Returns the generated leave id. `from_date` / `to_date` are 'YYYY-MM-DD'.
+/// `created_by` must be a valid users.id (FK).
+#[allow(dead_code)]
+pub async fn create_test_leave(
+    db: &libsql::Database,
+    employee_id: &str,
+    leave_type: &str,
+    from_date: &str,
+    to_date: &str,
+    created_by: &str,
+) -> String {
+    let conn = db.connect().expect("connect");
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO leaves (id, employee_id, from_date, to_date, leave_type, \
+         justification, evidence_path, created_by, status, version, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 'test justification', NULL, ?6, 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![
+            id.clone(),
+            employee_id.to_string(),
+            from_date.to_string(),
+            to_date.to_string(),
+            leave_type.to_string(),
+            created_by.to_string(),
+        ],
+    )
+    .await
+    .expect("seed leave");
+    id
+}
+
 /// Create a test viewer user. Returns the user ID.
 pub async fn create_test_viewer(db: &libsql::Database) -> String {
     let conn = db.connect().expect("Failed to connect");
