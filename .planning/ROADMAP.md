@@ -56,7 +56,7 @@ Plans:
 Plans:
 - [x] 02-01: Device Manager API — register, edit, disable, ISAPI command dispatch with encrypted credential storage
 - [x] 02-02: alertStream listener — one tokio task per device, supervisor/reconnect loop with exponential backoff, multipart XML parser
-- [ ] 02-03: Event processor — deduplication (30-second idempotency window), face_id-to-employee mapping, AttendanceEvent persistence
+- [x] 02-03: Event processor — deduplication (30-second idempotency window), face_id-to-employee mapping, AttendanceEvent persistence
 
 ### Phase 3: Time Calculation Engine
 **Goal**: The Attendance Engine correctly transforms raw attendance events into payroll-ready daily records, handling tolerance windows, lunch deductions, overtime, leave overlays, and overnight shifts as pure domain logic
@@ -68,12 +68,12 @@ Plans:
   3. System calculates overtime above department-configured thresholds and deducts lunch time per department mode (fixed minutes or explicit punch)
   4. Admin can register medical leave or manual adjustments with justification; approved leave days are excluded from attendance calculations with correct salary treatment
   5. Overnight shifts are attributed to the correct anchor date regardless of which calendar day the event occurs on
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 03-01: Attendance Engine — first-entry/last-exit aggregation, tolerance, lunch deduction, overtime, anomaly flagging (pure domain, no I/O)
-- [ ] 03-02: Overnight shift support — anchor-date model, DST edge case handling for Mexican timezones
-- [ ] 03-03: Leave management API — medical leave, manual adjustments, justification requirement, salary treatment, leave overlay in engine
+- [ ] 03-01-PLAN.md — Attendance Engine: pure domain calc (first-entry/last-exit, tolerance, lunch, overtime + LOTTT Art. 178 caps, anomalies), persistence with ON CONFLICT DO UPDATE upsert, recompute worker (tokio mpsc + 500ms debounce), nightly 02:00 reconcile, migrations 007/008/012, read endpoints for daily-records + anomalies
+- [ ] 03-02-PLAN.md — Overnight shift support: chrono-tz integration, anchor-date = shift-start date (D-05), is_overnight_shift opt-in flag (D-06), DST-safe .earliest() path + OVERNIGHT_INFERENCE_AMBIGUOUS anomaly (Venezuela = America/Caracas, no DST, future-proofed for Colombia/Ecuador)
+- [ ] 03-03-PLAN.md — Leave management API: migrations 009/010/011, leaves CRUD with mandatory justification + evidence upload (multipart, 10MB cap, PDF/JPEG/PNG), soft-delete cancellation, optimistic concurrency, leave overlay integration (D-16) with EVENTS_ON_LEAVE_DAY anomaly, audit triggers on leaves + daily_record_overrides
 
 ### Phase 4: Frontend UI
 **Goal**: Operators can perform all daily workflows through a web interface: monitoring the live dashboard, editing timesheets with mandatory justification, managing employees, and configuring devices
