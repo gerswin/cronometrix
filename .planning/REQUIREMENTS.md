@@ -29,12 +29,12 @@
 
 ### Time Calculation
 
-- [ ] **CALC-01**: System applies first-entry/last-exit rule across all devices within the configured shift window
-- [ ] **CALC-02**: System calculates work minutes with configurable tolerance margins (±N minutes)
-- [ ] **CALC-03**: System detects and flags late arrivals and early departures
-- [ ] **CALC-04**: System calculates overtime hours based on department thresholds
-- [ ] **CALC-05**: System deducts lunch time per department config (fixed minutes or explicit punch)
-- [ ] **CALC-06**: System handles overnight shifts correctly using anchor-date logic
+- [x] **CALC-01**: System applies first-entry/last-exit rule across all devices within the configured shift window
+- [x] **CALC-02**: System calculates work minutes with configurable tolerance margins (±N minutes)
+- [x] **CALC-03**: System detects and flags late arrivals and early departures
+- [x] **CALC-04**: System calculates overtime hours based on department thresholds
+- [x] **CALC-05**: System deducts lunch time per department config (fixed minutes or explicit punch)
+- [x] **CALC-06**: System handles overnight shifts correctly using anchor-date logic
 
 ### Leave Management
 
@@ -173,12 +173,12 @@
 | EVT-02 | Phase 2 | Pending |
 | EVT-03 | Phase 2 | Pending |
 | EVT-04 | Phase 2 | Pending |
-| CALC-01 | Phase 3 | Pending |
-| CALC-02 | Phase 3 | Pending |
-| CALC-03 | Phase 3 | Pending |
-| CALC-04 | Phase 3 | Pending |
-| CALC-05 | Phase 3 | Pending |
-| CALC-06 | Phase 3 | Pending |
+| CALC-01 | Phase 3 | Complete |
+| CALC-02 | Phase 3 | Complete |
+| CALC-03 | Phase 3 | Complete |
+| CALC-04 | Phase 3 | Complete |
+| CALC-05 | Phase 3 | Complete |
+| CALC-06 | Phase 3 | Complete |
 | LEAVE-01 | Phase 3 | Pending |
 | LEAVE-02 | Phase 3 | Pending |
 | LEAVE-03 | Phase 3 | Pending |

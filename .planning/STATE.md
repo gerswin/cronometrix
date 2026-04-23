@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 3 context gathered
-last_updated: "2026-04-23T18:48:51.749Z"
-last_activity: 2026-04-23 -- Phase --phase execution started
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-04-23T19:25:00.000Z"
+last_activity: 2026-04-23 Phase 03 Plan 01 complete — attendance calc engine green
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 11
-  completed_plans: 8
-  percent: 73
+  completed_plans: 9
+  percent: 82
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-11)
 
 **Core value:** Accurate, auditable time tracking that turns raw biometric events into payroll-ready data — with zero manual calculation and full legal traceability.
-**Current focus:** Phase --phase — 03
+**Current focus:** Phase 03 — time-calculation-engine
 
 ## Current Position
 
-Phase: --phase (03) — EXECUTING
-Plan: 1 of --name
-Status: Executing Phase --phase
-Last activity: 2026-04-23 -- Phase --phase execution started
+Phase: 03 — time-calculation-engine — EXECUTING
+Plan: 2 of 3
+Status: 03-01-PLAN.md complete; 03-02-PLAN.md next
+Last activity: 2026-04-23 Phase 03 Plan 01 complete — attendance calc engine green
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [████████░░] 82%
 
 ## Performance Metrics
 
@@ -57,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-foundation P02 | 6 | 2 tasks | 12 files |
 | Phase 01-foundation P03 | 35 | 3 tasks | 15 files |
 | Phase 01-foundation P04 | 8 | 2 tasks | 31 files |
+| Phase 03-time-calculation-engine P01 | 26 | 2 tasks | 39 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,12 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: Metadata in layout.tsx not page.tsx: Next.js 16 forbids metadata export from client components ('use client')
 - [Phase 01-foundation]: Providers component: QueryClientProvider must be a client component, isolated from server Root Layout
 - [Phase 01-foundation]: frontend/.git removed: create-next-app creates its own git repo; removed to track files in monorepo
+- [Phase 03-time-calculation-engine]: Single-connection txn for recompute_for_day — libSQL shared-cache lock contention between separate reader/writer connections produced "database is locked" under test load; reusing the same conn after draining all read cursors is safe and matches events/service pattern.
+- [Phase 03-time-calculation-engine]: ON CONFLICT(employee_id, anchor_date) DO UPDATE (not INSERT OR REPLACE) for daily_records upsert — preserves the row id so daily_record_anomalies FK survives recomputes (Pitfall 1).
+- [Phase 03-time-calculation-engine]: LOTTT Art. 178 daily cap = total workday > 600min (work + OT), not "OT > 120min" — the statute constrains total hours, not OT-hours specifically.
+- [Phase 03-time-calculation-engine]: Engine is pure (no I/O, no async) — aggregation/lunch/overtime/engine submodules, decomposed from the {mod, models, service, handlers} Phase 1/2 layout. Proptest validates determinism across 270k random inputs.
+- [Phase 03-time-calculation-engine]: RecomputeWorker mirrors Phase 2 Supervisor: biased select, HashSet dedup, 500ms debounce, tokio::time::sleep-driven nightly (no cron crate).
+- [Phase 03-time-calculation-engine]: publish_recompute_if_employee guards on employee_id.is_some() AND recompute_tx.is_some() — Pitfall 7 (never flood worker with unknown-face NULL ids) + test-setups-without-worker compatibility.
 
 ### Pending Todos
 
@@ -97,8 +104,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: --stopped-at
-Stopped at: Phase 3 context gathered
-Resume file: --resume-file
+Last session: 2026-04-23T19:25Z
+Stopped at: Completed 03-01-PLAN.md
+Resume file: .planning/phases/03-time-calculation-engine/03-02-PLAN.md
 
 **Planned Phase:** 03 (time-calculation-engine) — 3 plans — 2026-04-23T18:47:20.670Z

@@ -71,7 +71,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Attendance Engine: pure domain calc (first-entry/last-exit, tolerance, lunch, overtime + LOTTT Art. 178 caps, anomalies), persistence with ON CONFLICT DO UPDATE upsert, recompute worker (tokio mpsc + 500ms debounce), nightly 02:00 reconcile, migrations 007/008/012, read endpoints for daily-records + anomalies
+- [x] 03-01-PLAN.md — Attendance Engine: pure domain calc (first-entry/last-exit, tolerance, lunch, overtime + LOTTT Art. 178 caps, anomalies), persistence with ON CONFLICT DO UPDATE upsert, recompute worker (tokio mpsc + 500ms debounce), nightly 02:00 reconcile, migrations 007/008/012, read endpoints for daily-records + anomalies
 - [ ] 03-02-PLAN.md — Overnight shift support: chrono-tz integration, anchor-date = shift-start date (D-05), is_overnight_shift opt-in flag (D-06), DST-safe .earliest() path + OVERNIGHT_INFERENCE_AMBIGUOUS anomaly (Venezuela = America/Caracas, no DST, future-proofed for Colombia/Ecuador)
 - [ ] 03-03-PLAN.md — Leave management API: migrations 009/010/011, leaves CRUD with mandatory justification + evidence upload (multipart, 10MB cap, PDF/JPEG/PNG), soft-delete cancellation, optimistic concurrency, leave overlay integration (D-16) with EVENTS_ON_LEAVE_DAY anomaly, audit triggers on leaves + daily_record_overrides
 
