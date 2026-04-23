@@ -287,3 +287,108 @@ async fn recompute_flags_recompute_after_edit_on_second_call() {
 fn db_ref(state: &AppState) -> &libsql::Database {
     &state.db
 }
+
+// -----------------------------------------------------------------------------
+// Plan 03-02: Overnight service-layer integration
+// -----------------------------------------------------------------------------
+// Verifies that the event-range query in `recompute_for_day` correctly spans
+// midnight for overnight shifts: events at 22:00 Mon and 06:00 Tue (shift
+// anchored on Monday) are BOTH captured by the `BETWEEN window_start AND
+// window_end` query — proving that delegation to
+// `shift_window_overnight_aware` already gives the correct UTC epoch range
+// without requiring any SQL change in the service layer.
+
+#[tokio::test]
+async fn recompute_overnight_captures_post_midnight_events() {
+    let db = common::test_db().await;
+    ensure_global_rules(&db).await;
+
+    // Overnight dept: 22:00 → 06:00, ordinary=420 (LOTTT Art. 117 night).
+    let dept_id = create_test_department_with_shift(
+        &db, "DeptNight", "night", true, 420, "22:00", "06:00",
+    )
+    .await;
+    let emp_id = seed_employee(&db, &dept_id, "E_NIGHT").await;
+    seed_device(&db, "dev-night-1").await;
+
+    let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap(); // Monday
+
+    // Entry: 22:00 Mon Caracas. Exit: 06:00 Tue Caracas.
+    let entry_epoch = caracas_epoch(anchor, 22, 0);
+    let exit_epoch = {
+        let tz: chrono_tz::Tz = "America/Caracas".parse().unwrap();
+        let tue = anchor.succ_opt().unwrap();
+        let naive = tue.and_time(chrono::NaiveTime::from_hms_opt(6, 0, 0).unwrap());
+        tz.from_local_datetime(&naive).single().unwrap().timestamp()
+    };
+
+    seed_event(&db, &emp_id, "dev-night-1", "entry", entry_epoch).await;
+    seed_event(&db, &emp_id, "dev-night-1", "exit", exit_epoch).await;
+
+    let state = make_state(db);
+    dr_service::recompute_for_day(&state, &emp_id, anchor)
+        .await
+        .expect("overnight recompute");
+
+    // Verify exactly one daily_records row exists, anchored to Monday.
+    assert_eq!(
+        count_daily_records(&state.db, &emp_id, "2026-04-20").await,
+        1,
+        "overnight shift must anchor to shift-start date (D-05), not to the exit date"
+    );
+
+    // Read minutes + anomaly codes on the persisted row.
+    let conn = state.db.connect().expect("connect");
+    let mut rows = conn
+        .query(
+            "SELECT work_minutes, overtime_minutes, late_minutes, early_departure_minutes, \
+             anchor_date FROM daily_records WHERE employee_id = ?1",
+            params![emp_id.clone()],
+        )
+        .await
+        .expect("read row");
+    let row = rows.next().await.unwrap().expect("row exists");
+    let work_minutes: i64 = row.get(0).unwrap();
+    let overtime_minutes: i64 = row.get(1).unwrap();
+    let late_minutes: i64 = row.get(2).unwrap();
+    let early_departure_minutes: i64 = row.get(3).unwrap();
+    let anchor_str: String = row.get(4).unwrap();
+
+    assert_eq!(
+        anchor_str, "2026-04-20",
+        "anchor_date must equal shift-start Monday (D-05)"
+    );
+    // 8h shift (480min raw) − 60min fixed lunch = 420 work_minutes. Ordinary
+    // threshold = 420 per LOTTT Art. 117, so OT = 0.
+    assert_eq!(
+        work_minutes, 420,
+        "overnight 22:00-06:00 minus 60m lunch = 420min work"
+    );
+    assert_eq!(overtime_minutes, 0, "no overtime at exactly ordinary threshold");
+    assert_eq!(late_minutes, 0, "entry at exactly nominal shift start → 0 late");
+    assert_eq!(
+        early_departure_minutes, 0,
+        "exit at exactly nominal shift end → 0 early departure"
+    );
+
+    // The record must NOT carry MISSING_ENTRY / MISSING_EXIT (both punches
+    // were captured across midnight), nor OvernightInferenceAmbiguous (Caracas
+    // has no DST).
+    let dr_id = daily_record_id(&state.db, &emp_id, "2026-04-20").await;
+    let codes = anomaly_codes_for(&state.db, &dr_id).await;
+    assert!(
+        !codes.contains(&"MISSING_ENTRY".to_string()),
+        "MISSING_ENTRY must not fire; got {:?}",
+        codes
+    );
+    assert!(
+        !codes.contains(&"MISSING_EXIT".to_string()),
+        "MISSING_EXIT must not fire; got {:?}",
+        codes
+    );
+    assert!(
+        !codes.contains(&"OVERNIGHT_INFERENCE_AMBIGUOUS".to_string()),
+        "Caracas must never raise OVERNIGHT_INFERENCE_AMBIGUOUS; got {:?}",
+        codes
+    );
+}

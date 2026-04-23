@@ -102,6 +102,13 @@ pub async fn recompute_for_day(
 
     // 3. Window-bounded event fetch. We use the same aggregation helper the
     //    engine uses, so we never pull events outside the calc window.
+    //
+    //    Plan 03-02: `shift_window` delegates to `shift_window_overnight_aware`,
+    //    so when `dept.is_overnight_shift = true` the returned `window_end`
+    //    crosses midnight (anchor_date + 1 day). The `captured_at BETWEEN ?2
+    //    AND ?3` query below therefore picks up post-midnight exit events
+    //    automatically — no SQL change required. Covered by integration test
+    //    `recompute_overnight_captures_post_midnight_events` (T-3-12).
     let tz: Tz = state.config.timezone;
     let (window_start, window_end, _ns, _ne) =
         calc::aggregation::shift_window(anchor_date, &dept, &rules, tz);

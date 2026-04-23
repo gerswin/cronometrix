@@ -112,5 +112,51 @@
     "expected_late_minutes": 0,
     "expected_early_departure_minutes": 0,
     "expected_anomalies": ["LUNCH_PUNCH_MISSING"]
+  },
+  {
+    "description": "Overnight night shift 22:00-06:00 anchored Monday — 22:00 Mon = 02:00 Tue UTC entry, 06:00 Tue = 10:00 Tue UTC exit; 60min fixed lunch; ordinary=420 (LOTTT Art. 117 night); no OT",
+    "shift_type": "night",
+    "is_overnight_shift": true,
+    "ordinary_daily_minutes": 420,
+    "shift_start": "22:00",
+    "shift_end": "06:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-21T02:00:00Z", "is_unknown": false},
+      {"direction": "exit",  "captured_at_iso": "2026-04-21T10:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 420,
+    "expected_overtime_minutes": 0,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_anomalies": []
+  },
+  {
+    "description": "Overnight night shift with 1h overtime: exit 07:00 Tue (11:00 UTC); work=480, ordinary=420 so OT=60; no LOTTT caps breached",
+    "shift_type": "night",
+    "is_overnight_shift": true,
+    "ordinary_daily_minutes": 420,
+    "shift_start": "22:00",
+    "shift_end": "06:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 60,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-21T02:00:00Z", "is_unknown": false},
+      {"direction": "exit",  "captured_at_iso": "2026-04-21T11:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 480,
+    "expected_overtime_minutes": 60,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_anomalies": []
   }
 ]

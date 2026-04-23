@@ -228,6 +228,147 @@ proptest! {
 }
 
 // -----------------------------------------------------------------------------
+// Plan 03-02: Overnight anchor-date correctness
+// -----------------------------------------------------------------------------
+// For any random (anchor_date, overnight shift_start ∈ 18:00–23:45,
+// overnight shift_end ∈ 03:00–08:00) in America/Caracas, the computed
+// nominal_shift_start converted back to local date must equal anchor_date
+// (D-05 anchor = shift-start date rule). Venezuela has no DST so ambiguous
+// must always be false.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+    #[test]
+    fn overnight_anchor_date_correctness(
+        start_hour in 18u32..24u32,
+        start_min_raw in 0u32..4u32,
+        end_hour in 3u32..9u32,
+        end_min_raw in 0u32..4u32,
+        year in 2024i32..2030i32,
+        month in 1u32..13u32,
+        day in 1u32..29u32,
+    ) {
+        use chrono::NaiveDate;
+        use chrono_tz::America::Caracas;
+        use cronometrix_api::calc::models::{DepartmentConfig, GlobalRulesRow};
+        use cronometrix_api::calc::overnight::shift_window_overnight_aware;
+
+        let start_min = start_min_raw * 15;   // 0, 15, 30, 45
+        let end_min = end_min_raw * 15;
+
+        let anchor = NaiveDate::from_ymd_opt(year, month, day).unwrap();
+        let dept = DepartmentConfig {
+            id: "d".into(),
+            shift_start_time: format!("{:02}:{:02}", start_hour, start_min),
+            shift_end_time: format!("{:02}:{:02}", end_hour, end_min),
+            shift_type: "night".into(),
+            is_overnight_shift: true,
+            ordinary_daily_minutes: 420,
+            lunch_mode: "fixed".into(),
+            lunch_duration_min: Some(60),
+        };
+        let rules = GlobalRulesRow {
+            late_arrival_tolerance_min: 10,
+            early_departure_tolerance_min: 10,
+            bonus_minutes: 0,
+        };
+
+        let (_ws, _we, nominal_start, _ne, amb) =
+            shift_window_overnight_aware(anchor, &dept, &rules, Caracas);
+
+        // Venezuela has no DST — ambiguous must always be false.
+        prop_assert!(!amb, "America/Caracas should never produce ambiguous LocalResult");
+
+        // Converting nominal_start back to local date must give anchor.
+        let local_start_date = chrono::DateTime::from_timestamp(nominal_start, 0)
+            .unwrap()
+            .with_timezone(&Caracas)
+            .date_naive();
+        prop_assert_eq!(
+            local_start_date,
+            anchor,
+            "nominal_start converted back to local date must equal anchor_date"
+        );
+    }
+}
+
+// Overtime monotonicity for overnight shifts — mirrors the day-shift test but
+// with `is_overnight_shift=true`. Asserts that adding more worked minutes to
+// an overnight shift never decreases `overtime_minutes`, and that OT matches
+// `max(0, work - ordinary)`.
+fn overnight_engine_with_synthetic_events(
+    work_minutes: i64,
+    ordinary_daily_minutes: i64,
+) -> DailyRecordOutput {
+    let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let tz: chrono_tz::Tz = "America/Caracas".parse().unwrap();
+    // Start at 22:00 Mon local.
+    let start_local = anchor.and_time(chrono::NaiveTime::from_hms_opt(22, 0, 0).unwrap());
+    let shift_start_epoch = tz.from_local_datetime(&start_local).single().unwrap().timestamp();
+    let entry_epoch = shift_start_epoch;
+    let exit_epoch = shift_start_epoch + work_minutes * 60;
+    let events = vec![
+        AttendanceEventRow {
+            id: "e1".into(),
+            employee_id: Some("emp".into()),
+            device_id: "d".into(),
+            direction: "entry".into(),
+            captured_at: entry_epoch,
+            is_unknown: false,
+        },
+        AttendanceEventRow {
+            id: "e2".into(),
+            employee_id: Some("emp".into()),
+            device_id: "d".into(),
+            direction: "exit".into(),
+            captured_at: exit_epoch,
+            is_unknown: false,
+        },
+    ];
+    // shift_end=06:00 next day (crosses midnight). Wide early tolerance so
+    // exits after 06:00 Tue still fall inside the window for long work spans.
+    let dept = DepartmentConfig {
+        id: "d".into(),
+        shift_start_time: "22:00".into(),
+        shift_end_time: "06:00".into(),
+        shift_type: "night".into(),
+        is_overnight_shift: true,
+        ordinary_daily_minutes,
+        lunch_mode: "fixed".into(),
+        lunch_duration_min: Some(0),
+    };
+    let rules = GlobalRulesRow {
+        late_arrival_tolerance_min: 120,
+        early_departure_tolerance_min: 1440,
+        bonus_minutes: 0,
+    };
+    let input = EngineInput {
+        events,
+        dept,
+        rules,
+        leave: None,
+        anchor_date: anchor,
+        tz,
+        weekly_ot_minutes_so_far: 0,
+        annual_ot_minutes_so_far: 0,
+        prior_record_existed: false,
+    };
+    compute_daily_record(&input)
+}
+
+proptest! {
+    #[test]
+    fn overnight_overtime_monotonicity(
+        work_minutes in 60i64..=900i64,
+        ordinary in 60i64..=600i64,
+    ) {
+        let out = overnight_engine_with_synthetic_events(work_minutes, ordinary);
+        prop_assert_eq!(out.work_minutes, work_minutes);
+        prop_assert_eq!(out.overtime_minutes, (work_minutes - ordinary).max(0));
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Keep a tiny sanity-check that the Wave 0 scaffold would have seen.
 // -----------------------------------------------------------------------------
 #[test]
