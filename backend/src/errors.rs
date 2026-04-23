@@ -50,6 +50,12 @@ pub enum AppError {
         message: String,
     },
 
+    #[error("calculation failed")]
+    CalcError {
+        code: &'static str,
+        message: String,
+    },
+
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -81,6 +87,9 @@ impl IntoResponse for AppError {
             }
             AppError::BadGateway { code, message } => {
                 (StatusCode::BAD_GATEWAY, *code, message.clone())
+            }
+            AppError::CalcError { code, message } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, *code, message.clone())
             }
             AppError::Internal(e) => {
                 // Log the internal error but don't expose details to clients

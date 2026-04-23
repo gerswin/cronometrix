@@ -9,14 +9,17 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+use cronometrix_api::anomalies;
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
+use cronometrix_api::daily_records;
 use cronometrix_api::db;
 use cronometrix_api::departments;
 use cronometrix_api::devices;
 use cronometrix_api::employees;
 use cronometrix_api::errors::AppError;
 use cronometrix_api::events;
+use cronometrix_api::recompute::{self, RecomputeRequest};
 use cronometrix_api::rules;
 use cronometrix_api::setup;
 use cronometrix_api::state::AppState;
@@ -44,15 +47,18 @@ async fn main() -> anyhow::Result<()> {
     // drains the channel in its biased select loop.
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
 
+    // Recompute channel: events/service -> RecomputeWorker. Unbounded is safe
+    // because the worker drains with HashSet dedup; event burst collapses to a
+    // single recompute per (employee_id, anchor_date).
+    let (recompute_tx, recompute_rx) = mpsc::unbounded_channel::<RecomputeRequest>();
+
     let shutdown = CancellationToken::new();
 
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
         lifecycle_tx: Some(lifecycle_tx),
-        // Plan 03-01 Task 1 scaffolds the field; Task 2 wires the RecomputeWorker
-        // and replaces None with Some(recompute_tx) here.
-        recompute_tx: None,
+        recompute_tx: Some(recompute_tx),
     };
 
     // Start the supervisor: one tokio task per active device for alertStream
@@ -68,6 +74,22 @@ async fn main() -> anyhow::Result<()> {
         let c = shutdown.clone();
         async move {
             watchdog::watchdog_task(s, c).await;
+        }
+    });
+
+    // Start the Phase 3 recompute worker (mpsc + 500ms debounce + HashSet dedup).
+    let recompute_worker = recompute::worker::RecomputeWorker::new(state.clone(), shutdown.clone());
+    let recompute_handle = tokio::spawn(async move {
+        recompute_worker.run(recompute_rx).await;
+    });
+
+    // Start the nightly reconcile task (tokio::time::sleep to next 02:00 local).
+    let nightly_handle = tokio::spawn({
+        let s = state.clone();
+        let c = shutdown.clone();
+        let tz = state.config.timezone;
+        async move {
+            recompute::nightly::nightly_reconcile_task(s, tz, c).await;
         }
     });
 
@@ -95,9 +117,19 @@ async fn main() -> anyhow::Result<()> {
         .route("/events", get(events::handlers::list_events))
         .route("/events/{id}", get(events::handlers::get_event))
         .route("/events/{id}/photo", get(events::handlers::get_event_photo))
+        .route("/daily-records", get(daily_records::handlers::list_daily_records))
+        .route("/daily-records/{id}", get(daily_records::handlers::get_daily_record))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
+        ));
+
+    // Supervisor-or-above read routes: supervisor queue for anomalies (T-3-04).
+    let supervisor_read_routes = Router::new()
+        .route("/anomalies", get(anomalies::handlers::list_anomalies))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::rbac::require_supervisor_or_above,
         ));
 
     // Supervisor+ routes: create/edit employees
@@ -130,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
             public_routes
                 .merge(cookie_auth_routes)
                 .merge(viewer_routes)
+                .merge(supervisor_read_routes)
                 .merge(supervisor_routes)
                 .merge(admin_routes),
         )
@@ -153,9 +186,12 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Await supervisor + watchdog shutdown so all child reqwest streams drain
-    // before process exit.
+    // before process exit. Also drain the Phase 3 recompute worker and the
+    // nightly reconcile task so their last recompute commits before exit.
     let _ = supervisor_handle.await;
     let _ = watchdog_handle.await;
+    let _ = recompute_handle.await;
+    let _ = nightly_handle.await;
     tracing::info!("shutdown complete");
 
     Ok(())

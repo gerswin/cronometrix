@@ -303,6 +303,21 @@ async fn ingest_pair(
         photo_bytes: jpeg_bytes.map(|b| b.to_vec()),
     };
 
+    // Retain fields we need for the Phase 3 recompute publish BEFORE consuming
+    // `new_event` into `persist_attendance_event` (which takes it by value).
+    let recompute_snapshot = crate::events::models::NewAttendanceEvent {
+        id: new_event.id.clone(),
+        employee_id: new_event.employee_id.clone(),
+        device_id: new_event.device_id.clone(),
+        direction: new_event.direction.clone(),
+        captured_at: new_event.captured_at,
+        is_unknown: new_event.is_unknown,
+        face_id: new_event.face_id.clone(),
+        employee_no_string: new_event.employee_no_string.clone(),
+        raw_xml: String::new(), // not needed for recompute publish
+        photo_bytes: None,
+    };
+
     match events_service::persist_attendance_event(&conn, new_event).await {
         Ok(PersistOutcome::Inserted { photo_path }) => {
             tracing::info!(
@@ -310,6 +325,11 @@ async fn ingest_pair(
                 photo_path = ?photo_path,
                 "event persisted"
             );
+            // Phase 3 D-02: publish recompute AFTER successful insert.
+            // publish_recompute_if_employee guards on employee_id.is_some()
+            // and on state.recompute_tx.is_some() so unknown-face events and
+            // test setups without a worker are silently skipped.
+            events_service::publish_recompute_if_employee(state, &recompute_snapshot);
         }
         Ok(PersistOutcome::Deduplicated) => {
             tracing::debug!(device_id = %cfg.id, "event deduplicated");

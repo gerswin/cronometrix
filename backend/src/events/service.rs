@@ -5,10 +5,41 @@ use libsql::{params, Connection};
 
 use crate::common::{epoch_to_iso, PaginatedResponse};
 use crate::errors::AppError;
+use crate::recompute::RecomputeRequest;
+use crate::state::AppState;
 
 use super::models::{
     AttendanceEventResponse, EventListQuery, NewAttendanceEvent, PersistOutcome,
 };
+
+/// Publish a recompute request for the (employee_id, anchor_date) pair derived
+/// from a just-inserted event.
+///
+/// Guards (Phase 3 D-02):
+/// - Pitfall 7: never publish when `event.employee_id.is_none()` — unknown-face
+///   events would flood the worker with NULL employee ids.
+/// - No-op when `state.recompute_tx` is None (test setups without a worker).
+/// - Pitfall 2: captured_at is UTC epoch; we compute the local anchor date via
+///   `state.config.timezone` before publishing.
+pub fn publish_recompute_if_employee(state: &AppState, event: &NewAttendanceEvent) {
+    let Some(emp_id) = event.employee_id.as_ref() else {
+        return;
+    };
+    let Some(tx) = state.recompute_tx.as_ref() else {
+        return;
+    };
+    let tz = state.config.timezone;
+    let anchor = match chrono::Utc.timestamp_opt(event.captured_at, 0) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&tz).date_naive(),
+        _ => return,
+    };
+    if let Err(e) = tx.send(RecomputeRequest {
+        employee_id: emp_id.clone(),
+        anchor_date: anchor,
+    }) {
+        tracing::warn!(err = %e, "recompute_tx send failed (worker down?)");
+    }
+}
 
 /// SELECT column list for read-side mappers. `raw_xml` is DELIBERATELY absent
 /// (T-2-14 — raw XML is never exposed on the API).
