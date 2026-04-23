@@ -158,5 +158,51 @@
     "expected_late_minutes": 0,
     "expected_early_departure_minutes": 0,
     "expected_anomalies": []
+  },
+  {
+    "description": "Full-day medical leave on anchor_date; no events — work=0, overtime=0, leave_id expected non-null, no anomaly (D-16 overlay)",
+    "shift_type": "day",
+    "is_overnight_shift": false,
+    "ordinary_daily_minutes": 480,
+    "shift_start": "09:00",
+    "shift_end": "17:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "active_leave": { "leave_type": "medical", "from_date": "2026-04-20", "to_date": "2026-04-20" },
+    "events": [],
+    "expected_work_minutes": 0,
+    "expected_overtime_minutes": 0,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_leave_id_non_null": true,
+    "expected_anomalies": []
+  },
+  {
+    "description": "Leave day with accidental punch — D-16 overlay precedence: work=0 but EVENTS_ON_LEAVE_DAY anomaly raised",
+    "shift_type": "day",
+    "is_overnight_shift": false,
+    "ordinary_daily_minutes": 480,
+    "shift_start": "09:00",
+    "shift_end": "17:00",
+    "lunch_mode": "fixed",
+    "lunch_duration_min": 60,
+    "late_tolerance": 10,
+    "early_tolerance": 10,
+    "bonus_minutes": 0,
+    "anchor_date": "2026-04-20",
+    "active_leave": { "leave_type": "vacation", "from_date": "2026-04-20", "to_date": "2026-04-20" },
+    "events": [
+      {"direction": "entry", "captured_at_iso": "2026-04-20T13:00:00Z", "is_unknown": false}
+    ],
+    "expected_work_minutes": 0,
+    "expected_overtime_minutes": 0,
+    "expected_late_minutes": 0,
+    "expected_early_departure_minutes": 0,
+    "expected_leave_id_non_null": true,
+    "expected_anomalies": ["EVENTS_ON_LEAVE_DAY"]
   }
 ]

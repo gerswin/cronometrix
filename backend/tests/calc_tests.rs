@@ -4,7 +4,7 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use cronometrix_api::calc::anomalies::AnomalyCode;
 use cronometrix_api::calc::models::{
-    AttendanceEventRow, DepartmentConfig, EngineInput, GlobalRulesRow,
+    AttendanceEventRow, DepartmentConfig, EngineInput, GlobalRulesRow, LeaveRow,
 };
 use cronometrix_api::calc::{compute_daily_record, DailyRecordOutput};
 use proptest::prelude::*;
@@ -22,6 +22,13 @@ struct ScenarioEvent {
 }
 
 #[derive(Debug, Deserialize)]
+struct ScenarioLeave {
+    leave_type: String,
+    from_date: String,
+    to_date: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Scenario {
     description: String,
     shift_type: String,
@@ -35,11 +42,15 @@ struct Scenario {
     early_tolerance: i64,
     bonus_minutes: i64,
     anchor_date: String,
+    #[serde(default)]
+    active_leave: Option<ScenarioLeave>,
     events: Vec<ScenarioEvent>,
     expected_work_minutes: i64,
     expected_overtime_minutes: i64,
     expected_late_minutes: i64,
     expected_early_departure_minutes: i64,
+    #[serde(default)]
+    expected_leave_id_non_null: bool,
     expected_anomalies: Vec<String>,
 }
 
@@ -84,11 +95,21 @@ fn build_input(s: &Scenario) -> EngineInput {
         .collect();
     let anchor_date = NaiveDate::parse_from_str(&s.anchor_date, "%Y-%m-%d")
         .expect("anchor_date fixture is YYYY-MM-DD");
+    // Plan 03-03: optional active_leave block becomes EngineInput.leave (D-16).
+    let leave = s.active_leave.as_ref().map(|l| LeaveRow {
+        id: format!("fixture-leave-{}", &s.description),
+        employee_id: "emp-test".into(),
+        from_date: NaiveDate::parse_from_str(&l.from_date, "%Y-%m-%d")
+            .expect("active_leave.from_date YYYY-MM-DD"),
+        to_date: NaiveDate::parse_from_str(&l.to_date, "%Y-%m-%d")
+            .expect("active_leave.to_date YYYY-MM-DD"),
+        leave_type: l.leave_type.clone(),
+    });
     EngineInput {
         events,
         dept,
         rules,
-        leave: None,
+        leave,
         anchor_date,
         tz: "America/Caracas".parse().unwrap(),
         weekly_ot_minutes_so_far: 0,
@@ -136,6 +157,13 @@ fn lottt_scenarios_all_pass() {
                 expected,
                 s.description,
                 got_codes
+            );
+        }
+        if s.expected_leave_id_non_null {
+            assert!(
+                out.leave_id.is_some(),
+                "expected leave_id to be Some for scenario: {}",
+                s.description
             );
         }
     }

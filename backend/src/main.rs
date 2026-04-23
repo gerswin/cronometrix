@@ -19,6 +19,7 @@ use cronometrix_api::devices;
 use cronometrix_api::employees;
 use cronometrix_api::errors::AppError;
 use cronometrix_api::events;
+use cronometrix_api::leaves;
 use cronometrix_api::recompute::{self, RecomputeRequest};
 use cronometrix_api::rules;
 use cronometrix_api::setup;
@@ -119,6 +120,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/events/{id}/photo", get(events::handlers::get_event_photo))
         .route("/daily-records", get(daily_records::handlers::list_daily_records))
         .route("/daily-records/{id}", get(daily_records::handlers::get_daily_record))
+        .route("/leaves", get(leaves::handlers::list_leaves))
+        .route("/leaves/{id}", get(leaves::handlers::get_leave))
+        .route("/leaves/{id}/evidence", get(leaves::handlers::get_leave_evidence))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
@@ -151,6 +155,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/devices/{id}", patch(devices::handlers::update_device))
         .route("/devices/{id}", delete(devices::handlers::deactivate_device))
         .route("/devices/{id}/commands", post(devices::handlers::dispatch_command))
+        .route("/leaves", post(leaves::handlers::create_leave))
+        .route("/leaves/{id}", delete(leaves::handlers::cancel_leave))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,

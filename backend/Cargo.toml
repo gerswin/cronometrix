@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1"
-axum = { version = "0.8.8", features = ["macros"] }
+axum = { version = "0.8.8", features = ["macros", "multipart"] }
 axum-extra = { version = "0.12.5", features = ["cookie"] }
 base64 = "0.22.1"
 bytes = "1"

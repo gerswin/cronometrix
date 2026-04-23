@@ -209,12 +209,23 @@ pub async fn recompute_for_day(
     };
     drop(prev_rows);
 
-    // 7. Pure engine. Plan 03-01: leave is always None (Plan 03-03 populates).
+    // 7. Fetch active leave overlay (Plan 03-03, D-16). Returns None when no
+    //    active leave covers anchor_date; Some(LeaveRow) triggers the engine's
+    //    overlay branch (work=0, overtime=0, leave_id set, EVENTS_ON_LEAVE_DAY
+    //    if events are present).
+    let active_leave = crate::leaves::service::fetch_active_leave_for_date(
+        &conn,
+        employee_id,
+        anchor_date,
+    )
+    .await?;
+
+    // 8. Pure engine.
     let input = EngineInput {
         events,
         dept: dept.clone(),
         rules,
-        leave: None,
+        leave: active_leave,
         anchor_date,
         tz,
         weekly_ot_minutes_so_far,
