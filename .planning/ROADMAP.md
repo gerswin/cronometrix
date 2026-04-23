@@ -51,7 +51,7 @@ Plans:
   3. System maintains persistent alertStream connections and automatically reconnects when a device drops the TCP connection
   4. Every attendance event from any device is stored with a UTC epoch timestamp; duplicate events within 30 seconds from the same employee are silently discarded
   5. Device connection status (online/offline) is readable from the API so the dashboard can display it
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
 - [x] 02-01: Device Manager API — register, edit, disable, ISAPI command dispatch with encrypted credential storage
@@ -85,13 +85,13 @@ Plans:
   3. Supervisor can view the daily attendance grid per employee and edit entry/exit times with a mandatory text justification and evidence file upload
   4. Every timesheet edit produces an immutable audit log entry visible via the backend; the justification field cannot be skipped or left empty
   5. Admin can manage employees and configure devices from the same UI without leaving the application
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
-- [ ] 04-01: Next.js project setup — App Router, TanStack Query v5, shadcn/ui on Tailwind 4, Zod + React Hook Form
-- [ ] 04-02: Dashboard screen — SSE consumer, KPI tiles, device health banners, live photo feed
-- [ ] 04-03: Timesheet editor — attendance grid (TanStack Table), edit modal with required justification + evidence upload
-- [ ] 04-04: Employee directory and device manager screens — search/filter, ISAPI command dispatch, enrollment entry point
+- [ ] 04-01-PLAN.md — packages + vitest + auth shell + proxy.ts + SSE backend endpoint (Wave 1)
+- [ ] 04-02-PLAN.md — Dashboard: KPI tiles, SSE activity feed, dept donut chart, device banners (Wave 2)
+- [ ] 04-03-PLAN.md — Timesheet: TanStack Table grid + Novedad modal + overrides backend endpoint (Wave 2)
+- [ ] 04-04-PLAN.md — Employee directory + Device manager + ISAPI command dispatch (Wave 2)
 **UI hint**: yes
 
 ### Phase 5: Reports & Payroll Export
@@ -103,7 +103,7 @@ Plans:
   2. Report includes work minutes, overtime hours, late deductions, and leave summary per employee for the selected period
   3. Report downloads as a correctly formatted Excel file
   4. Report downloads as a PDF file with the same data
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
 - [ ] 05-01: Report calculation API — period aggregation endpoint using materialized DailyRecords, configurable period types
@@ -119,7 +119,7 @@ Plans:
   3. System rejects activation if the hardware fingerprint does not match the license (anti-cloning protection)
   4. Running `curl | bash` on a fresh Linux server installs Docker Compose with api, web, and cloudflared services and registers a `{client-slug}.cronometrix.com` Cloudflare tunnel
   5. System operates fully when the internet is unavailable (after initial activation and tunnel registration)
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
 - [ ] 06-01: Hardware fingerprint + license server — CPU/MAC/disk fingerprint, DO Functions validator, signed JWT cache
@@ -135,7 +135,7 @@ Plans:
   2. Admin can upload a JPG photo for enrollment as an alternative to live capture
   3. After enrollment, the system automatically pushes the facial profile to all registered devices concurrently
   4. Admin can see per-device sync status (in progress, success, failure) during and after the push without the modal blocking
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
 - [ ] 07-01: Enrollment backend — ISAPI face profile API integration, concurrent multi-device push with tokio tasks, per-device status tracking
