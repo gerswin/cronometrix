@@ -38,10 +38,10 @@
 
 ### Leave Management
 
-- [ ] **LEAVE-01**: Admin can register medical leave for an employee with date range
-- [ ] **LEAVE-02**: Admin can register manual adjustments (permissions, special leave) with justification
-- [ ] **LEAVE-03**: System excludes approved leave days from attendance calculations
-- [ ] **LEAVE-04**: Medical leave receives different salary treatment than other absence types
+- [x] **LEAVE-01**: Admin can register medical leave for an employee with date range
+- [x] **LEAVE-02**: Admin can register manual adjustments (permissions, special leave) with justification
+- [x] **LEAVE-03**: System excludes approved leave days from attendance calculations
+- [x] **LEAVE-04**: Medical leave receives different salary treatment than other absence types
 
 ### Employee Management
 
@@ -179,10 +179,10 @@
 | CALC-04 | Phase 3 | Complete |
 | CALC-05 | Phase 3 | Complete |
 | CALC-06 | Phase 3 | Complete |
-| LEAVE-01 | Phase 3 | Pending |
-| LEAVE-02 | Phase 3 | Pending |
-| LEAVE-03 | Phase 3 | Pending |
-| LEAVE-04 | Phase 3 | Pending |
+| LEAVE-01 | Phase 3 | Complete |
+| LEAVE-02 | Phase 3 | Complete |
+| LEAVE-03 | Phase 3 | Complete |
+| LEAVE-04 | Phase 3 | Complete |
 | DASH-01 | Phase 4 | Pending |
 | DASH-02 | Phase 4 | Pending |
 | DASH-03 | Phase 4 | Pending |

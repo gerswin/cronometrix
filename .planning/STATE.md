@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-04-23T19:46:34.422Z"
+status: verifying
+stopped_at: Completed 03-03-PLAN.md (plan 3 of 3 in Phase 3)
+last_updated: "2026-04-23T20:09:40.584Z"
 last_activity: 2026-04-23
 progress:
   total_phases: 7
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 11
-  completed_plans: 10
-  percent: 91
+  completed_plans: 11
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 
 Phase: 03 — time-calculation-engine — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-23
 
 Progress: [████████░░] 82%
@@ -59,6 +59,7 @@ Progress: [████████░░] 82%
 | Phase 01-foundation P04 | 8 | 2 tasks | 31 files |
 | Phase 03-time-calculation-engine P01 | 26 | 2 tasks | 39 files |
 | Phase 03-time-calculation-engine P02 | 9 | 2 tasks | 7 files |
+| Phase 03 P03 | 28 | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -95,6 +96,8 @@ Recent decisions affecting current work:
 - [Phase 03-time-calculation-engine]: Overnight shifts: .earliest() path on LocalResult (not .single().unwrap()) — Caracas always returns Single(dt), but the infrastructure exists so a future DST market cannot panic the calc thread; ambiguity surfaces via OvernightInferenceAmbiguous anomaly.
 - [Phase 03-time-calculation-engine]: shift_window() kept as 4-tuple delegating to shift_window_overnight_aware(); new shift_window_with_ambiguity() exposes the 5-tuple for engine.rs — zero callsite changes in service.rs or other modules, Plan 03-01 day-only tests pass unchanged.
 - [Phase 03-time-calculation-engine]: No SQL change in daily_records::service for overnight support — because shift_window() now returns an across-midnight (start, end) range, the existing captured_at BETWEEN query picks up post-midnight events automatically. Proven by recompute_overnight_captures_post_midnight_events integration test.
+- [Phase 03]: LEAVE_OVERLAP uses dedicated LeaveConflict variant (HTTP 409), not generic Conflict — distinguishes business-rule overlap from optimistic-concurrency conflicts for Phase 4 UI remediation.
+- [Phase 03]: Evidence files are UUIDv4-named (user filename discarded). cancel_leave soft-deletes DB row but preserves evidence file on disk for LOTTT audit retention.
 
 ### Pending Todos
 
@@ -108,8 +111,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-23T19:46:34.420Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-04-23T20:09:40.582Z
+Stopped at: Completed 03-03-PLAN.md (plan 3 of 3 in Phase 3)
 Resume file: None
 
 **Planned Phase:** 03 (time-calculation-engine) — 3 plans — 2026-04-23T18:47:20.670Z
