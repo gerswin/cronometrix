@@ -7,6 +7,7 @@ pub mod anomalies;
 pub mod engine;
 pub mod lunch;
 pub mod models;
+pub mod overnight;
 pub mod overtime;
 
 pub use anomalies::AnomalyCode;

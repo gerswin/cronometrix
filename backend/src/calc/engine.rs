@@ -6,7 +6,7 @@
 
 use chrono::Datelike;
 
-use super::aggregation::{aggregate_events, shift_window};
+use super::aggregation::{aggregate_events, shift_window_with_ambiguity};
 use super::anomalies::AnomalyCode;
 use super::lunch::compute_lunch_deduction;
 use super::models::{DailyRecordOutput, EngineInput};
@@ -37,12 +37,19 @@ pub fn compute_daily_record(input: &EngineInput) -> DailyRecordOutput {
         };
     }
 
-    let (window_start, window_end, nominal_start, nominal_end) =
-        shift_window(input.anchor_date, &input.dept, &input.rules, input.tz);
+    let (window_start, window_end, nominal_start, nominal_end, ambiguous) =
+        shift_window_with_ambiguity(input.anchor_date, &input.dept, &input.rules, input.tz);
 
     let agg = aggregate_events(&input.events, window_start, window_end);
 
     let mut anomalies: Vec<AnomalyCode> = Vec::new();
+    // D-08: Future-DST markets may resolve a local shift-start/end to an
+    // ambiguous (fall-back) or nonexistent (spring-forward) instant. The
+    // overnight module picks `.earliest()` and flags the caller; we surface
+    // it as an operator-visible anomaly. Dead code in Venezuela (no DST).
+    if ambiguous {
+        anomalies.push(AnomalyCode::OvernightInferenceAmbiguous);
+    }
     if agg.unknown_in_window {
         anomalies.push(AnomalyCode::UnknownFaceInWindow);
     }

@@ -1,57 +1,51 @@
 //! First-entry / last-exit aggregation (CALC-01, D-20).
 //!
 //! The window is `[shift_start - late_tol - bonus, shift_end + early_tol + bonus]`
-//! in the installation's timezone (Plan 03-01: day-only — Plan 03-02 extends
-//! this for overnight shifts). Events outside the window are ignored. Events
+//! in the installation's timezone. Events outside the window are ignored. Events
 //! with `is_unknown=true` raise `UnknownFaceInWindow` but do not anchor
 //! canonical entry/exit.
+//!
+//! Plan 03-02 routes shift-window construction through
+//! [`crate::calc::overnight::shift_window_overnight_aware`] so overnight shifts
+//! (`dept.is_overnight_shift = true`) correctly cross midnight via
+//! `anchor_date.succ_opt()`, and the DST-ambiguous path is reported via a
+//! boolean flag (future-market safety; always `false` in Venezuela).
 
-use chrono::{NaiveDate, NaiveTime, TimeZone};
+use chrono::NaiveDate;
 use chrono_tz::Tz;
 
 use super::models::{AttendanceEventRow, DepartmentConfig, GlobalRulesRow};
+use super::overnight::shift_window_overnight_aware;
 
 /// Returns `(window_start_epoch, window_end_epoch, nominal_shift_start_epoch,
 /// nominal_shift_end_epoch)` all in UTC epoch seconds.
 ///
-/// For Plan 03-01 this assumes `dept.is_overnight_shift == false` — Plan 03-02
-/// adds overnight support by setting the end date to `anchor_date + 1` when the
-/// flag is true.
+/// Backward-compatible Plan 03-01 API — discards the DST-ambiguity flag.
+/// Callers that need the flag (engine.rs) use [`shift_window_with_ambiguity`].
 pub fn shift_window(
     anchor_date: NaiveDate,
     dept: &DepartmentConfig,
     rules: &GlobalRulesRow,
     tz: Tz,
 ) -> (i64, i64, i64, i64) {
-    let shift_start = NaiveTime::parse_from_str(&dept.shift_start_time, "%H:%M")
-        .expect("dept.shift_start_time must be HH:MM — validated at department create time");
-    let shift_end = NaiveTime::parse_from_str(&dept.shift_end_time, "%H:%M")
-        .expect("dept.shift_end_time must be HH:MM");
-    let tol_before =
-        chrono::Duration::minutes(rules.late_arrival_tolerance_min + rules.bonus_minutes);
-    let tol_after =
-        chrono::Duration::minutes(rules.early_departure_tolerance_min + rules.bonus_minutes);
+    let (ws, we, ns, ne, _amb) = shift_window_overnight_aware(anchor_date, dept, rules, tz);
+    (ws, we, ns, ne)
+}
 
-    // Plan 03-01: non-overnight only. Plan 03-02 will use
-    // `anchor_date.succ_opt()` when `dept.is_overnight_shift` is true.
-    let start_local = anchor_date.and_time(shift_start);
-    let end_local = anchor_date.and_time(shift_end);
-
-    // .single() is safe for America/Caracas (no DST); Plan 03-02 swaps to
-    // .earliest() + OvernightInferenceAmbiguous for DST-observing markets.
-    let shift_start_epoch = tz
-        .from_local_datetime(&start_local)
-        .single()
-        .expect("America/Caracas has no DST ambiguity in Plan 03-01")
-        .timestamp();
-    let shift_end_epoch = tz
-        .from_local_datetime(&end_local)
-        .single()
-        .expect("America/Caracas has no DST ambiguity in Plan 03-01")
-        .timestamp();
-    let window_start = shift_start_epoch - tol_before.num_seconds();
-    let window_end = shift_end_epoch + tol_after.num_seconds();
-    (window_start, window_end, shift_start_epoch, shift_end_epoch)
+/// 5-tuple variant exposing the DST-ambiguity flag. Used by
+/// `engine::compute_daily_record` to emit
+/// [`AnomalyCode::OvernightInferenceAmbiguous`](super::anomalies::AnomalyCode::OvernightInferenceAmbiguous)
+/// when the local→epoch resolution fell on a DST boundary.
+///
+/// In Venezuela (America/Caracas, no DST) `ambiguous` is always `false`; this
+/// surface exists for future DST-observing markets (D-08).
+pub fn shift_window_with_ambiguity(
+    anchor_date: NaiveDate,
+    dept: &DepartmentConfig,
+    rules: &GlobalRulesRow,
+    tz: Tz,
+) -> (i64, i64, i64, i64, bool) {
+    shift_window_overnight_aware(anchor_date, dept, rules, tz)
 }
 
 /// Result of filtering + bucketing the events into a single calc window.
