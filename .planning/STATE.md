@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-04-23T19:25:00.000Z"
-last_activity: 2026-04-23 Phase 03 Plan 01 complete — attendance calc engine green
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-04-23T19:46:34.422Z"
+last_activity: 2026-04-23
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 11
-  completed_plans: 9
-  percent: 82
+  completed_plans: 10
+  percent: 91
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 03 — time-calculation-engine — EXECUTING
-Plan: 2 of 3
-Status: 03-01-PLAN.md complete; 03-02-PLAN.md next
-Last activity: 2026-04-23 Phase 03 Plan 01 complete — attendance calc engine green
+Plan: 3 of 3
+Status: Ready to execute
+Last activity: 2026-04-23
 
 Progress: [████████░░] 82%
 
@@ -58,6 +58,7 @@ Progress: [████████░░] 82%
 | Phase 01-foundation P03 | 35 | 3 tasks | 15 files |
 | Phase 01-foundation P04 | 8 | 2 tasks | 31 files |
 | Phase 03-time-calculation-engine P01 | 26 | 2 tasks | 39 files |
+| Phase 03-time-calculation-engine P02 | 9 | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,9 @@ Recent decisions affecting current work:
 - [Phase 03-time-calculation-engine]: Engine is pure (no I/O, no async) — aggregation/lunch/overtime/engine submodules, decomposed from the {mod, models, service, handlers} Phase 1/2 layout. Proptest validates determinism across 270k random inputs.
 - [Phase 03-time-calculation-engine]: RecomputeWorker mirrors Phase 2 Supervisor: biased select, HashSet dedup, 500ms debounce, tokio::time::sleep-driven nightly (no cron crate).
 - [Phase 03-time-calculation-engine]: publish_recompute_if_employee guards on employee_id.is_some() AND recompute_tx.is_some() — Pitfall 7 (never flood worker with unknown-face NULL ids) + test-setups-without-worker compatibility.
+- [Phase 03-time-calculation-engine]: Overnight shifts: .earliest() path on LocalResult (not .single().unwrap()) — Caracas always returns Single(dt), but the infrastructure exists so a future DST market cannot panic the calc thread; ambiguity surfaces via OvernightInferenceAmbiguous anomaly.
+- [Phase 03-time-calculation-engine]: shift_window() kept as 4-tuple delegating to shift_window_overnight_aware(); new shift_window_with_ambiguity() exposes the 5-tuple for engine.rs — zero callsite changes in service.rs or other modules, Plan 03-01 day-only tests pass unchanged.
+- [Phase 03-time-calculation-engine]: No SQL change in daily_records::service for overnight support — because shift_window() now returns an across-midnight (start, end) range, the existing captured_at BETWEEN query picks up post-midnight events automatically. Proven by recompute_overnight_captures_post_midnight_events integration test.
 
 ### Pending Todos
 
@@ -104,8 +108,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-23T19:25Z
-Stopped at: Completed 03-01-PLAN.md
-Resume file: .planning/phases/03-time-calculation-engine/03-02-PLAN.md
+Last session: 2026-04-23T19:46:34.420Z
+Stopped at: Completed 03-02-PLAN.md
+Resume file: None
 
 **Planned Phase:** 03 (time-calculation-engine) — 3 plans — 2026-04-23T18:47:20.670Z
