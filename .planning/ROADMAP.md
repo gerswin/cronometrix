@@ -89,9 +89,9 @@ Plans:
 
 Plans:
 - [x] 04-01-PLAN.md — packages + vitest + auth shell + proxy.ts + SSE backend endpoint (Wave 1)
-- [ ] 04-02-PLAN.md — Dashboard: KPI tiles, SSE activity feed, dept donut chart, device banners (Wave 2)
-- [ ] 04-03-PLAN.md — Timesheet: TanStack Table grid + Novedad modal + overrides backend endpoint (Wave 2)
-- [ ] 04-04-PLAN.md — Employee directory + Device manager + ISAPI command dispatch (Wave 2)
+- [x] 04-02-PLAN.md — Dashboard: KPI tiles, SSE activity feed, dept donut chart, device banners (Wave 2)
+- [x] 04-03-PLAN.md — Timesheet: TanStack Table grid + Novedad modal + overrides backend endpoint (Wave 2)
+- [x] 04-04-PLAN.md — Employee directory + Device manager + ISAPI command dispatch (Wave 2)
 **UI hint**: yes
 
 ### Phase 5: Reports & Payroll Export
