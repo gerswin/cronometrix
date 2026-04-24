@@ -34,6 +34,7 @@ fn make_state(db: libsql::Database) -> AppState {
         }),
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     }
 }
 

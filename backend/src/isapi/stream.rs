@@ -330,6 +330,8 @@ async fn ingest_pair(
             // and on state.recompute_tx.is_some() so unknown-face events and
             // test setups without a worker are silently skipped.
             events_service::publish_recompute_if_employee(state, &recompute_snapshot);
+            // Phase 4: broadcast to SSE stream clients (non-fatal if no subscribers).
+            events_service::publish_sse_event(state, &recompute_snapshot, &photo_path);
         }
         Ok(PersistOutcome::Deduplicated) => {
             tracing::debug!(device_id = %cfg.id, "event deduplicated");

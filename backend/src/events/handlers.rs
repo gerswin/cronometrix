@@ -1,16 +1,58 @@
+use std::convert::Infallible;
+
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
+use futures::Stream;
+use serde::Deserialize;
+use tokio_stream::{wrappers::BroadcastStream, StreamExt as _};
 
+use crate::auth::service as auth_service;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
 
 use super::models::{AttendanceEventResponse, EventListQuery};
 use super::service;
+
+/// GET /api/v1/events/stream — Server-Sent Events feed of attendance events.
+///
+/// EventSource (browser API) cannot send custom headers, so JWT is passed as
+/// `?token=<access_jwt>` query param (T-4-02 — accepted risk on-premise).
+/// The handler validates the JWT itself instead of relying on require_auth
+/// middleware; this route is therefore registered in public_routes in main.rs.
+#[derive(Deserialize)]
+pub struct StreamQuery {
+    pub token: String,
+}
+
+pub async fn events_stream(
+    State(state): State<AppState>,
+    Query(q): Query<StreamQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    // Validate access JWT from query param
+    auth_service::verify_access_token(&q.token, state.config.jwt_secret.as_bytes())
+        .map_err(|_| AppError::Unauthorized)?;
+
+    let rx = state
+        .event_broadcast
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("event_broadcast not initialised")))?
+        .subscribe();
+
+    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
+        Ok(payload) => Event::default().json_data(payload).ok().map(Ok),
+        Err(_) => None, // Lagged or closed — skip
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
 
 /// GET /api/v1/events — paginated list of attendance events with filters
 /// (employee_id, device_id, from, to, include_unknown). Viewer and above per D-15.

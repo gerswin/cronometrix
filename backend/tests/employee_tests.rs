@@ -33,6 +33,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         config,
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     // Read-only routes for any authenticated user
