@@ -20,3 +20,11 @@ export const loginSchema = z.object({
 })
 
 export type LoginFormData = z.infer<typeof loginSchema>
+
+export const evidenceFileSchema = z
+  .instanceof(File)
+  .refine(f => f.size <= 5 * 1024 * 1024, 'Máximo 5MB')
+  .refine(
+    f => ['application/pdf', 'image/jpeg', 'image/png'].includes(f.type),
+    'Solo PDF, JPG o PNG'
+  )

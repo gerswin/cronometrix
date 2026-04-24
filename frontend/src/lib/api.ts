@@ -1,5 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import axios from 'axios'
+import { toast } from 'sonner'
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
 
@@ -44,7 +45,11 @@ api.interceptors.response.use(
       } catch {
         setAccessToken(null)
         if (typeof window !== 'undefined') {
-          window.location.href = '/login'
+          toast.error('Tu sesión ha expirado', { duration: 3000 })
+          const redirect = window.location.pathname
+          setTimeout(() => {
+            window.location.href = `/login?redirect=${encodeURIComponent(redirect)}`
+          }, 3000)
         }
       }
     }
