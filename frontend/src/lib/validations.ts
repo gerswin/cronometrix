@@ -28,3 +28,18 @@ export const evidenceFileSchema = z
     f => ['application/pdf', 'image/jpeg', 'image/png'].includes(f.type),
     'Solo PDF, JPG o PNG'
   )
+
+export const novedadSchema = z.object({
+  employee_id: z.string().min(1, 'Requerido'),
+  department_id: z.string().min(1, 'Requerido'),
+  fecha_inicio: z.string().min(1, 'Requerido'),
+  fecha_fin: z.string().min(1, 'Requerido'),
+  tipo_novedad: z.enum(['medical', 'vacation', 'unpaid', 'manual']),
+  justification: z.string().min(1, 'La justificación es requerida'),
+  motivo: z.string().optional(),
+  evidence: evidenceFileSchema.optional(),
+  impacto_nomina: z.string().optional(),
+  notificar_supervisor: z.boolean().optional(),
+})
+
+export type NovedadFormData = z.infer<typeof novedadSchema>
