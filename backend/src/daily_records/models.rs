@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+/// API response for a successful override creation.
+#[derive(Debug, Serialize)]
+pub struct OverrideResponse {
+    pub id: String,
+    pub daily_record_id: String,
+    pub override_work_minutes: Option<i64>,
+    pub override_entry_at: Option<i64>,
+    pub override_exit_at: Option<i64>,
+    pub justification: String,
+    pub evidence_path: Option<String>,
+    pub overridden_by: String,
+    pub overridden_at: i64,
+    pub status: String,
+    pub version: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// API response shape for a single daily_records row with its anomaly codes.
 #[derive(Debug, Serialize)]
 pub struct DailyRecordResponse {

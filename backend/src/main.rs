@@ -166,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/devices/{id}/commands", post(devices::handlers::dispatch_command))
         .route("/leaves", post(leaves::handlers::create_leave))
         .route("/leaves/{id}", delete(leaves::handlers::cancel_leave))
+        .route("/daily-records/{id}/overrides", post(daily_records::handlers::create_override))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,

@@ -1,15 +1,19 @@
 //! HTTP handlers for `/api/v1/daily-records` (viewer-or-above per D-09).
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
+    http::StatusCode,
     Json,
 };
+use uuid::Uuid;
+use chrono::Utc;
 
+use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
 
-use super::models::{DailyRecordListQuery, DailyRecordResponse};
+use super::models::{DailyRecordListQuery, DailyRecordResponse, OverrideResponse};
 use super::service;
 
 /// GET /api/v1/daily-records — paginated list with optional employee/department/date filters.
@@ -35,4 +39,185 @@ pub async fn get_daily_record(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
     Ok(Json(service::get_by_id(&conn, &id).await?))
+}
+
+/// POST /api/v1/daily-records/{id}/overrides — Admin only, multipart/form-data.
+///
+/// Writes to daily_record_overrides table. SQLite audit trigger on INSERT fires
+/// automatically (migration 011), producing an immutable audit_log entry (TS-05).
+///
+/// Required form fields: justification (text), evidence (file PDF/JPG/PNG, req'd per TS-04)
+/// Optional form fields: override_entry_at (ISO 8601 string), override_exit_at (ISO 8601 string),
+///                       override_work_minutes (integer string)
+pub async fn create_override(
+    State(state): State<AppState>,
+    Path(daily_record_id): Path<String>,
+    AuthUser(claims): AuthUser,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<OverrideResponse>), AppError> {
+    use crate::events::service::write_photo_atomic;
+
+    const MAX_EVIDENCE_BYTES: usize = 10 * 1024 * 1024; // 10MB backend cap; frontend enforces 5MB
+
+    let mut justification: Option<String> = None;
+    let mut override_entry_at: Option<i64> = None;
+    let mut override_exit_at: Option<i64> = None;
+    let mut override_work_minutes: Option<i64> = None;
+    let mut evidence_bytes: Option<Vec<u8>> = None;
+    let mut evidence_ext: Option<&'static str> = None;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Validation {
+        code: "VALIDATION_ERROR",
+        message: format!("malformed multipart: {}", e),
+    })? {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "justification" => {
+                let val = field.text().await.map_err(|e| AppError::Validation {
+                    code: "VALIDATION_ERROR",
+                    message: e.to_string(),
+                })?;
+                justification = Some(val);
+            }
+            "override_entry_at" => {
+                let val = field.text().await.unwrap_or_default();
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&val) {
+                    override_entry_at = Some(dt.timestamp());
+                }
+            }
+            "override_exit_at" => {
+                let val = field.text().await.unwrap_or_default();
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&val) {
+                    override_exit_at = Some(dt.timestamp());
+                }
+            }
+            "override_work_minutes" => {
+                let val = field.text().await.unwrap_or_default();
+                override_work_minutes = val.parse::<i64>().ok();
+            }
+            "evidence" => {
+                let ct = field.content_type().unwrap_or("").to_string();
+                evidence_ext = match ct.as_str() {
+                    "application/pdf" => Some("pdf"),
+                    "image/jpeg" => Some("jpg"),
+                    "image/png" => Some("png"),
+                    _ => {
+                        return Err(AppError::Validation {
+                            code: "VALIDATION_ERROR",
+                            message: format!("evidence must be PDF, JPEG, or PNG (got '{}')", ct),
+                        });
+                    }
+                };
+                let bytes = field.bytes().await.map_err(|e| AppError::Validation {
+                    code: "VALIDATION_ERROR",
+                    message: format!("reading evidence: {}", e),
+                })?;
+                if bytes.len() > MAX_EVIDENCE_BYTES {
+                    return Err(AppError::Validation {
+                        code: "VALIDATION_ERROR",
+                        message: format!("evidence exceeds 10MB ({} bytes)", bytes.len()),
+                    });
+                }
+                evidence_bytes = Some(bytes.to_vec());
+            }
+            _ => {
+                let _ = field.bytes().await;
+            }
+        }
+    }
+
+    let justification = justification.ok_or_else(|| AppError::Validation {
+        code: "VALIDATION_ERROR",
+        message: "justification required (TS-03)".into(),
+    })?;
+    if justification.trim().is_empty() {
+        return Err(AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "justification cannot be empty (TS-03)".into(),
+        });
+    }
+    // TS-04: evidence required for override
+    if evidence_bytes.is_none() {
+        return Err(AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "evidence file required (TS-04)".into(),
+        });
+    }
+
+    // Write evidence to disk — UUID path (same pattern as leaves, T-4-10 mitigation)
+    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext) {
+        let rel = format!("{}.{}", Uuid::new_v4(), ext);
+        let overrides_root = std::path::PathBuf::from(
+            std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into())
+        ).join("overrides");
+        write_photo_atomic(&overrides_root, &rel, bytes).map_err(AppError::Internal)?;
+        Some(rel)
+    } else {
+        None
+    };
+
+    // Verify daily_record exists
+    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let exists: bool = conn.query(
+        "SELECT 1 FROM daily_records WHERE id = ?1 LIMIT 1",
+        libsql::params![daily_record_id.clone()],
+    ).await.map_err(|e| AppError::Internal(e.into()))?.next().await
+        .map_err(|e| AppError::Internal(e.into()))?.is_some();
+    if !exists {
+        return Err(AppError::NotFound {
+            code: "DAILY_RECORD_NOT_FOUND",
+            message: "daily_record not found".into(),
+        });
+    }
+
+    let now = Utc::now().timestamp();
+    let id = Uuid::new_v4().to_string();
+
+    conn.execute(
+        "INSERT INTO daily_record_overrides
+           (id, daily_record_id, override_work_minutes, override_entry_at, override_exit_at,
+            justification, evidence_path, overridden_by, overridden_at, status, version, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',1,?9,?9)",
+        libsql::params![
+            id.clone(), daily_record_id.clone(),
+            override_work_minutes, override_entry_at, override_exit_at,
+            justification.clone(), evidence_relpath.clone(),
+            claims.sub.clone(), now,
+        ],
+    ).await.map_err(|e| AppError::Internal(e.into()))?;
+
+    // Publish recompute so the daily_record reflects the override promptly
+    if let Some(tx) = state.recompute_tx.as_ref() {
+        if let Ok(mut rows) = conn.query(
+            "SELECT anchor_date, employee_id FROM daily_records WHERE id = ?1",
+            libsql::params![daily_record_id.clone()],
+        ).await {
+            if let Ok(Some(row)) = rows.next().await {
+                if let (Ok(date_str), Ok(emp_id)) = (row.get::<String>(0), row.get::<String>(1)) {
+                    if let Ok(date) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                        let _ = tx.send(crate::recompute::RecomputeRequest {
+                            employee_id: emp_id,
+                            anchor_date: date,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((StatusCode::CREATED, Json(OverrideResponse {
+        id,
+        daily_record_id,
+        override_work_minutes,
+        override_entry_at,
+        override_exit_at,
+        justification,
+        evidence_path: evidence_relpath,
+        overridden_by: claims.sub,
+        overridden_at: now,
+        status: "active".into(),
+        version: 1,
+        created_at: now,
+        updated_at: now,
+    })))
 }
