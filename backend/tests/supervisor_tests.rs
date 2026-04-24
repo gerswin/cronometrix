@@ -143,6 +143,7 @@ async fn bootstrap_spawns_one_task_per_active_device() {
         config,
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: None,
+        event_broadcast: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -255,6 +256,7 @@ async fn start_signal_spawns_new_task() {
         config: config.clone(),
         lifecycle_tx: Some(lifecycle_tx.clone()),
         recompute_tx: None,
+        event_broadcast: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -321,6 +323,7 @@ async fn stop_signal_cancels_task() {
         config: config.clone(),
         lifecycle_tx: Some(lifecycle_tx.clone()),
         recompute_tx: None,
+        event_broadcast: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -362,6 +365,7 @@ async fn restart_signal_stops_then_starts() {
         config: config.clone(),
         lifecycle_tx: Some(lifecycle_tx.clone()),
         recompute_tx: None,
+        event_broadcast: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -443,6 +447,7 @@ async fn graceful_shutdown_within_5s() {
         config,
         lifecycle_tx: Some(_lifecycle_tx),
         recompute_tx: None,
+        event_broadcast: None,
     };
     let shutdown = CancellationToken::new();
 
@@ -489,6 +494,7 @@ async fn watchdog_flips_device_offline_after_90s() {
         config,
         lifecycle_tx: Some(_lifecycle_tx),
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     // Call run_once directly — avoids the 10s interval.
@@ -531,6 +537,7 @@ async fn watchdog_leaves_fresh_device_alone() {
         config,
         lifecycle_tx: Some(_lifecycle_tx),
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     let _ = watchdog::run_once(&state).await.unwrap();
@@ -574,6 +581,7 @@ async fn watchdog_flips_device_with_null_last_seen() {
         config,
         lifecycle_tx: Some(_lifecycle_tx),
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     let _ = watchdog::run_once(&state).await.unwrap();
@@ -640,6 +648,7 @@ async fn build_test_app(
         config,
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     let admin_routes = Router::new()

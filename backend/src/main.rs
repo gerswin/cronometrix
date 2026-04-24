@@ -5,7 +5,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -23,7 +23,7 @@ use cronometrix_api::leaves;
 use cronometrix_api::recompute::{self, RecomputeRequest};
 use cronometrix_api::rules;
 use cronometrix_api::setup;
-use cronometrix_api::state::AppState;
+use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
 use cronometrix_api::supervisor::{watchdog, Supervisor};
 
 #[tokio::main]
@@ -53,6 +53,11 @@ async fn main() -> anyhow::Result<()> {
     // single recompute per (employee_id, anchor_date).
     let (recompute_tx, recompute_rx) = mpsc::unbounded_channel::<RecomputeRequest>();
 
+    // Event broadcast: attendance service -> SSE stream clients. Buffer 256 events;
+    // lagged subscribers (slow clients) simply drop missed events — non-fatal for a
+    // live activity feed.
+    let (event_tx, _) = broadcast::channel::<AttendanceEventSSEPayload>(256);
+
     let shutdown = CancellationToken::new();
 
     let state = AppState {
@@ -60,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(config.clone()),
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: Some(recompute_tx),
+        event_broadcast: Some(event_tx),
     };
 
     // Start the supervisor: one tokio task per active device for alertStream
@@ -99,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/auth/login", post(auth::handlers::login))
         .route("/setup/status", get(setup::handlers::setup_status))
-        .route("/setup/init", post(setup::handlers::setup_init));
+        .route("/setup/init", post(setup::handlers::setup_init))
+        // SSE stream: EventSource cannot send Bearer headers (T-4-02), so auth is
+        // handled inside the handler via ?token=<jwt> query param.
+        .route("/events/stream", get(events::handlers::events_stream));
 
     // Cookie-authenticated routes (refresh/logout validate via refresh cookie, not Bearer)
     let cookie_auth_routes = Router::new()

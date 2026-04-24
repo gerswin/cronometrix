@@ -32,6 +32,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         config,
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     // GET rules: any authenticated role

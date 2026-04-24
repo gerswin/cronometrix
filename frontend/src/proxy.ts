@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const PROTECTED_PATHS = ['/dashboard', '/timesheet', '/employees', '/devices', '/enrollment']
+
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
 
@@ -10,6 +12,18 @@ export async function proxy(req: NextRequest) {
     pathname.startsWith('/_next')
   ) {
     return NextResponse.next()
+  }
+
+  // Auth guard: protected routes require a refresh_token cookie (optimistic check;
+  // backend enforces real JWT verification on every request).
+  const isProtected = PROTECTED_PATHS.some(p => pathname.startsWith(p))
+  if (isProtected) {
+    const hasSession = req.cookies.get('refresh_token')?.value
+    if (!hasSession) {
+      const loginUrl = new URL('/login', req.url)
+      loginUrl.searchParams.set('redirect', pathname)
+      return NextResponse.redirect(loginUrl)
+    }
   }
 
   try {
@@ -30,5 +44,5 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/dashboard/:path*', '/timesheet/:path*', '/employees/:path*', '/devices/:path*', '/enrollment/:path*', '/setup/:path*'],
 }

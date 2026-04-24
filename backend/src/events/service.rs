@@ -6,7 +6,7 @@ use libsql::{params, Connection};
 use crate::common::{epoch_to_iso, PaginatedResponse};
 use crate::errors::AppError;
 use crate::recompute::RecomputeRequest;
-use crate::state::AppState;
+use crate::state::{AppState, AttendanceEventSSEPayload};
 
 use super::models::{
     AttendanceEventResponse, EventListQuery, NewAttendanceEvent, PersistOutcome,
@@ -39,6 +39,28 @@ pub fn publish_recompute_if_employee(state: &AppState, event: &NewAttendanceEven
     }) {
         tracing::warn!(err = %e, "recompute_tx send failed (worker down?)");
     }
+}
+
+/// Broadcast a newly-inserted attendance event to all SSE stream subscribers.
+///
+/// Non-fatal: if there are no subscribers or the channel is not initialised
+/// (test setups), the send error is silently ignored.
+pub fn publish_sse_event(state: &AppState, event: &NewAttendanceEvent, photo_path: &Option<String>) {
+    let Some(tx) = state.event_broadcast.as_ref() else {
+        return;
+    };
+    let captured_at_iso = epoch_to_iso(event.captured_at);
+    let payload = AttendanceEventSSEPayload {
+        id: event.id.clone(),
+        employee_id: event.employee_id.clone(),
+        employee_name: None,  // enriched on client via employee lookup
+        department: None,
+        captured_at: captured_at_iso,
+        direction: event.direction.clone(),
+        has_photo: photo_path.is_some(),
+    };
+    // Non-fatal send: broadcast::SendError means no active receivers
+    let _ = tx.send(payload);
 }
 
 /// SELECT column list for read-side mappers. `raw_xml` is DELIBERATELY absent

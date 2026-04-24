@@ -47,6 +47,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         config,
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     let viewer_routes = Router::new()
@@ -429,6 +430,7 @@ async fn dispatch_door_open_writes_audit() {
         config,
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     };
 
     let viewer_routes = Router::new()
@@ -535,6 +537,7 @@ async fn dispatch_timeout_returns_504() {
         config,
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -615,6 +618,7 @@ async fn dispatch_bad_gateway_on_500() {
         config,
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -763,6 +767,7 @@ async fn patch_updates_password_and_reencrypts() {
         config,
         lifecycle_tx: None,
         recompute_tx: None,
+        event_broadcast: None,
     };
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))
