@@ -2,7 +2,6 @@
 import * as DialogPrimitive from '@base-ui/react/dialog'
 import { cn } from '@/lib/utils'
 
-// Re-export Dialog root as Dialog (controlled via open/onOpenChange)
 const Dialog = DialogPrimitive.Root
 
 const DialogTrigger = DialogPrimitive.Trigger
