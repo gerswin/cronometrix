@@ -1,20 +1,48 @@
 'use client'
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { format } from 'date-fns'
 import { useSSE } from '@/hooks/use-sse'
 import { addToRingBuffer } from '@/lib/ring-buffer'
 import { SSEReconnectBanner } from './sse-reconnect-banner'
 import { AttendanceEventSSEPayload } from '@/types/api'
+import { api } from '@/lib/api'
 import Link from 'next/link'
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
 
 function EventAvatar({ event }: { event: AttendanceEventSSEPayload }) {
   const initials = (event.employee_name ?? '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-  if (event.has_photo) {
+  // WR-04: GET /events/{id}/photo requires Authorization: Bearer. A naive
+  //        <img src> tag issues the request without the JWT and gets 401.
+  //        Fetch the blob through the axios `api` instance (which attaches
+  //        the bearer token via interceptor) and feed it to the <img> as a
+  //        blob URL.
+  const [src, setSrc] = useState<string | null>(null)
+  useEffect(() => {
+    if (!event.has_photo) {
+      setSrc(null)
+      return
+    }
+    let cancelled = false
+    let url: string | null = null
+    api
+      .get(`/events/${event.id}/photo`, { responseType: 'blob' })
+      .then(r => {
+        if (cancelled) return
+        url = URL.createObjectURL(r.data as Blob)
+        setSrc(url)
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null)
+      })
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [event.id, event.has_photo])
+
+  if (event.has_photo && src) {
     return (
       <img
-        src={`${API}/api/v1/events/${event.id}/photo`}
+        src={src}
         alt={event.employee_name ?? 'evento'}
         className="w-10 h-10 rounded-full object-cover shrink-0"
       />
