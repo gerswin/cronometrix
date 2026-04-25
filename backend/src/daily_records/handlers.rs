@@ -168,19 +168,8 @@ pub async fn create_override(
         });
     }
 
-    // Write evidence to disk — UUID path (same pattern as leaves, T-4-10 mitigation)
-    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext) {
-        let rel = format!("{}.{}", Uuid::new_v4(), ext);
-        let overrides_root = std::path::PathBuf::from(
-            std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into())
-        ).join("overrides");
-        write_photo_atomic(&overrides_root, &rel, bytes).map_err(AppError::Internal)?;
-        Some(rel)
-    } else {
-        None
-    };
-
-    // Verify daily_record exists
+    // WR-03: verify daily_record exists FIRST so a 404 path does not leave
+    // an orphaned evidence file on disk. write_photo_atomic comes after.
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
     let exists: bool = conn.query(
         "SELECT 1 FROM daily_records WHERE id = ?1 LIMIT 1",
@@ -193,6 +182,18 @@ pub async fn create_override(
             message: "daily_record not found".into(),
         });
     }
+
+    // Write evidence to disk — UUID path (same pattern as leaves, T-4-10 mitigation)
+    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext) {
+        let rel = format!("{}.{}", Uuid::new_v4(), ext);
+        let overrides_root = std::path::PathBuf::from(
+            std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into())
+        ).join("overrides");
+        write_photo_atomic(&overrides_root, &rel, bytes).map_err(AppError::Internal)?;
+        Some(rel)
+    } else {
+        None
+    };
 
     let now = Utc::now().timestamp();
     let id = Uuid::new_v4().to_string();
