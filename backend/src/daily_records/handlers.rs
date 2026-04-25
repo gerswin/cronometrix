@@ -41,6 +41,23 @@ pub async fn get_daily_record(
     Ok(Json(service::get_by_id(&conn, &id).await?))
 }
 
+/// CR-03 mitigation: derive evidence file extension from magic bytes rather
+/// than the client-supplied multipart Content-Type. Returns the canonical
+/// extension (`pdf`, `jpg`, `png`) when the bytes start with a known signature,
+/// otherwise `None`.
+fn infer_evidence_ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF") {
+        return Some("pdf");
+    }
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Some("jpg");
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("png");
+    }
+    None
+}
+
 /// POST /api/v1/daily-records/{id}/overrides — Admin only, multipart/form-data.
 ///
 /// Writes to daily_record_overrides table. SQLite audit trigger on INSERT fires
@@ -96,18 +113,18 @@ pub async fn create_override(
                 override_work_minutes = val.parse::<i64>().ok();
             }
             "evidence" => {
+                // CR-03: declared content-type is a quick filter only; actual
+                // type is verified from the file's magic bytes after reading.
                 let ct = field.content_type().unwrap_or("").to_string();
-                evidence_ext = match ct.as_str() {
-                    "application/pdf" => Some("pdf"),
-                    "image/jpeg" => Some("jpg"),
-                    "image/png" => Some("png"),
+                match ct.as_str() {
+                    "application/pdf" | "image/jpeg" | "image/png" => {}
                     _ => {
                         return Err(AppError::Validation {
                             code: "VALIDATION_ERROR",
                             message: format!("evidence must be PDF, JPEG, or PNG (got '{}')", ct),
                         });
                     }
-                };
+                }
                 let bytes = field.bytes().await.map_err(|e| AppError::Validation {
                     code: "VALIDATION_ERROR",
                     message: format!("reading evidence: {}", e),
@@ -118,6 +135,13 @@ pub async fn create_override(
                         message: format!("evidence exceeds 10MB ({} bytes)", bytes.len()),
                     });
                 }
+                // CR-03: authoritative type check via magic bytes — content-type
+                // header from the client is untrusted (spoofable in multipart).
+                let magic_ext = infer_evidence_ext_from_magic(&bytes).ok_or_else(|| AppError::Validation {
+                    code: "VALIDATION_ERROR",
+                    message: "evidence bytes do not match a supported file type (PDF/JPEG/PNG)".into(),
+                })?;
+                evidence_ext = Some(magic_ext);
                 evidence_bytes = Some(bytes.to_vec());
             }
             _ => {
