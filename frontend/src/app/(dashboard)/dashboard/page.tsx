@@ -27,8 +27,8 @@ export default function DashboardPage() {
     refetchInterval: 30_000,
   })
 
-  const records = recordsData?.items ?? []
-  const devices = devicesData?.items ?? []
+  const records = recordsData?.data ?? []
+  const devices = devicesData?.data ?? []
   const kpis = aggregateKPIs(records)
   const offlineCount = devices.filter(d => d.status === 'offline').length
   const deviceVariant = offlineCount === 0 ? 'default' : offlineCount === devices.length ? 'danger' : 'warning'

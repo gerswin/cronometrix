@@ -17,7 +17,7 @@ export default function DevicesPage() {
     refetchInterval: 30_000,
   })
 
-  const devices = data?.items ?? []
+  const devices = data?.data ?? []
   const onlineCount = devices.filter(d => d.status === 'online').length
 
   return (

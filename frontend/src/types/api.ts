@@ -21,8 +21,13 @@ export interface DailyRecord {
   anomalies: string[]
 }
 
+/**
+ * WR-02: Field name `data` matches the backend `crate::common::PaginatedResponse`
+ * struct (see backend/src/common.rs). Do not rename to `items` — the wire
+ * format is owned by the backend and several handlers depend on it.
+ */
 export interface PaginatedResponse<T> {
-  items: T[]
+  data: T[]
   total: number
   limit: number
   offset: number

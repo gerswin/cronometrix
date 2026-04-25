@@ -73,7 +73,7 @@ export default function TimesheetPage() {
             </div>
           ) : (
             <TimesheetTable
-              data={data?.items ?? []}
+              data={data?.data ?? []}
               total={data?.total ?? 0}
               pagination={pagination}
               onPaginationChange={setPagination}

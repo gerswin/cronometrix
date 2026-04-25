@@ -56,7 +56,7 @@ export default function EmployeesPage() {
             className="rounded-md border border-slate-200 px-3 py-2 text-sm"
           >
             <option value="">Todos los departamentos</option>
-            {departments?.items.map(d => (
+            {departments?.data.map(d => (
               <option key={d.id} value={d.id}>{d.name}</option>
             ))}
           </select>
@@ -94,7 +94,7 @@ export default function EmployeesPage() {
             <div className="p-8 text-center text-slate-400 text-sm">Cargando empleados…</div>
           ) : (
             <EmployeeTable
-              data={employees?.items ?? []}
+              data={employees?.data ?? []}
               total={employees?.total ?? 0}
               pagination={pagination}
               onPaginationChange={setPagination}
