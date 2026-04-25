@@ -168,6 +168,18 @@ pub async fn create_override(
         });
     }
 
+    // WR-06: enforce override_exit_at > override_entry_at when both are present.
+    // Mirror of the frontend novedadSchema refinement so a malformed pair never
+    // produces a logically incoherent audit record.
+    if let (Some(entry), Some(exit)) = (override_entry_at, override_exit_at) {
+        if exit <= entry {
+            return Err(AppError::Validation {
+                code: "VALIDATION_ERROR",
+                message: "override_exit_at must be after override_entry_at".into(),
+            });
+        }
+    }
+
     // WR-03: verify daily_record exists FIRST so a 404 path does not leave
     // an orphaned evidence file on disk. write_photo_atomic comes after.
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;

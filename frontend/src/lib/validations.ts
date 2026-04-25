@@ -29,17 +29,27 @@ export const evidenceFileSchema = z
     'Solo PDF, JPG o PNG'
   )
 
-export const novedadSchema = z.object({
-  employee_id: z.string().min(1, 'Requerido'),
-  department_id: z.string().min(1, 'Requerido'),
-  fecha_inicio: z.string().min(1, 'Requerido'),
-  fecha_fin: z.string().min(1, 'Requerido'),
-  tipo_novedad: z.enum(['medical', 'vacation', 'unpaid', 'manual']),
-  justification: z.string().min(1, 'La justificación es requerida'),
-  motivo: z.string().optional(),
-  evidence: evidenceFileSchema.optional(),
-  impacto_nomina: z.string().optional(),
-  notificar_supervisor: z.boolean().optional(),
-})
+export const novedadSchema = z
+  .object({
+    employee_id: z.string().min(1, 'Requerido'),
+    department_id: z.string().min(1, 'Requerido'),
+    fecha_inicio: z.string().min(1, 'Requerido'),
+    fecha_fin: z.string().min(1, 'Requerido'),
+    tipo_novedad: z.enum(['medical', 'vacation', 'unpaid', 'manual']),
+    justification: z.string().min(1, 'La justificación es requerida'),
+    motivo: z.string().optional(),
+    evidence: evidenceFileSchema.optional(),
+    impacto_nomina: z.string().optional(),
+    notificar_supervisor: z.boolean().optional(),
+  })
+  // WR-06: ensure fecha_fin is on or after fecha_inicio. Lexicographic
+  // comparison is correct because both are ISO `YYYY-MM-DD` strings.
+  .refine(
+    (data) => !data.fecha_inicio || !data.fecha_fin || data.fecha_fin >= data.fecha_inicio,
+    {
+      message: 'La fecha fin no puede ser anterior a la fecha inicio',
+      path: ['fecha_fin'],
+    },
+  )
 
 export type NovedadFormData = z.infer<typeof novedadSchema>
