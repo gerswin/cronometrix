@@ -24,21 +24,30 @@ export function Sidebar() {
         <span className="text-lg font-semibold tracking-tight">Cronometrix</span>
       </div>
       <nav className="flex-1 py-4 space-y-1 px-3">
-        {NAV_ITEMS.map(({ href, icon: Icon, label }) => (
-          <Link
-            key={href}
-            href={href}
-            className={cn(
-              'flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors',
-              pathname.startsWith(href)
-                ? 'bg-slate-700 text-white'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
-            )}
-          >
-            <Icon size={16} />
-            {label}
-          </Link>
-        ))}
+        {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
+          // WR-07: exact match for the leaf path, prefix match only for sub-routes
+          // (e.g. `/timesheet/edit/123` should still highlight Marcaciones, but
+          // a future `/reports-archive` must not light up `/reports`).
+          const isActive =
+            href === '/'
+              ? pathname === '/'
+              : pathname === href || pathname.startsWith(href + '/')
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                'flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-slate-700 text-white'
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+              )}
+            >
+              <Icon size={16} />
+              {label}
+            </Link>
+          )
+        })}
       </nav>
     </aside>
   )
