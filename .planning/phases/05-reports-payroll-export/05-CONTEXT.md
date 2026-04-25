@@ -168,6 +168,14 @@ No logo image in v1. Empty `client_name` / `client_rif` render as `—`.
 
 ## Tenant Info (new in this phase)
 
+**D-30a — `employees` ALTER for `position` (cargo) + `hire_date`**
+Phase 4 frontend (`employee-table.tsx`) already references `position` (header `Cargo`) and `hire_date` (header `Fecha Ingreso`), but migration `001_initial_schema.sql` lacks both columns. Migration `015_employees_position_hire_date.sql` adds:
+```sql
+ALTER TABLE employees ADD COLUMN position TEXT NOT NULL DEFAULT '';
+ALTER TABLE employees ADD COLUMN hire_date INTEGER;  -- nullable epoch seconds (UTC)
+```
+Both columns surface in `EmployeeReportRow.cargo` (Phase 5 D-14 identity columns) and the Phase 4 employees table. Empty `position` renders as `—`. `hire_date` null renders as `—`. Backend `employees/handlers.rs` extends create/update payloads to accept these fields (optional). Audit triggers in `002_audit_triggers.sql` already hash the row — no trigger update needed (column added is INSIDE the audit row diff automatically).
+
 **D-30 — `tenant_info` single-row table + Settings UI**
 Migration `013_tenant_info.sql`:
 ```sql
@@ -182,6 +190,27 @@ CREATE TABLE tenant_info (
 INSERT INTO tenant_info (id) VALUES (1);
 ```
 Endpoints: `GET /api/v1/tenant-info` (Admin/Supervisor/Viewer read), `PATCH /api/v1/tenant-info` (Admin only, optimistic concurrency via `version`). Audit trigger on UPDATE writes to `audit_log`. New frontend screen: `Configuración / Datos de Empresa` (Admin-only edit, others read-only). Empty fields render as `—` in report header.
+
+## Open Questions Resolved (post-research, locked 2026-04-25)
+
+**D-31 — Night premium = ADDITIVE (+30% on top of work_pay)**
+LOTTT Art. 117 standard reading. `night_premium` column = 30% premium ONLY (not 130% total). For night-shift minutes, total earnings = `work_pay + night_premium = 130% × base × minutes / ordinary_daily_minutes`. The Excel column shows the 30% premium so payroll team can audit the surcharge separately. `total_a_pagar` sums work_pay + night_premium (and other surcharges) — never double-counts. Locks researcher assumption A1.
+
+**D-32 — Plan count = 4**
+- 05-01: `tenant_info` (migration 013, audit trigger 014, CRUD module, GET/PATCH endpoints, Bruno requests) + `employees` ALTER (migration 015 — D-30a)
+- 05-02: Reports calculation API (`reports/` module — money.rs, periods.rs, models.rs, service.rs, handlers.rs for `POST /reports/json`, audit insert per D-21, Bruno requests)
+- 05-03: Excel export endpoint (`reports/excel.rs`, handler for `POST /reports/excel`, response headers per D-22, audit reuse, calamine round-trip integration tests)
+- 05-04: Frontend Reports screen + Settings tenant-info screen + sidebar nav update + jspdf+jspdf-autotable integration
+
+Wave 1 = 05-01 (independent); Wave 2 = 05-02 (depends on 05-01 schema); Wave 3 = 05-03 (depends on 05-02 service layer); Wave 4 = 05-04 (depends on 05-02 + 05-03 endpoints + 05-01 tenant-info GET).
+
+**D-33 — Currency display = dot decimal `$1,234.56` (US/USD format)**
+Backend stays in cents-as-i64. Frontend formatter: `Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD'})` for parity with Excel `$#,##0.00`. PDF uses the same formatter. Avoids confusion when payroll team cross-checks UI vs exported file.
+
+**D-34 — Días Trabajados / Días Ausentes definitions**
+- `días_trabajados` = count of `daily_records` rows in period where `work_minutes > 0` (after `daily_record_overrides` merge per Phase 3 D-04)
+- `días_ausentes` = count of weekdays (Monday–Friday, ISO 8601) in period where employee was active AND has no `daily_records` row AND no `leaves` row covering that date
+- Saturday/Sunday excluded from `días_ausentes` regardless of `is_rest_day_worked` (avoids penalizing weekend off as absence). Per-department `rest_days` resolution deferred to v2 — uniform Mon–Fri default is the simplest defensible rule.
 
 ## Claude's Discretion
 
