@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Eye, EyeOff, Loader2, AlertCircle } from "lucide-react"
@@ -28,8 +28,23 @@ import { Button } from "@/components/ui/button"
 
 type ServerError = { message: string } | null
 
+/**
+ * CR-02 mitigation: only allow same-origin relative paths as redirects.
+ * Rejects protocol-relative (`//evil.com`), absolute URLs, and any value
+ * that does not begin with a single `/`.
+ */
+function safeRedirect(raw: string | null): string {
+  if (!raw) return "/"
+  if (!raw.startsWith("/")) return "/"
+  if (raw.startsWith("//")) return "/"
+  // Defensive: collapse backslash variants that some clients normalize to `/`
+  if (raw.startsWith("/\\") || raw.startsWith("\\")) return "/"
+  return raw
+}
+
 export default function LoginPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [showPassword, setShowPassword] = useState(false)
   const [serverError, setServerError] = useState<ServerError>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -53,7 +68,8 @@ export default function LoginPage() {
         { withCredentials: true }
       )
       setAccessToken(data.access_token)
-      router.push("/")
+      // CR-02: validate redirect to prevent open-redirect via ?redirect=//evil.com
+      router.push(safeRedirect(searchParams.get("redirect")))
     } catch (err) {
       if (axios.isAxiosError(err)) {
         const status = err.response?.status
