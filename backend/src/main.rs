@@ -25,6 +25,7 @@ use cronometrix_api::rules;
 use cronometrix_api::setup;
 use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
 use cronometrix_api::supervisor::{watchdog, Supervisor};
+use cronometrix_api::tenant_info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -132,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/leaves", get(leaves::handlers::list_leaves))
         .route("/leaves/{id}", get(leaves::handlers::get_leave))
         .route("/leaves/{id}/evidence", get(leaves::handlers::get_leave_evidence))
+        .route("/tenant-info", get(tenant_info::handlers::get_tenant_info))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
@@ -167,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/leaves", post(leaves::handlers::create_leave))
         .route("/leaves/{id}", delete(leaves::handlers::cancel_leave))
         .route("/daily-records/{id}/overrides", post(daily_records::handlers::create_override))
+        .route("/tenant-info", patch(tenant_info::handlers::patch_tenant_info))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,

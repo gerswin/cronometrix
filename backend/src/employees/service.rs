@@ -6,7 +6,45 @@ use crate::errors::AppError;
 
 use super::models::{CreateEmployeeRequest, Employee, EmployeeListQuery, UpdateEmployeeRequest};
 
+/// Convert an optional epoch-seconds (UTC midnight) to an ISO YYYY-MM-DD string.
+/// Returns None if the input is None.
+fn epoch_to_iso_date_opt(epoch: Option<i64>) -> Option<String> {
+    epoch.and_then(|t| {
+        chrono::DateTime::<chrono::Utc>::from_timestamp(t, 0)
+            .map(|dt| dt.naive_utc().date().to_string())
+    })
+}
+
+/// Parse a YYYY-MM-DD string to epoch seconds at UTC midnight.
+/// Returns Ok(None) when input is None or empty (caller treats empty as "clear").
+fn parse_hire_date(input: Option<&str>) -> Result<Option<i64>, AppError> {
+    match input {
+        Some(s) if !s.is_empty() => {
+            let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                AppError::Validation {
+                    code: "VALIDATION_ERROR",
+                    message: "hire_date must be YYYY-MM-DD".to_string(),
+                }
+            })?;
+            let dt = date
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| {
+                    AppError::Internal(anyhow::anyhow!(
+                        "hire_date midnight conversion failed for {}",
+                        s
+                    ))
+                })?
+                .and_utc();
+            Ok(Some(dt.timestamp()))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Map a libSQL row to an Employee struct.
+/// Column order is fixed by the SELECT statements below:
+///   id, employee_code, name, department_id, status, position, hire_date,
+///   deleted_at, version, created_at, updated_at
 fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
     Ok(Employee {
         id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
@@ -14,10 +52,12 @@ fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
         name: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
         department_id: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
         status: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
-        deleted_at: epoch_to_iso_opt(row.get(5).map_err(|e| AppError::Internal(e.into()))?),
-        version: row.get(6).map_err(|e| AppError::Internal(e.into()))?,
-        created_at: epoch_to_iso(row.get(7).map_err(|e| AppError::Internal(e.into()))?),
-        updated_at: epoch_to_iso(row.get(8).map_err(|e| AppError::Internal(e.into()))?),
+        position: row.get(5).map_err(|e| AppError::Internal(e.into()))?,
+        hire_date: epoch_to_iso_date_opt(row.get(6).map_err(|e| AppError::Internal(e.into()))?),
+        deleted_at: epoch_to_iso_opt(row.get(7).map_err(|e| AppError::Internal(e.into()))?),
+        version: row.get(8).map_err(|e| AppError::Internal(e.into()))?,
+        created_at: epoch_to_iso(row.get(9).map_err(|e| AppError::Internal(e.into()))?),
+        updated_at: epoch_to_iso(row.get(10).map_err(|e| AppError::Internal(e.into()))?),
     })
 }
 
@@ -49,11 +89,26 @@ pub async fn create(
 
     let id = Uuid::new_v4().to_string();
 
+    // Phase 5 D-30a: position + hire_date.
+    let position = req.position.clone().unwrap_or_default();
+    let hire_date_epoch = parse_hire_date(req.hire_date.as_deref())?;
+    let hire_date_value = match hire_date_epoch {
+        Some(t) => libsql::Value::Integer(t),
+        None => libsql::Value::Null,
+    };
+
     let result = conn
         .execute(
-            "INSERT INTO employees (id, employee_code, name, department_id, status, version, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
-            params![id.clone(), req.employee_code.clone(), req.name.clone(), req.department_id.clone()],
+            "INSERT INTO employees (id, employee_code, name, department_id, status, position, hire_date, version, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, 1, unixepoch(), unixepoch())",
+            libsql::params![
+                id.clone(),
+                req.employee_code.clone(),
+                req.name.clone(),
+                req.department_id.clone(),
+                position,
+                hire_date_value,
+            ],
         )
         .await;
 
@@ -128,7 +183,7 @@ pub async fn list(
 
     // Fetch page
     let fetch_sql = format!(
-        "SELECT id, employee_code, name, department_id, status, deleted_at, version, created_at, updated_at \
+        "SELECT id, employee_code, name, department_id, status, position, hire_date, deleted_at, version, created_at, updated_at \
          FROM employees {} ORDER BY name ASC LIMIT ?{} OFFSET ?{}",
         where_clause,
         fetch_values.len() + 1,
@@ -160,7 +215,7 @@ pub async fn list(
 pub async fn get_by_id(conn: &Connection, id: &str) -> Result<Employee, AppError> {
     let row = conn
         .query(
-            "SELECT id, employee_code, name, department_id, status, deleted_at, version, created_at, updated_at \
+            "SELECT id, employee_code, name, department_id, status, position, hire_date, deleted_at, version, created_at, updated_at \
              FROM employees WHERE id = ?1",
             params![id.to_string()],
         )
@@ -217,6 +272,27 @@ pub async fn update(
     if let Some(dept_id) = req.department_id {
         sets.push(format!("department_id = ?{}", values.len() + 1));
         values.push(libsql::Value::Text(dept_id));
+    }
+
+    if let Some(pos) = req.position {
+        sets.push(format!("position = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(pos));
+    }
+
+    // hire_date: empty string clears (NULL); YYYY-MM-DD parses to epoch.
+    if let Some(hd) = req.hire_date.as_deref() {
+        let val = if hd.is_empty() {
+            libsql::Value::Null
+        } else {
+            let epoch = parse_hire_date(Some(hd))?
+                .ok_or_else(|| AppError::Validation {
+                    code: "VALIDATION_ERROR",
+                    message: "hire_date must be YYYY-MM-DD".to_string(),
+                })?;
+            libsql::Value::Integer(epoch)
+        };
+        sets.push(format!("hire_date = ?{}", values.len() + 1));
+        values.push(val);
     }
 
     if sets.is_empty() {

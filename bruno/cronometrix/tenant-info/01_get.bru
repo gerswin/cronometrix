@@ -1,0 +1,21 @@
+meta {
+  name: get tenant info
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tenant-info
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+script:post-response {
+  if (res.body && typeof res.body.version === 'number') {
+    bru.setEnvVar("tenant_info_version", res.body.version);
+  }
+}
