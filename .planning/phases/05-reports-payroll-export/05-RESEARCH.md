@@ -1164,40 +1164,31 @@ These are the LOAD-BEARING invariants that the property tests must enforce. Ever
 | A9 | `cd frontend && npm install jspdf jspdf-autotable` does not introduce peer-dep conflicts with React 19 / Next.js 16 — both packages are framework-agnostic and ship pure JS bundles. | Standard Stack | Very low: no React peer dep; jspdf is browser-only ES module. |
 | A10 | The "Cargo" / "Fecha Ingreso" columns referenced in Phase 4 D-11 employee table also exist in the Phase 5 report (D-14 lists `cargo` as identity column). The `employees` table currently has no `cargo` or `hire_date` columns (verified migration 001). | D-14 | Mid: Phase 5 may need an `ALTER TABLE employees ADD COLUMN cargo TEXT, hire_date INTEGER` migration. **OPEN QUESTION** — see Open Questions section. |
 
-## Open Questions
+## Open Questions (RESOLVED 2026-04-25)
+
+All 5 questions resolved during plan-phase orchestration. Locked answers live in `05-CONTEXT.md` D-30a, D-31, D-32, D-33, D-34.
 
 1. **Night premium semantics (additive vs. replacing) — A1 above**
-   - What we know: D-04 says "+30% applied to whole shift when shift_type='night'". LOTTT Art. 117 standard reading is additive (worker earns base + 30% premium = 130% total for night work).
-   - What's unclear: CONTEXT.md doesn't explicitly say whether the +30% column is the premium ADDED to base pay, or the night-shift TOTAL that REPLACES base pay.
-   - Recommendation: Implement as additive (Pattern 1 above). Add a snapshot test with a known night-shift scenario; if user reviews and disagrees, the change is local to `night_premium_cents()`.
+   - **RESOLVED → CONTEXT.md D-31:** ADDITIVE (+30% on top of work_pay). Industry-standard LOTTT Art. 117 reading. `night_premium` column carries the 30% surcharge only; `total_a_pagar` = work_pay + night_premium + others. Total night-shift earnings = 130% × base.
 
 2. **Plan count — 2 or 4?**
-   - What we know: ROADMAP says 4, body says 2; CONTEXT.md gives Claude's discretion.
-   - What's unclear: Optimal granularity for parallel-safe execution.
-   - Recommendation: 4 plans —
-     - 05-01: Tenant info (migration 013, audit trigger 014, CRUD module, GET/PATCH endpoints, Bruno requests)
-     - 05-02: Reports calculation API (`reports/` module — money.rs, periods.rs, models.rs, service.rs, handlers.rs for /reports/json, audit insert, Bruno requests)
-     - 05-03: Excel export endpoint (`reports/excel.rs`, handler for /reports/excel, response headers, audit reuse, Bruno request, integration tests with calamine round-trip)
-     - 05-04: Frontend Reports screen + Settings tenant-info screen + sidebar nav update + jsPDF integration (one wave because both screens share the new auth/RBAC patterns and the planner can sequence them internally)
-     Each plan has an isolated test surface and minimal cross-dependency.
+   - **RESOLVED → CONTEXT.md D-32:** 4 plans.
+     - 05-01: tenant_info CRUD + employees ALTER (cargo/hire_date) — Wave 1
+     - 05-02: Reports calculation JSON API — Wave 2
+     - 05-03: Excel export endpoint — Wave 3
+     - 05-04: Frontend Reports + Settings + jspdf-autotable — Wave 4
 
-3. **Does the `employees` table need new columns to display `cargo` and `Fecha Ingreso` as in D-14? — A10 above**
-   - What we know: Phase 4 D-11 employee table shows columns "Cédula, Nombre, Departamento, Cargo, Fecha Ingreso, Estatus, Acciones." Phase 5 D-14 identity columns include "cédula, nombre, departamento, cargo".
-   - What's unclear: The current `employees` table (migration 001) has only `id, employee_code, name, department_id, status, deleted_at, version, created_at, updated_at` — no `cargo` (job title) or `hire_date` columns. Either Phase 4 added these columns and the migration didn't reach this audit, OR the Phase 4 UI is using placeholders / showing them as `—`.
-   - Recommendation: Verify by reading current `employees` schema via migration scan; if the columns are absent, scope a small ALTER TABLE migration into Plan 05-02 (data layer is closest to it). If Phase 4 already shipped them, no action needed. **Planner must verify before committing to plan content.**
+3. **Does the `employees` table need new columns to display `cargo` and `Fecha Ingreso`? — A10 above**
+   - **RESOLVED → CONTEXT.md D-30a:** YES. Migration `015_employees_position_hire_date.sql` adds `position TEXT NOT NULL DEFAULT ''` + `hire_date INTEGER NULL`. Phase 4 frontend already references both. Audit trigger `audit_employees_update` requires DROP+RECREATE in migration 014/016 to capture the new columns (PATTERNS gotcha #2).
 
 4. **Should "Días Trabajados" / "Días Ausentes" be derived from daily_records, or include holidays/leaves?**
-   - What we know: D-14 lists `días_trabajados` and `días_ausentes` as time columns. The aggregation needs a precise definition.
-   - What's unclear: Is "Días Trabajados" = count of daily_records where `work_minutes > 0`? Does "Días Ausentes" = days in period − days with daily_records − days on leave? Or does it count only no-show days?
-   - Recommendation: Adopt the simplest defensible definition:
-     - `días_trabajados` = count of daily_records in period where `work_minutes > 0` (after override merge).
-     - `días_ausentes` = count of weekdays (Mon-Fri) in period where employee was active AND has no daily_record AND has no leave covering that date.
-     Document this definition explicitly in `reports/service.rs`; flag for user confirmation in discuss-phase if ambiguous.
+   - **RESOLVED → CONTEXT.md D-34:** Adopt researcher definition.
+     - `días_trabajados` = count of daily_records in period where `work_minutes > 0` (after override merge)
+     - `días_ausentes` = count of weekdays (Mon–Fri ISO 8601) in period with no daily_record AND no leave covering that date
+     - Saturday/Sunday excluded from `días_ausentes`. Per-department `rest_days` resolution deferred to v2.
 
 5. **Cents display: dot or comma decimal separator in Spanish UI?**
-   - What we know: Project memory (`project_jurisdiction.md`) says Venezuela target market. Spanish/VE locale convention is comma decimal (`$1.234,56`). USD payroll convention often uses dot (`$1,234.56`).
-   - What's unclear: Which formatting wins for the currency display.
-   - Recommendation: Use dot decimal (`$1,234.56`) for consistency with the Excel `$#,##0.00` num_format which is unambiguous in spreadsheet contexts. If user prefers comma decimal in the UI, swap to `Intl.NumberFormat('es-VE', {style: 'currency', currency: 'USD'})` in the React layer; backend stays in cents-as-i64 unaffected.
+   - **RESOLVED → CONTEXT.md D-33:** Dot decimal `$1,234.56` via `Intl.NumberFormat('en-US', {style:'currency', currency:'USD'})`. Matches Excel `$#,##0.00` num_format for parity between UI and exported file.
 
 ## Environment Availability
 
