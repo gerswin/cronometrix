@@ -106,8 +106,10 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 05-01: Report calculation API — period aggregation endpoint using materialized DailyRecords, configurable period types
-- [ ] 05-02: Export generation — Excel via rust_xlsxwriter, PDF via client-side jspdf-autotable; report UI screen
+- [ ] 05-01-PLAN.md — tenant_info CRUD (singleton + audit triggers + audit_log CHECK rebuild) + employees position/hire_date columns
+- [ ] 05-02-PLAN.md — Reports calculation JSON API: money math (LOTTT premiums), period boundary math, SQL aggregation with override-merge, REPORT_EXPORT audit
+- [ ] 05-03-PLAN.md — Excel export endpoint via rust_xlsxwriter 0.94 with branding header, per-dept subtotals, anomaly tinting, calamine round-trip tests
+- [ ] 05-04-PLAN.md — Frontend Reports screen + Settings/Datos de Empresa + jspdf-autotable PDF + sidebar nav update
 
 ### Phase 6: Licensing & Deployment
 **Goal**: Each installation requires a valid hardware-bound license before it can be configured, and a single `curl | bash` command installs and connects the full system — making it commercially deployable and remotely accessible
