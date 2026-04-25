@@ -12,12 +12,29 @@ export const api = axios.create({
 // Attach access token from memory
 let accessToken: string | null = null
 
+// WR-05: pub-sub for token changes so AuthContext can re-decode claims after
+// login / refresh / logout instead of going stale until the next page reload.
+type Listener = () => void
+const tokenListeners = new Set<Listener>()
+
 export function setAccessToken(token: string | null) {
   accessToken = token
+  for (const listener of tokenListeners) {
+    try { listener() } catch { /* listener errors must not break the setter */ }
+  }
 }
 
 export function getAccessToken(): string | null {
   return accessToken
+}
+
+/**
+ * Subscribe to access-token changes. Returns an unsubscribe function.
+ * Used by `AuthProvider` to keep decoded JWT claims in sync.
+ */
+export function onAccessTokenChange(listener: Listener): () => void {
+  tokenListeners.add(listener)
+  return () => { tokenListeners.delete(listener) }
 }
 
 api.interceptors.request.use((config) => {

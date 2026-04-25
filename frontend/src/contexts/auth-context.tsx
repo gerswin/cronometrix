@@ -1,7 +1,7 @@
 'use client'
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react'
 import { JWTClaims } from '@/types/api'
-import { getAccessToken } from '@/lib/api'
+import { getAccessToken, onAccessTokenChange } from '@/lib/api'
 
 /**
  * CR-04: This decode does NOT verify the JWT signature — it cannot be the
@@ -38,11 +38,18 @@ const AuthContext = createContext<AuthContextValue>({ role: null, sub: null, cla
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [claims, setClaims] = useState<JWTClaims | null>(null)
 
-  useEffect(() => {
-    // Decode token from memory; Providers component sets it before mounting
+  // WR-05: re-decode whenever the access token changes (login, refresh, logout)
+  // so the role/sub/exp in context stay in sync with the live token.
+  const refreshClaims = useCallback(() => {
     const token = getAccessToken()
-    if (token) setClaims(decodeJwtPayload(token))
+    setClaims(token ? decodeJwtPayload(token) : null)
   }, [])
+
+  useEffect(() => {
+    refreshClaims()
+    const unsubscribe = onAccessTokenChange(refreshClaims)
+    return unsubscribe
+  }, [refreshClaims])
 
   return (
     <AuthContext.Provider value={{ role: claims?.role ?? null, sub: claims?.sub ?? null, claims }}>
