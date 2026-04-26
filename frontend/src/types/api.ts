@@ -111,3 +111,91 @@ export interface JWTClaims {
   exp: number
   iat: number
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase 5 — Reports & Tenant Info
+// Mirrors backend/src/reports/models.rs::ReportPayload (Plan 05-02)
+// and backend/src/tenant_info/models.rs::TenantInfo (Plan 05-01).
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface BrandingHeader {
+  client_name: string
+  client_rif: string
+  from_date: string
+  to_date: string
+  generated_at_iso: string
+}
+
+export interface Aggregates {
+  work_min: number
+  ot_min: number
+  late_min: number
+  days_worked: number
+  days_absent: number
+  work_pay_cents: number
+  ot_pay_cents: number
+  night_premium_cents: number
+  rest_day_surcharge_cents: number
+  late_deduction_cents: number
+  total_a_pagar_cents: number
+  days_ivss: number
+  days_vacation: number
+  days_permission: number
+  days_unpaid: number
+}
+
+export interface EmployeeReportRow extends Aggregates {
+  employee_id: string
+  dept_id: string
+  cedula: string
+  nombre: string
+  departamento: string
+  cargo: string
+  shift_type: string
+  anomaly_codes: string[]
+  anomaly_count: number
+}
+
+export interface DeptSummary {
+  id: string
+  name: string
+}
+
+export interface DeptSubtotal {
+  dept_id: string
+  dept_name: string
+  aggregates: Aggregates
+}
+
+export interface ReportPayload {
+  header: BrandingHeader
+  rows: EmployeeReportRow[]
+  dept_subtotals: DeptSubtotal[]
+  grand_total: Aggregates
+  departments_in_order: DeptSummary[]
+}
+
+export type PeriodType =
+  | 'weekly'
+  | 'biweekly_first'
+  | 'biweekly_second'
+  | 'monthly'
+  | 'custom'
+
+export interface ReportFilters {
+  period_type: PeriodType
+  from_date: string
+  to_date: string
+  department_ids?: string[]
+  include_inactive?: boolean
+  employee_id?: string
+  shift_type?: 'day' | 'night' | 'mixed'
+}
+
+export interface TenantInfo {
+  client_name: string
+  client_rif: string
+  address: string
+  version: number
+  updated_at: string
+}

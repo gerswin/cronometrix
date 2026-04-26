@@ -53,3 +53,23 @@ export const novedadSchema = z
   )
 
 export type NovedadFormData = z.infer<typeof novedadSchema>
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase 5 — Tenant info / Datos de Empresa form
+// D-30 single-row tenant_info table; PATCH requires version for optimistic
+// concurrency. RIF format `^[VJG]-\d+-\d$` (loose match per D-30 minimal scope).
+// ──────────────────────────────────────────────────────────────────────
+
+export const tenantInfoSchema = z.object({
+  client_name: z.string().max(200, 'Máximo 200 caracteres'),
+  client_rif: z
+    .string()
+    .max(50, 'Máximo 50 caracteres')
+    .refine((v) => v === '' || /^[VJG]-\d+-\d$/.test(v), {
+      message: 'RIF inválido (formato: J-12345678-9)',
+    }),
+  address: z.string().max(500, 'Máximo 500 caracteres'),
+  version: z.number(),
+})
+
+export type TenantInfoFormValues = z.infer<typeof tenantInfoSchema>
