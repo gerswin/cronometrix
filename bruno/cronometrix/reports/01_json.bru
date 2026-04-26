@@ -1,0 +1,24 @@
+meta {
+  name: generate report json
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/reports/json
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "period_type": "monthly",
+    "from_date": "2026-04-01",
+    "to_date": "2026-04-30",
+    "include_inactive": false
+  }
+}

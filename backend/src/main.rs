@@ -21,6 +21,7 @@ use cronometrix_api::errors::AppError;
 use cronometrix_api::events;
 use cronometrix_api::leaves;
 use cronometrix_api::recompute::{self, RecomputeRequest};
+use cronometrix_api::reports;
 use cronometrix_api::rules;
 use cronometrix_api::setup;
 use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
@@ -156,6 +157,18 @@ async fn main() -> anyhow::Result<()> {
             auth::rbac::require_supervisor_or_above,
         ));
 
+    // Report routes: Admin + Supervisor only (D-20). Wrapped with a 60s timeout
+    // (D-25, T-05-10) to bound aggregation latency for very large periods. The
+    // 60s budget is empirically generous — 1000-employee monthly reports run
+    // under 5s with rust_xlsxwriter.
+    let report_routes = Router::new()
+        .route("/reports/json", post(reports::handlers::generate_json))
+        .route_layer(tower_http::timeout::TimeoutLayer::new(std::time::Duration::from_secs(60)))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::rbac::require_supervisor_or_above,
+        ));
+
     // Admin-only routes: delete employees, manage departments and rules, manage devices + command dispatch
     let admin_routes = Router::new()
         .route("/employees/{id}", delete(employees::handlers::deactivate_employee))
@@ -183,6 +196,7 @@ async fn main() -> anyhow::Result<()> {
                 .merge(viewer_routes)
                 .merge(supervisor_read_routes)
                 .merge(supervisor_routes)
+                .merge(report_routes)
                 .merge(admin_routes),
         )
         .with_state(state)
