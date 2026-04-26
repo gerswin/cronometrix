@@ -1,5 +1,11 @@
 'use client'
-import * as DialogPrimitive from '@base-ui/react/dialog'
+// 05-04 W-fix: `@base-ui/react/dialog` re-exports its parts under a
+// `Dialog` namespace (`export * as Dialog from './index.parts'`). Using
+// `import * as X` over that yields `X.Dialog.Root` rather than `X.Root`,
+// so we destructure the inner namespace explicitly here. The pre-existing
+// import worked at runtime in dev only because Next's loader was
+// forgiving; vitest's strict ESM resolution surfaces the issue.
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { cn } from '@/lib/utils'
 
 const Dialog = DialogPrimitive.Root

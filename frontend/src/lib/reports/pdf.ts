@@ -43,8 +43,13 @@ export function renderReportPdf(payload: ReportPayload): void {
   const doc = new jsPDF({ orientation: 'landscape', format: 'a4' })
 
   // Deterministic creation date so PDF byte-output is reproducible per
-  // payload. Only used by snapshot/contract tests.
-  doc.setProperties({ creationDate: new Date(payload.header.generated_at_iso) })
+  // payload. Only used by snapshot/contract tests. The jspdf 4.x typings
+  // omit `creationDate` from DocumentProperties even though it is a
+  // valid runtime property; cast through `Record<string, unknown>` to
+  // sidestep the type gap rather than swap to a less-specific signature.
+  doc.setProperties({
+    creationDate: new Date(payload.header.generated_at_iso),
+  } as unknown as Parameters<typeof doc.setProperties>[0])
 
   // Branding header (D-28). Empty client_name / client_rif render as `—`.
   doc.setFontSize(16)
