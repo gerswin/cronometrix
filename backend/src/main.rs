@@ -163,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
     // under 5s with rust_xlsxwriter.
     let report_routes = Router::new()
         .route("/reports/json", post(reports::handlers::generate_json))
+        .route("/reports/excel", post(reports::handlers::generate_excel))
         .route_layer(tower_http::timeout::TimeoutLayer::new(std::time::Duration::from_secs(60)))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
