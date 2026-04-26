@@ -13,6 +13,7 @@ pub mod events;
 pub mod isapi;
 pub mod leaves;
 pub mod recompute;
+pub mod reports;
 pub mod rules;
 pub mod setup;
 pub mod state;
