@@ -1,0 +1,27 @@
+meta {
+  name: generate report excel
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/reports/excel
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+headers {
+  Accept: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+}
+
+body:json {
+  {
+    "period_type": "monthly",
+    "from_date": "2026-04-01",
+    "to_date": "2026-04-30"
+  }
+}
