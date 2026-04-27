@@ -170,3 +170,92 @@ pub async fn activate_license(
 
     Ok(claims)
 }
+
+/// Background task: at startup and every 24h, if the cached JWT is within 30 days
+/// of expiry AND DO Functions is configured, attempt a silent renewal. Failures
+/// are logged but never block the system (D-08, D-09: offline-first).
+pub async fn renewal_task(
+    license_jwt_path: String,
+    do_functions_renew_url: String,
+    license_valid: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    use std::sync::atomic::Ordering;
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 60 * 24)) => {
+                if !license_valid.load(Ordering::Relaxed) { continue; }
+                if do_functions_renew_url.is_empty() { continue; }
+                if let Err(e) = try_renew(&license_jwt_path, &do_functions_renew_url).await {
+                    tracing::warn!("license renewal attempt failed: {}", e);
+                }
+            }
+        }
+    }
+}
+
+async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> {
+    let token = std::fs::read_to_string(jwt_path)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("read license: {}", e)))?;
+    let claims = verify_license_jwt(token.trim())?;
+
+    // D-08: only renew if within 30 days of expiry
+    let now = chrono::Utc::now().timestamp();
+    let thirty_days = 30 * 24 * 60 * 60;
+    if claims.exp - now > thirty_days {
+        return Ok(()); // not yet within renewal window
+    }
+
+    let fp = fingerprint::collect_fingerprint().map_err(|e| AppError::Internal(e.into()))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("build client: {}", e)))?;
+
+    let resp = client
+        .post(renew_url)
+        .json(&serde_json::json!({
+            "license_key": claims.license_key,
+            "hardware_fingerprint": fp,
+        }))
+        .send()
+        .await
+        .map_err(|_| AppError::BadGateway {
+            code: "RENEWAL_UNREACHABLE",
+            message: "renew endpoint unreachable".to_string(),
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(AppError::BadGateway {
+            code: "RENEWAL_FAILED",
+            message: format!("renew returned {}", resp.status()),
+        });
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|_| AppError::BadGateway {
+        code: "RENEWAL_FAILED",
+        message: "malformed body".into(),
+    })?;
+    let new_token = body
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or(AppError::BadGateway {
+            code: "RENEWAL_FAILED",
+            message: "missing token".into(),
+        })?;
+
+    // Verify new token before persisting
+    let new_claims = verify_license_jwt(new_token)?;
+    if new_claims.hardware_fingerprint != fp {
+        return Err(AppError::Forbidden);
+    }
+
+    let tmp = format!("{}.tmp", jwt_path);
+    std::fs::write(&tmp, new_token)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("write tmp: {}", e)))?;
+    std::fs::rename(&tmp, jwt_path)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("rename: {}", e)))?;
+    Ok(())
+}
