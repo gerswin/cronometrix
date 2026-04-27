@@ -15,7 +15,7 @@ chrono-tz = "0.10.4"
 diqwest = "3.2.0"
 dotenvy = "0.15"
 futures = "0.3"
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto", "use_pem"] }
 libsql = "0.9.30"
 multer = "3.1.0"
 password-auth = "1"

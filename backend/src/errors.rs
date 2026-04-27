@@ -26,6 +26,9 @@ pub enum AppError {
     #[error("forbidden")]
     Forbidden,
 
+    #[error("system not licensed")]
+    Unlicensed,
+
     #[error("conflict")]
     Conflict {
         code: &'static str,
@@ -81,6 +84,11 @@ impl IntoResponse for AppError {
                 StatusCode::FORBIDDEN,
                 "FORBIDDEN",
                 "Insufficient permissions".to_string(),
+            ),
+            AppError::Unlicensed => (
+                StatusCode::FORBIDDEN,
+                "UNLICENSED",
+                "License required".to_string(),
             ),
             AppError::Conflict { code, message } => {
                 (StatusCode::CONFLICT, *code, message.clone())

@@ -25,6 +25,9 @@ async fn build_test_app(db: libsql::Database) -> Router {
         turso_sync_interval_secs: 300,
         device_creds_key: common::test_device_creds_key(),
         timezone: "America/Caracas".parse().unwrap(),
+        license_jwt_path: String::new(),
+        do_functions_activate_url: String::new(),
+        do_functions_renew_url: String::new(),
     });
 
     let state = AppState {

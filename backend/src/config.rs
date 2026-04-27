@@ -20,6 +20,16 @@ pub struct Config {
     /// IANA timezone for local-date arithmetic (Phase 3 attendance engine).
     /// Parsed from `TZ` env var; defaults to `America/Caracas` (UTC-4, no DST).
     pub timezone: chrono_tz::Tz,
+    /// Path to the cached license JWT file. Loaded at startup; written by
+    /// activate_license. Defaults to /opt/cronometrix/data/license.jwt to
+    /// match the installer's INSTALL_DIR convention.
+    pub license_jwt_path: String,
+    /// DO Functions URL for license activation (POST). Empty string means
+    /// activation is not configured — handler returns 502 ACTIVATION_UNREACHABLE.
+    pub do_functions_activate_url: String,
+    /// DO Functions URL for license renewal (POST). Empty string means
+    /// renewal is disabled (offline-only deployment).
+    pub do_functions_renew_url: String,
 }
 
 impl fmt::Debug for Config {
@@ -36,6 +46,9 @@ impl fmt::Debug for Config {
             .field("turso_sync_interval_secs", &self.turso_sync_interval_secs)
             .field("device_creds_key", &"[redacted 32 bytes]")
             .field("timezone", &self.timezone.name())
+            .field("license_jwt_path", &self.license_jwt_path)
+            .field("do_functions_activate_url", &self.do_functions_activate_url)
+            .field("do_functions_renew_url", &self.do_functions_renew_url)
             .finish()
     }
 }
@@ -73,6 +86,13 @@ impl Config {
 
         let device_creds_key = load_device_creds_key()?;
 
+        let license_jwt_path = std::env::var("LICENSE_JWT_PATH")
+            .unwrap_or_else(|_| "/opt/cronometrix/data/license.jwt".to_string());
+        let do_functions_activate_url = std::env::var("DO_FUNCTIONS_ACTIVATE_URL")
+            .unwrap_or_default();
+        let do_functions_renew_url = std::env::var("DO_FUNCTIONS_RENEW_URL")
+            .unwrap_or_default();
+
         // Phase 3: timezone used by the attendance engine + nightly reconcile
         // cron. Target market Venezuela does not observe DST since May 2016, so
         // `America/Caracas` gives unambiguous local-date arithmetic. Any future
@@ -92,6 +112,9 @@ impl Config {
             turso_sync_interval_secs,
             device_creds_key,
             timezone,
+            license_jwt_path,
+            do_functions_activate_url,
+            do_functions_renew_url,
         })
     }
 
