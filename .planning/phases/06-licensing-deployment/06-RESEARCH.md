@@ -716,22 +716,22 @@ pub async fn load_and_validate_license(config: &Config) -> bool {
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Installer fingerprint vs. Rust fingerprint alignment**
    - What we know: Both read the same Linux files; parsing differences can cause mismatch.
    - What's unclear: Whether to ship a pre-built fingerprint binary in the installer or implement collection twice.
-   - Recommendation: Have the installer Docker image expose a `fingerprint` subcommand (`docker run --rm cronometrix/api:latest fingerprint`). The installer runs this to get the fingerprint before calling DO Functions. This eliminates the two-implementation problem.
+   - **RESOLVED:** live-API activation. The installer brings up `docker compose up -d api` first, then drives `POST /api/v1/setup/activate` against the running API container with the license key. The Rust binary is the single fingerprint authority — the installer never computes a fingerprint itself. This eliminates Pitfall 3 (installer/Rust fingerprint mismatch) entirely. See Plan 03 install.sh for the implementation.
 
 2. **DO Functions license record storage**
    - What we know: DO Functions supports env vars for secrets; needs a DB for license records.
    - What's unclear: Which DB the operator uses for the license server (DO Managed Postgres, PlanetScale, simple JSON in DO Spaces, etc.).
-   - Recommendation: For v1 with low license count (<100), a DO App Platform Postgres ($15/mo) or a simple JSON file in DO Spaces is sufficient. The DO Functions function needs READ/WRITE to a license store.
+   - **RESOLVED:** Postgres-backed store (DO Managed Postgres). Single `licenses` table keyed on `license_key TEXT PRIMARY KEY` with `hardware_fingerprint`, `activated_at`, `last_renewed_at` columns. DO Functions handlers use the `pg` npm package; connection string supplied via `DATABASE_URL` env var. See Plan 04 README and shared-store.js test harness.
 
 3. **Docker image registry for distribution**
    - What we know: Need to distribute `cronometrix/api` and `cronometrix/web` images to client servers.
    - What's unclear: Public Docker Hub vs. private GitHub Container Registry (ghcr.io).
-   - Recommendation: `ghcr.io/cronometrix/api` and `ghcr.io/cronometrix/web` — free for private images with GitHub Pro, or make them private with authentication.
+   - **RESOLVED:** ghcr.io (GitHub Container Registry). Images published as `ghcr.io/cronometrix/api:${VERSION}` and `ghcr.io/cronometrix/web:${VERSION}`; installer pulls via `docker compose pull` against these tags. Operator must build and push images BEFORE running install.sh on a fresh client server (see Plan 03 release prerequisites).
 
 ---
 
