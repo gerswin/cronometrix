@@ -1,0 +1,14 @@
+{
+  "name": "cronometrix-do-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cronometrix DigitalOcean Functions — license server. This top-level package.json is for LOCAL TEST RUNTIME ONLY: it provides jsonwebtoken so unit tests can verify signed JWTs offline. The DO Functions runtime pre-installs jsonwebtoken v9, so the per-function package.json files declare only `pg` (the one dep DO does not pre-install).",
+  "scripts": {
+    "test": "node --test packages/licenses/activate/test.js packages/licenses/renew/test.js",
+    "test:activate": "node --test packages/licenses/activate/test.js",
+    "test:renew": "node --test packages/licenses/renew/test.js"
+  },
+  "devDependencies": {
+    "jsonwebtoken": "^9.0.2"
+  }
+}
