@@ -1,7 +1,8 @@
 ---
 phase: 6
 slug: licensing-deployment
-status: draft
+status: approved
+reviewed_at: 2026-04-27
 shadcn_initialized: true
 preset: base-nova
 created: 2026-04-27
@@ -74,10 +75,12 @@ Pre-populated from existing `/setup` page (`text-2xl font-semibold` heading, `te
 
 | Role | Size | Weight | Line Height | Usage in this screen |
 |------|------|--------|-------------|----------------------|
-| Body | 14px (text-sm) | 400 (normal) | 1.5 | Form labels, description text, error message body |
-| Label | 14px (text-sm) | 500 (medium) | 1.5 | FormLabel elements (shadcn Form) |
+| Body | 14px (text-sm) | 400 (normal) | 1.5 | Description text, error message body |
+| Label | 14px (text-sm) | 600 (semibold) | 1.5 | FormLabel elements (shadcn Form) — consistent with `/setup` `font-semibold` default |
 | Heading | 24px (text-2xl) | 600 (semibold) | 1.2 | CardTitle: "Activate your license" |
 | Display | — | — | — | Not used on this screen |
+
+Weights: exactly 2 — 400 (normal) for body/description text; 600 (semibold) for labels and headings.
 
 Font family: `var(--font-sans)` (Geist Sans) for all text on this screen. Mono (`var(--font-mono)`)
 used only for the license key Input to distinguish it as a technical code entry field.
