@@ -1,0 +1,31 @@
+# Cronometrix License Server — DigitalOcean Functions deployment.
+#
+# Deploy:  cd do-functions && doctl serverless deploy . --remote-build
+#
+# The operator MUST set LICENSE_PRIVATE_KEY and DATABASE_URL in their shell
+# (or via `doctl serverless functions update licenses/{activate,renew}
+# --env-file ...`) BEFORE running the deploy command. The `${VAR}` references
+# below are interpolated by doctl at deploy time — placeholders only, no
+# secrets in the repo.
+
+parameters: {}
+
+packages:
+  - name: licenses
+    environment:
+      LICENSE_PRIVATE_KEY: "${LICENSE_PRIVATE_KEY}"
+      DATABASE_URL: "${DATABASE_URL}"
+    functions:
+      - name: activate
+        runtime: nodejs:22
+        web: true
+        limits:
+          # 15s matches the Rust client's reqwest timeout in Plan 01.
+          timeout: 15000
+          memory: 256
+      - name: renew
+        runtime: nodejs:22
+        web: true
+        limits:
+          timeout: 15000
+          memory: 256
