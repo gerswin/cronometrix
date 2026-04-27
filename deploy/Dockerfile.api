@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+# Phase 6: Cronometrix API container (Rust 1.93 + Axum 0.8.8 + libSQL).
+# Multi-stage build. Final image is debian-slim because libsql dynamically
+# links to glibc; using musl/alpine would require extra effort and ships no
+# observable size win after stripping. ~80MB compressed final image.
+
+FROM rust:1.93 AS builder
+WORKDIR /app
+
+# Pre-cache deps: copy ONLY manifests, fetch, then copy source.
+COPY backend/Cargo.toml backend/Cargo.lock* ./
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release --bin cronometrix-api && \
+    rm -rf src
+
+COPY backend/ ./
+# Re-touch main so cargo recompiles with real source
+RUN touch src/main.rs && cargo build --release --bin cronometrix-api
+
+# Runner: debian-slim with CA certs (needed for Turso TLS + DO Functions HTTPS)
+FROM debian:bookworm-slim AS runner
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/cronometrix
+COPY --from=builder /app/target/release/cronometrix-api /usr/local/bin/cronometrix-api
+
+# Data directory for SQLite + license.jwt; created by installer outside container
+# but ensured here so the binary's default paths work even without a volume mount.
+RUN mkdir -p /opt/cronometrix/data
+
+EXPOSE 3001
+ENV RUST_LOG=info \
+    SERVER_HOST=0.0.0.0 \
+    SERVER_PORT=3001 \
+    CRONOMETRIX_DB_PATH=/opt/cronometrix/data/cronometrix.db \
+    LICENSE_JWT_PATH=/opt/cronometrix/data/license.jwt \
+    TZ=America/Caracas
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -fsS http://localhost:3001/api/v1/health || exit 1
+
+CMD ["/usr/local/bin/cronometrix-api"]

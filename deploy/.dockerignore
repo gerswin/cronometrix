@@ -1,0 +1,43 @@
+# Build artifacts
+**/target/
+**/node_modules/
+**/.next/
+**/dist/
+**/build/
+
+# Secrets — NEVER ship in image layers
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+!backend/src/license/pubkey.pem
+!backend/tests/fixtures/*.pem
+
+# Local DBs and license cache
+**/cronometrix.db
+**/cronometrix.db-*
+**/data/
+
+# IDE / OS
+.git/
+.vscode/
+.idea/
+.DS_Store
+
+# Test artifacts (production runner has no use)
+**/tests/
+**/test/
+**/*_test.go
+**/__tests__/
+
+# Documentation
+.planning/
+docs/
+*.md
+!README.md
+
+# Bruno API collections
+bruno/
