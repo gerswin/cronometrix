@@ -20,6 +20,7 @@ use cronometrix_api::employees;
 use cronometrix_api::errors::AppError;
 use cronometrix_api::events;
 use cronometrix_api::leaves;
+use cronometrix_api::license;
 use cronometrix_api::recompute::{self, RecomputeRequest};
 use cronometrix_api::reports;
 use cronometrix_api::rules;
@@ -62,12 +63,27 @@ async fn main() -> anyhow::Result<()> {
 
     let shutdown = CancellationToken::new();
 
+    // Phase 6: license gate. load_and_validate_license is fail-closed —
+    // if file missing, signature invalid, or fingerprint mismatched, the
+    // flag stays false and only public_routes (including /setup/activate)
+    // are reachable. The setup wizard step 0 is /setup/activate.
+    let license_valid = std::sync::Arc::new(
+        std::sync::atomic::AtomicBool::new(false)
+    );
+    if license::service::load_and_validate_license(&config.license_jwt_path).await {
+        license_valid.store(true, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!("license valid — system fully operational");
+    } else {
+        tracing::warn!("license invalid or missing — system gated, /setup/activate available");
+    }
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: Some(recompute_tx),
         event_broadcast: Some(event_tx),
+        license_valid: license_valid.clone(),
     };
 
     // Start the supervisor: one tokio task per active device for alertStream
@@ -102,20 +118,39 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // License renewal: silent best-effort, runs every 24h, only when within
+    // 30 days of expiry AND DO Functions URL configured. Failures are logged,
+    // never fatal — system stays licensed via cached JWT (DEPL-04, D-09).
+    let renewal_handle = tokio::spawn({
+        let path = state.config.license_jwt_path.clone();
+        let url = state.config.do_functions_renew_url.clone();
+        let lv = state.license_valid.clone();
+        let c = shutdown.clone();
+        async move {
+            license::service::renewal_task(path, url, lv, c).await;
+        }
+    });
+
     // Public routes — no auth required
     let public_routes = Router::new()
         .route("/health", get(health))
         .route("/auth/login", post(auth::handlers::login))
         .route("/setup/status", get(setup::handlers::setup_status))
         .route("/setup/init", post(setup::handlers::setup_init))
+        .route("/setup/activate", post(setup::handlers::setup_activate))
         // SSE stream: EventSource cannot send Bearer headers (T-4-02), so auth is
         // handled inside the handler via ?token=<jwt> query param.
         .route("/events/stream", get(events::handlers::events_stream));
 
     // Cookie-authenticated routes (refresh/logout validate via refresh cookie, not Bearer)
+    // License gate is applied here too: an unlicensed install must not refresh sessions.
     let cookie_auth_routes = Router::new()
         .route("/auth/refresh", post(auth::handlers::refresh))
-        .route("/auth/logout", post(auth::handlers::logout));
+        .route("/auth/logout", post(auth::handlers::logout))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            license::middleware::require_license,
+        ));
 
     // Read-only routes: any authenticated role can access (Viewer can read per D-09)
     let viewer_routes = Router::new()
@@ -138,6 +173,10 @@ async fn main() -> anyhow::Result<()> {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            license::middleware::require_license,
         ));
 
     // Supervisor-or-above read routes: supervisor queue for anomalies (T-3-04).
@@ -146,6 +185,10 @@ async fn main() -> anyhow::Result<()> {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            license::middleware::require_license,
         ));
 
     // Supervisor+ routes: create/edit employees
@@ -155,6 +198,10 @@ async fn main() -> anyhow::Result<()> {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            license::middleware::require_license,
         ));
 
     // Report routes: Admin + Supervisor only (D-20). Wrapped with a 60s timeout
@@ -168,6 +215,10 @@ async fn main() -> anyhow::Result<()> {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            license::middleware::require_license,
         ));
 
     // Admin-only routes: delete employees, manage departments and rules, manage devices + command dispatch
@@ -187,6 +238,10 @@ async fn main() -> anyhow::Result<()> {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            license::middleware::require_license,
         ));
 
     let app = Router::new()
@@ -226,6 +281,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = watchdog_handle.await;
     let _ = recompute_handle.await;
     let _ = nightly_handle.await;
+    let _ = renewal_handle.await;
     tracing::info!("shutdown complete");
 
     Ok(())

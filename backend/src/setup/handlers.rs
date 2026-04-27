@@ -6,6 +6,10 @@ use validator::Validate;
 
 use crate::{auth::service, errors::AppError, state::AppState};
 
+// Note: full setup_activate behavior + setup_status `licensed` extension land in
+// Task 2 of plan 06-02. Task 1 only registers the surface so main.rs compiles
+// with the new public route.
+
 /// POST /api/v1/setup/status
 /// Returns {"initialized": true/false} based on whether any user exists.
 /// This endpoint is PUBLIC — no auth required.
@@ -105,4 +109,32 @@ pub async fn setup_init(
             "message": "Admin user created successfully"
         })),
     ))
+}
+
+/// Request body for POST /api/v1/setup/activate
+#[derive(Debug, Deserialize, Validate)]
+pub struct SetupActivateRequest {
+    /// License key in XXXX-XXXX-XXXX-XXXX format (16 alphanumeric + 3 hyphens = 19 chars).
+    #[validate(length(min = 19, max = 19, message = "License key must be in XXXX-XXXX-XXXX-XXXX format"))]
+    pub license_key: String,
+}
+
+/// POST /api/v1/setup/activate
+///
+/// Surface stub introduced by Plan 06-02 Task 1 so main.rs can register the
+/// public route and the protected route groups can be wrapped with
+/// `require_license`. Task 2 replaces the body with the full DO Functions
+/// activation flow + idempotency guard + state.license_valid flip.
+///
+/// Per LIC-01: this endpoint MUST stay public so unlicensed installations can
+/// activate.
+pub async fn setup_activate(
+    State(_state): State<AppState>,
+    Json(_body): Json<SetupActivateRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // Task 2 replaces this body with the production activation flow.
+    Err::<Json<serde_json::Value>, _>(AppError::BadGateway {
+        code: "ACTIVATION_UNREACHABLE",
+        message: "Activation endpoint not yet implemented (Plan 06-02 Task 2 pending)".to_string(),
+    })
 }

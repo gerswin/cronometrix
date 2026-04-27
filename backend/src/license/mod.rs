@@ -1,3 +1,3 @@
 pub mod fingerprint;
+pub mod middleware;
 pub mod service;
-// middleware module is added in Plan 06-02

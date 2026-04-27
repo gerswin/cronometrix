@@ -51,6 +51,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
 
     let viewer_routes = Router::new()
@@ -437,6 +438,7 @@ async fn dispatch_door_open_writes_audit() {
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
 
     let viewer_routes = Router::new()
@@ -547,6 +549,7 @@ async fn dispatch_timeout_returns_504() {
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -631,6 +634,7 @@ async fn dispatch_bad_gateway_on_500() {
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
@@ -783,6 +787,7 @@ async fn patch_updates_password_and_reencrypts() {
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))

@@ -68,6 +68,7 @@ fn make_state(db: libsql::Database) -> AppState {
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     }
 }
 

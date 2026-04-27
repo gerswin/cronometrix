@@ -45,4 +45,10 @@ pub struct AppState {
     pub lifecycle_tx: Option<LifecycleTx>,
     pub recompute_tx: Option<UnboundedSender<RecomputeRequest>>,
     pub event_broadcast: Option<broadcast::Sender<AttendanceEventSSEPayload>>,
+    /// Phase 6: license gate flag. `Arc<AtomicBool>` so middleware reads
+    /// branch-free without a lock. Set true at startup if cached JWT
+    /// validates (see license::service::load_and_validate_license);
+    /// flipped to true on successful activation. Stays true after JWT
+    /// `exp` per D-07 soft expiry.
+    pub license_valid: Arc<std::sync::atomic::AtomicBool>,
 }

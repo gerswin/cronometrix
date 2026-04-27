@@ -37,6 +37,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
 
     // Read-only routes for any authenticated user
