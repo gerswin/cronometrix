@@ -40,7 +40,7 @@ export function DeptChart({ records }: DeptChartProps) {
             <Cell key={i} fill={COLORS[i % COLORS.length]} />
           ))}
         </Pie>
-        <Tooltip formatter={(val: number) => [`${val} presentes`, '']} />
+        <Tooltip formatter={(val) => [`${typeof val === 'number' ? val : 0} presentes`, '']} />
         <Legend />
       </PieChart>
     </ResponsiveContainer>

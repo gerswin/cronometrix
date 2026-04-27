@@ -6,10 +6,6 @@ use validator::Validate;
 
 use crate::{auth::service, errors::AppError, state::AppState};
 
-// Note: full setup_activate behavior + setup_status `licensed` extension land in
-// Task 2 of plan 06-02. Task 1 only registers the surface so main.rs compiles
-// with the new public route.
-
 /// POST /api/v1/setup/status
 /// Returns {"initialized": true/false} based on whether any user exists.
 /// This endpoint is PUBLIC — no auth required.
@@ -33,7 +29,10 @@ pub async fn setup_status(
         .map(|row| row.get::<i64>(0).unwrap_or(0))
         .unwrap_or(0);
 
-    Ok(Json(json!({ "initialized": count > 0 })))
+    Ok(Json(json!({
+        "initialized": count > 0,
+        "licensed": state.license_valid.load(std::sync::atomic::Ordering::Relaxed)
+    })))
 }
 
 /// Request body for POST /api/v1/setup/init
@@ -115,26 +114,65 @@ pub async fn setup_init(
 #[derive(Debug, Deserialize, Validate)]
 pub struct SetupActivateRequest {
     /// License key in XXXX-XXXX-XXXX-XXXX format (16 alphanumeric + 3 hyphens = 19 chars).
+    /// Validator only enforces length here; the explicit split-check below
+    /// catches non-alphanumeric segments and missing hyphens without pulling
+    /// in a `regex` static (avoids the once_cell::Lazy dance).
     #[validate(length(min = 19, max = 19, message = "License key must be in XXXX-XXXX-XXXX-XXXX format"))]
     pub license_key: String,
 }
 
 /// POST /api/v1/setup/activate
-///
-/// Surface stub introduced by Plan 06-02 Task 1 so main.rs can register the
-/// public route and the protected route groups can be wrapped with
-/// `require_license`. Task 2 replaces the body with the full DO Functions
-/// activation flow + idempotency guard + state.license_valid flip.
-///
+/// Public endpoint — first-run activation. Calls DO Functions, persists JWT,
+/// flips state.license_valid to true on success.
 /// Per LIC-01: this endpoint MUST stay public so unlicensed installations can
-/// activate.
+/// activate. Per T-06-19: idempotent — second call after success returns 409
+/// ALREADY_ACTIVATED so the frontend can redirect through /setup → /login.
 pub async fn setup_activate(
-    State(_state): State<AppState>,
-    Json(_body): Json<SetupActivateRequest>,
+    State(state): State<AppState>,
+    Json(body): Json<SetupActivateRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Task 2 replaces this body with the production activation flow.
-    Err::<Json<serde_json::Value>, _>(AppError::BadGateway {
-        code: "ACTIVATION_UNREACHABLE",
-        message: "Activation endpoint not yet implemented (Plan 06-02 Task 2 pending)".to_string(),
-    })
+    // Cheap format validation (avoids round-tripping garbage to DO Functions)
+    body.validate().map_err(|e| AppError::Validation {
+        code: "VALIDATION_ERROR",
+        message: e.to_string(),
+    })?;
+
+    // Format check: XXXX-XXXX-XXXX-XXXX (4 alphanumeric segments separated by hyphens).
+    let key = body.license_key.trim();
+    let parts: Vec<&str> = key.split('-').collect();
+    if parts.len() != 4
+        || parts
+            .iter()
+            .any(|p| p.len() != 4 || !p.chars().all(|c| c.is_ascii_alphanumeric()))
+    {
+        return Err(AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "License key must be in XXXX-XXXX-XXXX-XXXX format".to_string(),
+        });
+    }
+
+    // Idempotent guard (T-06-19): if already activated, return 409 ALREADY_ACTIVATED
+    // so the frontend can redirect through /setup → /login.
+    if state
+        .license_valid
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return Err(AppError::Conflict {
+            code: "ALREADY_ACTIVATED",
+            message: "This installation is already activated.".to_string(),
+        });
+    }
+
+    let _claims = crate::license::service::activate_license(
+        &body.license_key,
+        &state.config.do_functions_activate_url,
+        &state.config.license_jwt_path,
+    )
+    .await?;
+
+    state
+        .license_valid
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    Ok((StatusCode::OK, Json(json!({ "activated": true }))))
 }

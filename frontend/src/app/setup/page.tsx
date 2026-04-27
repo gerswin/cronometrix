@@ -48,12 +48,17 @@ export default function SetupPage() {
     },
   })
 
-  // On mount: check if setup is already done
+  // On mount: check if setup is already done. Phase 6 adds a `licensed`
+  // flag to the response — gate the wizard behind license activation.
   useEffect(() => {
     const checkStatus = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/v1/setup/status`)
         const data = await res.json()
+        if (data.licensed === false) {
+          router.push("/setup/license")
+          return
+        }
         if (data.initialized) {
           setAlreadyConfigured(true)
           setTimeout(() => router.push("/login"), 1500)

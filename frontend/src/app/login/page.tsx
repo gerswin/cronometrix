@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { Suspense, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -42,7 +42,7 @@ function safeRedirect(raw: string | null): string {
   return raw
 }
 
-export default function LoginPage() {
+function LoginPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [showPassword, setShowPassword] = useState(false)
@@ -187,5 +187,25 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// Next.js 16 requires useSearchParams() to live under a Suspense boundary
+// for static prerendering — wrap the inner page in a fallback that mirrors
+// the loading skeleton used by the rest of the auth wizard pages.
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center">
+          <Loader2
+            className="h-6 w-6 animate-spin text-primary"
+            aria-label="Loading login"
+          />
+        </div>
+      }
+    >
+      <LoginPageInner />
+    </Suspense>
   )
 }

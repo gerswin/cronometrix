@@ -73,3 +73,19 @@ export const tenantInfoSchema = z.object({
 })
 
 export type TenantInfoFormValues = z.infer<typeof tenantInfoSchema>
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase 6 — License activation (UI-SPEC §Form Validation Contract)
+// ──────────────────────────────────────────────────────────────────────
+
+export const licenseSchema = z.object({
+  license_key: z
+    .string()
+    .min(1, 'License key is required.')
+    .regex(
+      /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i,
+      'License key must be in XXXX-XXXX-XXXX-XXXX format.',
+    ),
+})
+
+export type LicenseFormData = z.infer<typeof licenseSchema>
