@@ -99,4 +99,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-26 — Phase 5 (Reports & Payroll Export) complete; backend Reports JSON+Excel APIs + tenant_info CRUD + frontend Reports/Settings UI all live. PAY-01..PAY-04 validated.*
+*Last updated: 2026-04-28 — Phase 6 (Licensing & Deployment) complete; license backend module + Tower middleware gate + Docker/cloudflared deploy stack + DO Functions activate/renew server live. LIC-01..LIC-05 validated; DEPL-01/02/04 validated; DEPL-03 partial (auto-register CF tunnel deferred). 6 HUMAN-UAT items pending Linux VM smoke.*
