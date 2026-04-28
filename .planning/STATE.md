@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 08-03-PLAN.md
-last_updated: "2026-04-28T17:43:40.223Z"
+stopped_at: Completed 08-04A-PLAN.md
+last_updated: "2026-04-28T18:36:47.400Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
   completed_phases: 7
-  total_plans: 31
-  completed_plans: 28
-  percent: 90
+  total_plans: 33
+  completed_plans: 29
+  percent: 88
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 8 (test-coverage-quality-gate) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Ready to execute
 Last activity: 2026-04-28
 
-Progress: [█████████░] 90%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -66,6 +66,7 @@ Progress: [█████████░] 90%
 | Phase 08 P01 | 25 | 2 tasks | 11 files |
 | Phase 08 P02 | 50 | 3 tasks | 16 files |
 | Phase 08 P03 | 11 | 2 tasks | 5 files |
+| Phase 08 P04A | 140 | 16 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -121,6 +122,9 @@ Recent decisions affecting current work:
 - Phase 8 Wave 2: scope expanded from 4 → 12 sibling files mid-execution — cargo build --tests revealed 8 additional callers of common::test_state with the 2-arg signature; per Rule 3 (blocking) all 12 migrated together
 - Phase 8 D-22 (Wave 3 / Plan 03): Coverage tooling shipped — Vitest config with two-level threshold via glob form (no perFile:true; RESEARCH § Pitfall 4); awk-based lcov post-processor for per-file floor enforcement (cargo-llvm-cov has no per-file flag); rust-toolchain.toml pins nightly-2026-04-01 + llvm-tools-preview; baseline reveals 51 files below floor (27 backend + 24 frontend) — Plan 04 must triage scope-cap
 - Phase 8 Plan 03: backend baseline measured without --branch (stable rustc 1.93.0 on local box, no rustup); BRF=0 across all records; line% = 63.09% measured accurately; backend branch% deferred to Plan 05 CI run under nightly
+- Phase 8 04A: AppError variant pattern-match assertions over Display strings — service-layer error tests must match { Variant { code, message } => ... } because Display only emits the variant tag
+- Phase 8 04A: wiremock + Mock::given(method).and(path) is the canonical pattern for ISAPI client digest-auth coverage; happy + 5xx + 401-without-WWW-Authenticate exhaust the retry-loop branches without real hardware
+- Phase 8 04A: process-Mutex (static ENV_LOCK) around Paths::from_env / Config::from_env tests — needed under cargo nextest parallel execution; tolerate poisoned mutex via .unwrap_or_else(|e| e.into_inner()) for chained tests
 
 ### Pending Todos
 
@@ -140,8 +144,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T17:43:40.220Z
-Stopped at: Completed 08-03-PLAN.md
+Last session: 2026-04-28T18:36:47.396Z
+Stopped at: Completed 08-04A-PLAN.md
 Resume file: None
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z
