@@ -175,3 +175,13 @@ Plans:
 - [x] 08-04-PLAN.md — Coverage gap-fill tests (backend + frontend) — split into 04A (backend domain), 04B (backend infrastructure), 04C (frontend + composite checkpoint); `make coverage-frontend` exits 0; backend GREEN on Linux CI (2 macOS-only exclusions: license/fingerprint.rs + license/service.rs)
 - [x] 08-05-PLAN.md — `.github/workflows/ci.yml` with two parallel jobs + HTML artifacts + negative-regression validation (D-01/D-03/D-04/D-05/D-13) — _live CI validation deferred to manual follow-up; see 08-05-SUMMARY.md_
 - [x] 08-06-PLAN.md — CLAUDE.md docs: Test Coverage section + Conventions § Filesystem-root injection (D-22/D-23)
+
+### Phase 9: E2E Playwright test suite — login, dashboard, marcaciones, empleados, dispositivos, reportes; auth fixtures; CI integration; covers src/app/ (excluded from Vitest per D-10)
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 8
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 9 to break down)

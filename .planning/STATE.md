@@ -78,6 +78,7 @@ Progress: [██████████] 100%
 ### Roadmap Evolution
 
 - Phase 8 added: Test Coverage & Quality Gate — reach >=90% line / >=85% branch coverage backend + frontend, add CI thresholds, fix leave_tests cwd-dependent failure, document coverage commands
+- Phase 9 added: E2E Playwright test suite — login, dashboard, marcaciones, empleados, dispositivos, reportes; auth fixtures; CI integration; covers src/app/ (excluded from Vitest per D-10)
 
 ### Decisions
 
