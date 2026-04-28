@@ -1088,7 +1088,7 @@ CREATE INDEX IF NOT EXISTS idx_edp_status ON enrollment_device_pushes(status);
 | A7 | `multer` 3.1.0 + Axum 0.8 enforces the configured `RequestBodyLimitLayer` correctly without truncation surprises. | Pitfall 8 | Axum issue #1666 (cited in search) hints at edge cases; mitigation is an integration test that uploads a 3 MB file and asserts a 413 — not a 200 with empty fields. |
 | A8 | Each Hikvision device handles 4 concurrent ISAPI sessions reliably (D-16 backfill semaphore cap). | Pitfall 5 | Could be 5 or 10; conservative cap of 4 is safe but slow. Tunable via env var. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 ### Q1: Should server-side image downscale (currently in CONTEXT.md "Deferred Ideas") be pulled into Phase 7 scope?
 
@@ -1103,6 +1103,9 @@ Whether D-04's "no re-encode" was intended as a v1 limitation (knowingly accepti
 **Recommendation:**
 Pull downscale into Phase 7. The cost is one new crate (`image` 0.25.10) and one helper function (~50 LOC, shown in Pattern 3). The benefit is that "Subir JPG" actually works for real-world uploads. Without it, the upload mode is broken-by-design for >50% of admin uploads. Discuss-phase rebound (or planner judgment) needed if this contradicts D-04 deliberately.
 
+
+**RESOLVED (2026-04-27):** Pulled into Phase 7 per CONTEXT.md Research Lock-In **D-04 SUPERSEDED** — server-side downscale moved into scope; `image = "0.25.10"` added to `backend/Cargo.toml`; iterative downscale loop implemented in 07-01 Task 4 (`backend/src/enrollments/image_pipeline.rs::normalize_face_jpeg`).
+
 ### Q2: Is `face-api.js` (the literal package name in CONTEXT.md D-05) interchangeable with `@vladmandic/face-api`?
 
 **What we know:**
@@ -1115,6 +1118,9 @@ Whether D-05 referred to "any face-api.js fork" or specifically the original pac
 
 **Recommendation:**
 Plan should specify `@vladmandic/face-api` by name. The functional intent of D-05 (face detection in browser, hard gate, lazy load) is unaffected. The choice is operational/dependency hygiene.
+
+
+**RESOLVED (2026-04-27):** Use `@vladmandic/face-api@1.7.15` per CONTEXT.md Research Lock-In **D-05 SUPERSEDED** (maintained fork with bundled TFJS 4, drop-in API surface replacement for the unmaintained original). Locked in 07-02 Task 1 frontend dependency install + vendored tinyFaceDetector model files under `frontend/public/models/`.
 
 ### Q3: Should `D-12`'s capture-from-device flow be implemented inline (handler) or as a 2-step state machine (capture endpoint + poll endpoint)?
 
@@ -1129,6 +1135,9 @@ Exactly how the device returns the captured JPG — via a polling endpoint on th
 **Recommendation:**
 Treat as Claude's Discretion (CONTEXT.md). Recommended approach: implement the capture flow as a 2-step state machine on the backend (so the UI doesn't hang for 30s). The first endpoint returns 202 + a `capture_id`; a backend task polls the device for the captured image; the UI polls `GET /captures/:id` on the same 1500ms cadence as the enrollment status. Reuses the existing `enrollment_mode()` ISAPI primitive for step 1.
 
+
+**RESOLVED (2026-04-27):** 2-step state machine per CONTEXT.md Research Lock-In **D-02 LOCKED**. `POST /api/v1/enrollments/capture-from-device` returns 202 + `capture_id` immediately; frontend polls `GET /api/v1/enrollments/captures/:capture_id` on the same 1500ms cadence as enrollment status. Implemented in 07-01 Task 4 (handlers `capture_from_device` + `get_capture`) and consumed by 07-02 Task 3 (`kiosk-capture-tab.tsx`). Captured JPEG bytes are returned inline via `CaptureResponse.photo_b64` (base64) when status==captured — frontend decodes via `atob()` → `Blob` → `URL.createObjectURL` for preview, no second HTTP fetch needed.
+
 ### Q4: Should photos be served via a dedicated `GET /enrollments/:id/photo` endpoint, or via a static file route?
 
 **What we know:**
@@ -1141,6 +1150,9 @@ Phase 7 scope.
 
 **Recommendation:**
 Out of Phase 7 scope. Don't build it. If the in-progress list (`InProgressEnrollmentList` per UI-SPEC) ever needs to show a thumbnail, expose a thin `GET /enrollments/:id/photo` returning `image/jpeg` bytes from disk — but only if the UI demands it. Audit-panel phase can add this when it lands.
+
+
+**RESOLVED (2026-04-27):** Out of Phase 7 scope; **deferred to a future audit-panel phase** per CONTEXT.md Research Lock-In (`GET /enrollments/:id/photo` deferred). Phase 7 endpoints stay scoped to write/push/status only. The kiosk-mode preview is satisfied by `CaptureResponse.photo_b64` inline-base64 (Q3 RESOLVED) — distinct from a generic photo read-back endpoint.
 
 ## Environment Availability
 
