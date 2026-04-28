@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 08-01-PLAN.md
-last_updated: "2026-04-28T16:57:19.527Z"
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-04-28T17:27:37.406Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
   completed_phases: 7
   total_plans: 31
-  completed_plans: 26
-  percent: 84
+  completed_plans: 27
+  percent: 87
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 8 (test-coverage-quality-gate) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-04-28
 
-Progress: [████████░░] 84%
+Progress: [█████████░] 87%
 
 ## Performance Metrics
 
@@ -64,6 +64,7 @@ Progress: [████████░░] 84%
 | Phase 07 P01 | 180 | 6 tasks | 23 files |
 | Phase 07 P02 | 18 minutes | 4 tasks | 30 files |
 | Phase 08 P01 | 25 | 2 tasks | 11 files |
+| Phase 08 P02 | 50 | 3 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,8 @@ Recent decisions affecting current work:
 - Phase 8 D-18/D-19 (Wave 1): Paths substruct on AppState — Paths::from_env at startup, Paths::for_test(tempdir) in tests; eliminates the cwd-dependent + env-var-race anti-pattern that broke leave_tests under cargo-llvm-cov
 - Phase 8 D-21 (Wave 1): Backwards compat preserved verbatim — same env var names (CRONOMETRIX_LEAVES_ROOT/CRONOMETRIX_EVENTS_ROOT/ENROLLMENTS_DIR/CRONOMETRIX_CAPTURES_TMP/DATA_DIR) and same string defaults the deleted helpers used
 - persist_attendance_event signature gains events_root: &Path rather than &AppState — function only takes &Connection so threading a single &Path matches write_photo_atomic's shape
+- Phase 8 D-20 (Wave 2): test_state_with_tmpdir returns (AppState, TempDir) tuple — type system surfaces Pitfall 1 (premature drop) at compile time; uniform across 16 test files
+- Phase 8 Wave 2: scope expanded from 4 → 12 sibling files mid-execution — cargo build --tests revealed 8 additional callers of common::test_state with the 2-arg signature; per Rule 3 (blocking) all 12 migrated together
 
 ### Pending Todos
 
@@ -134,8 +137,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T16:57:19.524Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-04-28T17:27:37.402Z
+Stopped at: Completed 08-02-PLAN.md
 Resume file: None
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z
