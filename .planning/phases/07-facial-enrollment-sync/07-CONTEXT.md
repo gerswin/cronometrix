@@ -65,6 +65,16 @@ Admin enrolls an employee's facial profile through the web UI via one of three i
 
 - **D-18:** Admin only. All enrollment endpoints + UI gated by `require_admin` middleware (Phase 1 D-09 + Phase 4 D-14 pattern). Supervisor and Viewer see the sidebar nav item but the screen renders a "Acceso restringido" placeholder if they navigate to it. (Carry-forward — no new policy.)
 
+### Research Lock-Ins (2026-04-27, post-RESEARCH.md)
+
+- **D-12 LOCKED:** Use **modern 2-step ISAPI flow**: `POST /ISAPI/AccessControl/UserInfo/Record?format=json` (create person, JSON body) followed by `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json` (multipart: JSON metadata part + JPEG bytes part). Default `FDID="1"`, `faceLibType="blackFD"` (research A2 — verify on first hardware smoke test). Legacy `UserInfo/SetUp` path discarded.
+- **D-15 LOCKED:** Face delete = `PUT /ISAPI/AccessControl/UserInfoDetail/Delete?format=json` with `UserInfoDetail` body listing employeeNo. Confirmed in research.
+- **D-04 SUPERSEDED — server-side downscale moved into Phase 7 scope.** Phone uploads (1–4 MB) exceed Hikvision's 200 KB face-image cap; without downscale the upload tab fails on real devices. Add `image = "0.25.10"` to `backend/Cargo.toml`. Multipart receive path runs an iterative downscale loop (resize → JPEG encode at quality 90 → if still >200 KB, drop quality by 10, repeat down to quality 50; if still >200 KB, halve dimensions and reset quality) before persistence and ISAPI push. Original frontend MIME/magic-bytes validation stays. Removes the `Server-side image downscale` entry from Deferred Ideas.
+- **D-05 SUPERSEDED — use `@vladmandic/face-api@1.7.15` (maintained fork)** instead of literal `face-api.js@0.22.2` (unmaintained, TFJS 1.7 incompatible with React 19). Same API surface; bundles TFJS 4. Lazy-load `tinyFaceDetector` (~190 KB quantized weights, NOT 6 MB — the 6 MB number in Specifics referred to the full model set). Loaded only inside the modal `useEffect`.
+- **D-02 LOCKED — kiosk capture is a 2-step state machine handler-side.** Endpoint `POST /api/v1/enrollments/capture-from-device` returns immediately with `capture_id`; frontend polls `GET /api/v1/enrollments/captures/:capture_id` (or reuses the same enrollment-status polling shape) until the device-side capture completes (success → preview JPG returned; timeout/error → terminal error). Modal renders preview + Aceptar/Recapturar; Aceptar submits the JPG to `POST /api/v1/enrollments` exactly like the other two tabs. Keeps the 30s device-side timeout cleanly outside the request lifecycle.
+- **Concurrency cap:** D-06 fan-out runs unbounded JoinSet (one task per active device — small fleets). D-16 backfill uses `tokio::sync::Semaphore::new(4)` to cap concurrent ISAPI calls per device under load. Confirmed in research as Hikvision Pitfall 5 mitigation.
+- **`GET /enrollments/:id/photo` deferred** to future audit-panel phase. Phase 7 endpoints stay scoped to write/push/status only.
+
 ### Claude's Discretion
 
 - Exact column types, indexes, FK ON DELETE behavior on the new tables — follow Phase 1/2 conventions (UUID PKs, INTEGER UTC epoch timestamps, version column on mutable rows).
@@ -171,10 +181,9 @@ Admin enrolls an employee's facial profile through the web UI via one of three i
 ## Deferred Ideas
 
 - **Mass admin re-sync screen** — UI to push all employees to all devices on demand (e.g., after a mass device firmware swap). Logic exists via D-16; just no admin UI in v1.
-- **Server-side image downscale** — fallback if Hikvision rejects D-04's untouched 2 MB upload payload. Add an `image` crate + downscale-to-200KB step on the multipart receive path. Cheap follow-up.
 - **Face quality scoring v2** — track per-enrollment quality metrics over time (face-api.js outputs detection confidence + face descriptor); surface as a "calidad histórica" chart on the employee detail page.
 - **Device firmware compatibility matrix** — document which Hikvision models support which ISAPI face endpoints; auto-detect on device registration. v1 assumes all registered devices speak the chosen endpoint family.
-- **Enrollment audit panel UI** — read-only view of `audit_log` filtered to enrollment events with photo previews. Backend audit data lands in v1; UI is a future phase (likely a generic audit-panel phase).
+- **Enrollment audit panel UI** — read-only view of `audit_log` filtered to enrollment events with photo previews. Backend audit data lands in v1; UI is a future phase (likely a generic audit-panel phase). Includes the deferred `GET /api/v1/enrollments/:id/photo` read-back endpoint.
 - **Batch enrollment via CSV+photos** — admin uploads ZIP of photos named by cédula; backend matches and bulk enrolls. Out of scope for v1.
 - **Face detection on the alertStream side** — currently Cronometrix relies on device firmware to recognize. A future enhancement could verify recognition quality against the canonical photo and flag drift.
 
