@@ -1,0 +1,85 @@
+# .github/workflows/ci.yml
+# Phase 8 quality gate: backend + frontend coverage on every push + PR to main.
+# Hard-fails on threshold miss (D-13). HTML artifacts uploaded for triage (D-04).
+# Two parallel jobs (D-05); both required via GitHub branch protection (manual UI step).
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-coverage:
+    name: Backend Coverage
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly Rust (--branch is unstable)
+        run: |
+          rustup toolchain install nightly --component llvm-tools-preview
+          rustup default nightly
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.5
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run coverage with project-wide line gate
+        run: |
+          cargo llvm-cov nextest \
+            --branch --all-features \
+            --ignore-filename-regex '(main\.rs|tests/common/.*)' \
+            --fail-under-lines 90 \
+            --lcov --output-path lcov.info
+      - name: Enforce branch + per-file thresholds
+        run: bash ../scripts/enforce-coverage-floor.sh lcov.info 85 70 60
+      - name: Generate HTML report
+        if: always()
+        run: cargo llvm-cov --branch --all-features --no-clean --html
+      - name: Upload HTML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-html
+          path: backend/target/llvm-cov/html
+          retention-days: 14
+
+  frontend-coverage:
+    name: Frontend Coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Run Vitest with coverage (thresholds enforced via vitest.config.ts)
+        run: npx vitest run --coverage
+      - name: Upload HTML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-html
+          path: frontend/coverage
+          retention-days: 14
