@@ -114,4 +114,20 @@ describe('CommandModal', () => {
     fireEvent.change(select, { target: { value: 'door_open' } })
     expect(screen.queryByText(/dispositivo perderá conexión/i)).toBeNull()
   })
+
+  it('closed state (open=false) renders nothing — exercises the early dialog-content guard', () => {
+    render(wrap(<CommandModal open={false} device={DEVICE} onClose={() => {}} />))
+    expect(screen.queryByText('Enviar Comando ISAPI')).toBeNull()
+  })
+
+  it('button shows Enviando… while pending; remains disabled until resolution', async () => {
+    let resolveCommand: ((v: unknown) => void) | null = null
+    postMock.mockImplementationOnce(() => new Promise((r) => { resolveCommand = r }))
+    render(wrap(<CommandModal open={true} device={DEVICE} onClose={() => {}} />))
+    const submit = screen.getByRole('button', { name: /Enviar Comando/i }) as HTMLButtonElement
+    await act(async () => { fireEvent.click(submit) })
+    await waitFor(() => expect(submit.disabled).toBe(true))
+    expect(submit.textContent).toContain('Enviando')
+    resolveCommand?.({ data: { ok: true } })
+  })
 })

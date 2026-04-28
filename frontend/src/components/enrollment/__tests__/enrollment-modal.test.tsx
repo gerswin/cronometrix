@@ -63,7 +63,28 @@ function makeWrapper() {
 describe('EnrollmentModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(api.get).mockResolvedValue({ data: { data: [] } })
+    // Route GETs based on URL: /enrollments/:id polling needs the Enrollment
+    // shape (with device_pushes), other GETs (employee list, etc.) get the
+    // paginated shape. Without this routing the polling query reads the
+    // employee-list response and crashes on device_pushes.map.
+    // [Rule 1 fix from 08-04C — was a pre-existing flaky test]
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.startsWith('/enrollments/')) {
+        return Promise.resolve({
+          data: {
+            id: 'enr-001',
+            employee_id: 'emp-001',
+            status: 'in_progress',
+            started_at: '2026-04-28T12:00:00Z',
+            completed_at: null,
+            device_pushes: [
+              { device_id: 'dev-1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
     vi.mocked(api.post).mockResolvedValue({
       data: {
         enrollment_id: 'enr-001',

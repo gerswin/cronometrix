@@ -108,4 +108,28 @@ describe('EmployeeEnrollmentPicker', () => {
     expect((btn as HTMLButtonElement).disabled).toBe(true)
     expect(onSelect).not.toHaveBeenCalled()
   })
+
+  it('clicking Iniciar Enrolamiento against an empty list does not call onSelect (false branch of "if (emp)")', async () => {
+    // Render with the loader still pending so `employees` array is empty
+    // throughout. Inject an option DOM-level via a fake (the select only
+    // accepts options it lists; we add one programatically).
+    apiGet.mockReturnValueOnce(new Promise(() => {})) // never resolves
+
+    const onSelect = vi.fn()
+    await act(async () => {
+      render(wrap(<EmployeeEnrollmentPicker onSelect={onSelect} />))
+    })
+    const select = screen.getByLabelText('Selecciona un empleado') as HTMLSelectElement
+    // Programmatically add a synthetic option (the loaded list has 0 employees).
+    const ghost = document.createElement('option')
+    ghost.value = 'ghost-id'
+    ghost.text = 'Ghost'
+    select.appendChild(ghost)
+    fireEvent.change(select, { target: { value: 'ghost-id' } })
+    const btn = screen.getByRole('button', { name: /Iniciar Enrolamiento/i })
+    // selectedId='ghost-id' is non-empty, so the button is enabled
+    expect((btn as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(btn)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
 })
