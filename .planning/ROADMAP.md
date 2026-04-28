@@ -172,5 +172,5 @@ Plans:
 - [x] 08-02-PLAN.md — Test-helper migration: `common::test_state_with_tmpdir` + remove `LeavesRootGuard`/`EventsRootGuard` from leave/event/listener tests + 4 other AppState construction sites (D-20)
 - [x] 08-03-PLAN.md — Coverage tooling: vitest.config.ts thresholds + Makefile + scripts/enforce-coverage-floor.sh + rust-toolchain.toml (D-02/D-08/D-14/D-16)
 - [x] 08-04-PLAN.md — Coverage gap-fill tests (backend + frontend) — split into 04A (backend domain), 04B (backend infrastructure), 04C (frontend + composite checkpoint); `make coverage-frontend` exits 0; backend GREEN on Linux CI (2 macOS-only exclusions: license/fingerprint.rs + license/service.rs)
-- [ ] 08-05-PLAN.md — `.github/workflows/ci.yml` with two parallel jobs + HTML artifacts + negative-regression validation (D-01/D-03/D-04/D-05/D-13)
+- [x] 08-05-PLAN.md — `.github/workflows/ci.yml` with two parallel jobs + HTML artifacts + negative-regression validation (D-01/D-03/D-04/D-05/D-13) — _live CI validation deferred to manual follow-up; see 08-05-SUMMARY.md_
 - [ ] 08-06-PLAN.md — CLAUDE.md docs: Test Coverage section + Conventions § Filesystem-root injection (D-22/D-23)

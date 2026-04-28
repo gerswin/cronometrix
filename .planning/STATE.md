@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Wave 4 (04A+04B+04C) approved; ready for Plan 05
-last_updated: "2026-04-28T21:44:11.542Z"
+stopped_at: Plan 08-05 finalized with deferred manual CI validation; ready for Plan 08-06 (CLAUDE.md docs)
+last_updated: "2026-04-28T22:08:04.227Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
   completed_phases: 7
   total_plans: 33
-  completed_plans: 31
-  percent: 94
+  completed_plans: 32
+  percent: 97
 ---
 
 # Project State
@@ -30,7 +30,7 @@ Plan: 6 of 6
 Status: Phase complete — ready for verification
 Last activity: 2026-04-28
 
-Progress: [█████████░] 94%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -69,6 +69,7 @@ Progress: [█████████░] 94%
 | Phase 08 P04A | 140 | 16 tasks | 16 files |
 | Phase 08 P04B | 85min | 2 tasks tasks | 11 files files |
 | Phase 08 P04C | 120min | 5 tasks tasks | 27 files files |
+| Phase 08 P05 | 35 | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -136,6 +137,9 @@ Recent decisions affecting current work:
 - Phase 8 04C: 6 branch-bump test files added beyond the 21 bucket files (under Rule 2) to clear the 85% project branch gate from 81.88% → 85.12%. Targeted drill-down-dialog, filters-bar, period-picker, tenant-info-form, validations, and command-modal — all bumps are existing-file branch coverage, no new bucket scope.
 - Phase 8 04C: FakeEventSource shim (custom class on globalThis) is the canonical pattern for testing useSSE — msw's EventSource doesn't simulate auto-close-on-error and progressive backoff. Custom shim makes all 5 backoff levels (1/2/4/8/30s capped) deterministic.
 - Phase 8 04C approved: 2 macOS-only backend exclusions accepted (license/fingerprint.rs + license/service.rs); 6 Rule-2 branch-bump tests accepted; Rule-1 enrollment-modal fix accepted; Plan 05 (CI gate) unblocked
+- Phase 8 Plan 05 [User direction]: CI validation deferred to manual follow-up — workflow file (.github/workflows/ci.yml) verified statically (grep + YAML parse); positive run, negative regression PR, and branch protection setup tracked as unchecked checklist in 08-05-SUMMARY.md Manual Follow-up section
+- Phase 8 Plan 05: GitHub Actions workflow pinned to actions/checkout@v4, actions/setup-node@v4, actions/upload-artifact@v4, taiki-e/install-action@v2 (cargo-llvm-cov@0.8.5 + cargo-nextest), Swatinem/rust-cache@v2; permissions: contents: read at workflow level (least privilege per T-08-15)
+- Phase 8 Plan 05: CI exclusion regex parity enforced — '(main\.rs|tests/common/.*)' identical between Makefile and .github/workflows/ci.yml backend job; prevents drift between local make coverage and CI gate
 
 ### Pending Todos
 
@@ -155,8 +159,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T21:44:10.099Z
-Stopped at: Wave 4 (04A+04B+04C) approved; ready for Plan 05
+Last session: 2026-04-28T22:08:04.223Z
+Stopped at: Plan 08-05 finalized with deferred manual CI validation; ready for Plan 08-06 (CLAUDE.md docs)
 Resume file: None
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z
