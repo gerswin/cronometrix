@@ -8,6 +8,9 @@ use crate::enrollments::handlers::CapturesMap;
 use crate::recompute::RecomputeRequest;
 use crate::supervisor::LifecycleTx;
 
+mod paths;
+pub use paths::Paths;
+
 /// SSE payload broadcast to all connected /events/stream clients.
 /// Enriched with employee_name and department at broadcast time when available.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -49,6 +52,14 @@ pub struct AttendanceEventSSEPayload {
 pub struct AppState {
     pub db: Arc<libsql::Database>,
     pub config: Arc<Config>,
+    /// Phase 8 (08-01): filesystem roots for evidence, event JPEGs, enrollment
+    /// photos, kiosk captures tmp, and override evidence. Injected via
+    /// `Paths::from_env()` at startup; overridden in tests with a per-test
+    /// `TempDir` via `Paths::for_test`. Reading from env at use-site (the old
+    /// `leaves_root()` / `events_root()` helpers) was cwd-dependent and
+    /// process-globally racy — see CLAUDE.md Conventions § Filesystem-root
+    /// injection.
+    pub paths: Arc<Paths>,
     pub lifecycle_tx: Option<LifecycleTx>,
     pub recompute_tx: Option<UnboundedSender<RecomputeRequest>>,
     pub event_broadcast: Option<broadcast::Sender<AttendanceEventSSEPayload>>,
