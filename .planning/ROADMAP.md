@@ -138,11 +138,11 @@ Plans:
   2. Admin can upload a JPG photo for enrollment as an alternative to live capture
   3. After enrollment, the system automatically pushes the facial profile to all registered devices concurrently
   4. Admin can see per-device sync status (in progress, success, failure) during and after the push without the modal blocking
-**Plans:** 4 plans
+**Plans:** 2 plans
 
 Plans:
-- [ ] 07-01: Enrollment backend — ISAPI face profile API integration, concurrent multi-device push with tokio tasks, per-device status tracking
-- [ ] 07-02: Enrollment modal UI — device camera / webcam / JPG upload flows, per-device sync status display, non-blocking async push
+- [ ] 07-01-PLAN.md — Enrollment backend: migrations 016/017 (face_id/current_face_enrollment_id/state columns + 3 new tables + 9 audit triggers), `enrollments/` module (handlers, service, pusher with JoinSet fan-out, image_pipeline ≤200KB downscale, isapi_face), `workers/` (PurgeWorker + BackfillWorker with Semaphore=4), `isapi/client.rs` extended with upsert_user/upload_face/delete_user/capture_face_image, RequestBodyLimitLayer(3MB), Bruno collection, ~23 integration tests
+- [ ] 07-02-PLAN.md — Enrollment modal UI: 6 shadcn primitives (tabs/progress/select/sonner/badge/skeleton), vendored @vladmandic/face-api@1.7.15 + tinyFaceDetector model (~190KB), 11 enrollment components (EnrollmentModal centerpiece, 3 capture tabs, ValidationPanel + SyncPanel/Row, picker + in-progress list), shared AccessRestricted, /enrollment page replacement, Employees table row action, Zod schema + types, 6 vitest test files + manual smoke checkpoint
 **UI hint**: yes
 
 ## Progress
