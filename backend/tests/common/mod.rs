@@ -449,17 +449,24 @@ pub fn ensure_fixtures_present() -> anyhow::Result<()> {
 /// construction:
 ///
 /// ```ignore
-/// let mut state = common::test_state(Arc::new(db), config);
+/// let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 /// state.lifecycle_tx = Some(lifecycle_tx);
 /// ```
+///
+/// Phase 8 / Plan 08-02 (D-20): the third `paths` argument is required —
+/// every AppState in tests carries an `Arc<Paths>` rooted at a per-test
+/// `TempDir` (see `test_state_with_tmpdir` for the convenience helper that
+/// owns the TempDir lifetime for you).
 #[allow(dead_code)]
 pub fn test_state(
     db: std::sync::Arc<libsql::Database>,
     config: std::sync::Arc<cronometrix_api::config::Config>,
+    paths: std::sync::Arc<cronometrix_api::state::Paths>,
 ) -> cronometrix_api::state::AppState {
     cronometrix_api::state::AppState {
         db,
         config,
+        paths,
         lifecycle_tx: None,
         recompute_tx: None,
         event_broadcast: None,
@@ -468,4 +475,30 @@ pub fn test_state(
         backfill_tx: None,
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
     }
+}
+
+/// Build a test AppState backed by a fresh per-test `TempDir`.
+///
+/// CALLER MUST bind the returned `TempDir` to a local variable that outlives
+/// every assertion in the test — see Pitfall 1 in 08-RESEARCH.md. Dropping the
+/// `TempDir` removes the directory and any path-touching assertion will fail
+/// nondeterministically.
+///
+/// Idiomatic call site:
+///
+/// ```ignore
+/// let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+/// // ... use `state` for handler tests; `_tmp` keeps the dir alive ...
+/// ```
+#[allow(dead_code)]
+pub fn test_state_with_tmpdir(
+    db: std::sync::Arc<libsql::Database>,
+    config: std::sync::Arc<cronometrix_api::config::Config>,
+) -> (cronometrix_api::state::AppState, tempfile::TempDir) {
+    let tmp = tempfile::TempDir::new().expect("create tempdir for test_state");
+    let paths = std::sync::Arc::new(
+        cronometrix_api::state::Paths::for_test(tmp.path()),
+    );
+    let state = test_state(db, config, paths);
+    (state, tmp)
 }
