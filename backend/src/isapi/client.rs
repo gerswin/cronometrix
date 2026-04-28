@@ -94,6 +94,142 @@ impl DeviceConnection {
         self.send_json(&url, reqwest::Method::POST, body).await
     }
 
+    // =========================================================================
+    // Phase 7 — facial enrollment methods (D-12 LOCKED, D-15 LOCKED)
+    // =========================================================================
+
+    /// Step 1 of the 2-step face profile push (D-12 LOCKED).
+    ///
+    /// `POST /ISAPI/AccessControl/UserInfo/Record?format=json`
+    ///
+    /// Creates or replaces the person record on the device.  Hikvision may
+    /// return `subStatusCode: "duplicateEmployeeNo"` if the employee is already
+    /// registered — that is treated as success (idempotent upsert behaviour).
+    pub async fn upsert_user(&self, face_id: &str, full_name: &str) -> Result<String> {
+        use crate::enrollments::isapi_face::build_user_info_record_body;
+
+        let url = format!(
+            "{}/ISAPI/AccessControl/UserInfo/Record?format=json",
+            self.base_url
+        );
+        let body = build_user_info_record_body(face_id, full_name);
+
+        match self.send_json(&url, reqwest::Method::POST, &body).await {
+            Ok(text) => {
+                // Treat duplicate as success — device already has this person.
+                if text.contains("duplicateEmployeeNo") {
+                    tracing::warn!(
+                        face_id = %face_id,
+                        "device reports duplicateEmployeeNo — treating as success"
+                    );
+                }
+                Ok(text)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Step 2 of the 2-step face profile push (D-12 LOCKED).
+    ///
+    /// `POST /ISAPI/Intelligent/FDLib/FaceDataRecord?format=json`
+    ///
+    /// Multipart form with two parts:
+    ///   - "FaceDataRecord" (application/json): metadata JSON (faceLibType, FDID, FPID)
+    ///   - "FaceImage"      (image/jpeg):       raw JPEG bytes ≤200KB after normalisation
+    pub async fn upload_face(&self, face_id: &str, jpeg_bytes: Vec<u8>) -> Result<String> {
+        use crate::enrollments::isapi_face::build_facedata_metadata;
+        use diqwest::WithDigestAuth;
+
+        let url = format!(
+            "{}/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json",
+            self.base_url
+        );
+
+        let metadata = build_facedata_metadata(face_id);
+
+        let form = reqwest::multipart::Form::new()
+            .part(
+                "FaceDataRecord",
+                reqwest::multipart::Part::text(metadata)
+                    .mime_str("application/json")
+                    .context("set FaceDataRecord mime")?,
+            )
+            .part(
+                "FaceImage",
+                reqwest::multipart::Part::bytes(jpeg_bytes)
+                    .file_name("face.jpg")
+                    .mime_str("image/jpeg")
+                    .context("set FaceImage mime")?,
+            );
+
+        let resp = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .send_digest_auth((self.username.as_str(), self.password.as_str()))
+            .await
+            .context("ISAPI FaceDataRecord request failed")?;
+
+        let status = resp.status();
+        let text = resp.text().await.context("read ISAPI FaceDataRecord response")?;
+        anyhow::ensure!(
+            status.is_success(),
+            "device returned non-success status {status}: {text}"
+        );
+        Ok(text)
+    }
+
+    /// Delete a person record from the device (D-15 LOCKED).
+    ///
+    /// `PUT /ISAPI/AccessControl/UserInfoDetail/Delete?format=json`
+    ///
+    /// Uses `mode: byEmployeeNo` with the face_id as the Hikvision employeeNo.
+    pub async fn delete_user(&self, face_id: &str) -> Result<String> {
+        use crate::enrollments::isapi_face::build_user_delete_body;
+
+        let url = format!(
+            "{}/ISAPI/AccessControl/UserInfoDetail/Delete?format=json",
+            self.base_url
+        );
+        let body = build_user_delete_body(face_id);
+        self.send_json(&url, reqwest::Method::PUT, &body).await
+    }
+
+    /// Trigger a device-side face capture and retrieve the captured JPEG bytes
+    /// (D-02 LOCKED — kiosk mode step).
+    ///
+    /// Step 1: `POST /ISAPI/AccessControl/CaptureFaceData` (existing `enrollment_mode`)
+    ///          puts the device into live-capture mode.
+    /// Step 2: `GET /ISAPI/AccessControl/CapturedFacePicture` retrieves the JPEG.
+    ///
+    /// NOTE: RESEARCH assumption A1 — the GET path is the most-cited convention
+    /// for this device family. Adjust if hardware smoke tests reveal a different path.
+    pub async fn capture_face_image(&self) -> Result<Vec<u8>> {
+        // Step 1: enter enrollment (capture) mode.
+        self.enrollment_mode().await?;
+
+        // Step 2: retrieve the captured picture bytes.
+        let url = format!(
+            "{}/ISAPI/AccessControl/CapturedFacePicture",
+            self.base_url
+        );
+        use diqwest::WithDigestAuth;
+        let resp = self
+            .client
+            .get(&url)
+            .send_digest_auth((self.username.as_str(), self.password.as_str()))
+            .await
+            .context("ISAPI CapturedFacePicture request failed")?;
+
+        let status = resp.status();
+        anyhow::ensure!(
+            status.is_success(),
+            "device returned non-success status {status} on CapturedFacePicture"
+        );
+        let bytes = resp.bytes().await.context("read CapturedFacePicture body")?;
+        Ok(bytes.to_vec())
+    }
+
     async fn send_xml(
         &self,
         url: &str,
