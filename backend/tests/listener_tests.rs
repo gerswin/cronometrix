@@ -73,14 +73,7 @@ fn make_config() -> Arc<Config> {
 }
 
 fn make_state(db: libsql::Database) -> AppState {
-    AppState {
-        db: Arc::new(db),
-        config: make_config(),
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    }
+    common::test_state(Arc::new(db), make_config())
 }
 
 /// Seed an active device row. The port value stored here is only for display —

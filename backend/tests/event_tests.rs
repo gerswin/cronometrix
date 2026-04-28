@@ -23,7 +23,6 @@ use axum::Router;
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::events;
-use cronometrix_api::state::AppState;
 use http_body_util::BodyExt;
 use libsql::params;
 use serde_json::{json, Value};
@@ -81,14 +80,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let state = common::test_state(Arc::new(db), config);
 
     let viewer_routes = Router::new()
         .route("/events", get(events::handlers::list_events))

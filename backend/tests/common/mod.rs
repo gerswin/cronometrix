@@ -431,3 +431,41 @@ pub fn ensure_fixtures_present() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// =============================================================================
+// Shared AppState fixture (260428-3qg) — single source of truth for AppState
+// construction in integration tests. When AppState gains new fields, update
+// ONLY this function and every test crate compiles again.
+// =============================================================================
+
+/// Build an AppState with sensible test defaults:
+///  - all optional channels (`lifecycle_tx`, `recompute_tx`, `event_broadcast`,
+///    `purge_tx`, `backfill_tx`) are `None` (no workers running)
+///  - `license_valid` is `true` (so license-gated routes are reachable)
+///  - `captures` is a fresh empty map
+///
+/// Tests that need a non-default channel (e.g. supervisor lifecycle tests
+/// that need `lifecycle_tx: Some(tx)`) should override the field after
+/// construction:
+///
+/// ```ignore
+/// let mut state = common::test_state(Arc::new(db), config);
+/// state.lifecycle_tx = Some(lifecycle_tx);
+/// ```
+#[allow(dead_code)]
+pub fn test_state(
+    db: std::sync::Arc<libsql::Database>,
+    config: std::sync::Arc<cronometrix_api::config::Config>,
+) -> cronometrix_api::state::AppState {
+    cronometrix_api::state::AppState {
+        db,
+        config,
+        lifecycle_tx: None,
+        recompute_tx: None,
+        event_broadcast: None,
+        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        purge_tx: None,
+        backfill_tx: None,
+        captures: cronometrix_api::enrollments::handlers::new_captures_map(),
+    }
+}

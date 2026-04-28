@@ -6,7 +6,6 @@ use axum::Router;
 use axum::routing::{get, post};
 use cronometrix_api::auth;
 use cronometrix_api::setup;
-use cronometrix_api::state::AppState;
 use cronometrix_api::config::Config;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -30,14 +29,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let state = common::test_state(Arc::new(db), config);
 
     let public_routes = Router::new()
         .route("/health", get(|| async { "ok" }))

@@ -350,14 +350,8 @@ mod gate_behavior_tests {
             do_functions_renew_url: String::new(),
         });
 
-        let state = AppState {
-            db: Arc::new(db),
-            config,
-            lifecycle_tx: None,
-            recompute_tx: None,
-            event_broadcast: None,
-            license_valid: lv.clone(),
-        };
+        let mut state = common::test_state(Arc::new(db), config);
+        state.license_valid = lv.clone();
 
         let public_routes = Router::new()
             .route("/health", get(|| async { "ok" }))

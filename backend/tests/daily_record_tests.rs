@@ -19,27 +19,21 @@ use uuid::Uuid;
 use common::{create_test_department_with_shift, test_device_creds_key};
 
 fn make_state(db: libsql::Database) -> AppState {
-    AppState {
-        db: Arc::new(db),
-        config: Arc::new(Config {
-            database_path: "test.db".into(),
-            turso_url: String::new(),
-            turso_token: String::new(),
-            jwt_secret: common::TEST_JWT_SECRET.to_string(),
-            server_host: "127.0.0.1".into(),
-            server_port: 0,
-            turso_sync_interval_secs: 300,
-            device_creds_key: test_device_creds_key(),
-            timezone: "America/Caracas".parse().unwrap(),
-            license_jwt_path: String::new(),
-            do_functions_activate_url: String::new(),
-            do_functions_renew_url: String::new(),
-        }),
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    }
+    let config = Arc::new(Config {
+        database_path: "test.db".into(),
+        turso_url: String::new(),
+        turso_token: String::new(),
+        jwt_secret: common::TEST_JWT_SECRET.to_string(),
+        server_host: "127.0.0.1".into(),
+        server_port: 0,
+        turso_sync_interval_secs: 300,
+        device_creds_key: test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
+        license_jwt_path: String::new(),
+        do_functions_activate_url: String::new(),
+        do_functions_renew_url: String::new(),
+    });
+    common::test_state(Arc::new(db), config)
 }
 
 async fn seed_employee(db: &libsql::Database, dept_id: &str, code: &str) -> String {
