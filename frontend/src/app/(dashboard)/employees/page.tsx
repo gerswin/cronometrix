@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { TopBar } from '@/components/layout/top-bar'
 import { EmployeeTable } from '@/components/employees/employee-table'
+import { EnrollmentModal } from '@/components/enrollment/enrollment-modal'
 import { useAuth } from '@/hooks/use-auth'
 import type { PaginatedResponse, Employee, Department } from '@/types/api'
 import type { PaginationState } from '@tanstack/react-table'
@@ -13,6 +14,7 @@ const PAGE_SIZE = 10
 export default function EmployeesPage() {
   const { role } = useAuth()
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: PAGE_SIZE })
+  const [enrollmentEmployee, setEnrollmentEmployee] = useState<Employee | null>(null)
   const [search, setSearch] = useState('')
   const [deptFilter, setDeptFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -98,10 +100,17 @@ export default function EmployeesPage() {
               total={employees?.total ?? 0}
               pagination={pagination}
               onPaginationChange={setPagination}
+              onEnrollClick={setEnrollmentEmployee}
             />
           )}
         </div>
       </div>
+
+      <EnrollmentModal
+        open={!!enrollmentEmployee}
+        employee={enrollmentEmployee}
+        onClose={() => setEnrollmentEmployee(null)}
+      />
     </div>
   )
 }

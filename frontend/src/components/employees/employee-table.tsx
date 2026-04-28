@@ -4,7 +4,7 @@ import {
   type ColumnDef, type PaginationState,
 } from '@tanstack/react-table'
 import { format } from 'date-fns'
-import { Pencil, ChevronRight } from 'lucide-react'
+import { Pencil, ChevronRight, UserPlus } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import type { Employee } from '@/types/api'
 
@@ -27,11 +27,12 @@ interface EmployeeTableProps {
   total: number
   pagination: PaginationState
   onPaginationChange: (p: PaginationState) => void
+  onEnrollClick?: (employee: Employee) => void
 }
 
 const PAGE_SIZE = 10
 
-export function EmployeeTable({ data, total, pagination, onPaginationChange }: EmployeeTableProps) {
+export function EmployeeTable({ data, total, pagination, onPaginationChange, onEnrollClick }: EmployeeTableProps) {
   const { role } = useAuth()
 
   const columns: ColumnDef<Employee>[] = [
@@ -68,6 +69,15 @@ export function EmployeeTable({ data, total, pagination, onPaginationChange }: E
               onClick={() => alert(`Editar: ${row.original.id}`)}
             >
               <Pencil size={14} />
+            </button>
+          )}
+          {role === 'admin' && onEnrollClick && (
+            <button
+              className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700"
+              aria-label="Enrolar Rostro"
+              onClick={() => onEnrollClick(row.original)}
+            >
+              <UserPlus size={14} />
             </button>
           )}
           <button
