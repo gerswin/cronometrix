@@ -12,6 +12,7 @@
 mod common;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -690,6 +691,7 @@ async fn retry_push_returns_202_when_photo_present() {
     .unwrap();
 
     // Materialise the photo on disk by re-calling the photo path (start_enrollment writes it).
+    let state_for_poll = state.clone();
     let app = build_app(state);
     let req = Request::builder()
         .method(Method::POST)
@@ -706,6 +708,32 @@ async fn retry_push_returns_202_when_photo_present() {
     assert_eq!(json["enrollment_id"], resp.enrollment_id);
     assert_eq!(json["device_id"], device_id);
     assert_eq!(json["status"], "pending");
+
+    // Wait for the detached spawn body in retry_push to complete (push +
+    // finalize). This exercises the spawn block at lines 280-313 of the
+    // handler — without this poll, those lines stay uncovered.
+    let mut finalised = false;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let conn = state_for_poll.db.connect().unwrap();
+        let mut rows = conn
+            .query(
+                "SELECT status FROM enrollments WHERE id = ?1",
+                params![resp.enrollment_id.clone()],
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let s: String = row.get(0).unwrap();
+        if s != "in_progress" {
+            finalised = true;
+            break;
+        }
+    }
+    assert!(
+        finalised,
+        "retry_push detached spawn body must drive enrollment past in_progress"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +772,7 @@ async fn capture_from_device_returns_202_with_capture_id() {
     // the spawned capture task will record an error/timeout in the map.
     let device_id =
         seed_device_at(&state.db, &config.device_creds_key, "http://127.0.0.1:1").await;
+    let state_for_poll = state.clone();
     let app = build_app(state);
 
     let req = Request::builder()
@@ -760,6 +789,80 @@ async fn capture_from_device_returns_202_with_capture_id() {
     let json = body_to_json(r.into_body()).await;
     assert!(json.get("capture_id").is_some());
     assert_eq!(json["status"], "capturing");
+
+    // Wait for the detached capture spawn body in capture_from_device to land
+    // in an error state (port 1 connection refused before 30s capture timeout).
+    // This exercises the spawn block at lines 371-433 of the handler.
+    let cap_id = json["capture_id"].as_str().unwrap().to_string();
+    let mut landed = false;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let map = state_for_poll.captures.read().await;
+        if let Some(state) = map.get(&cap_id) {
+            if state.status != "capturing" {
+                landed = true;
+                break;
+            }
+        }
+    }
+    assert!(landed, "capture spawn body must transition past 'capturing'");
+}
+
+#[tokio::test]
+async fn capture_from_device_success_path_writes_jpeg_under_captures_tmp_root() {
+    // Spawn wiremock that successfully serves the 2-step capture flow.
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/CaptureFaceData"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/ISAPI/AccessControl/CapturedFacePicture"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "image/jpeg")
+                .set_body_bytes(MINI_JPEG.to_vec()),
+        )
+        .mount(&server)
+        .await;
+
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (emp_id, _admin_id, token) = seed_full(&state.db).await;
+    let config = state.config.clone();
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let state_for_poll = state.clone();
+    let app = build_app(state);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/enrollments/capture-from-device")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({"device_id": device_id, "employee_id": emp_id}).to_string(),
+        ))
+        .unwrap();
+    let r = app.oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    let json = body_to_json(r.into_body()).await;
+    let cap_id = json["capture_id"].as_str().unwrap().to_string();
+
+    // Poll for the success branch — the spawn body must write the jpeg to
+    // captures_tmp_root and update state to "captured".
+    let mut captured = false;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let map = state_for_poll.captures.read().await;
+        if let Some(s) = map.get(&cap_id) {
+            if s.status == "captured" {
+                captured = true;
+                break;
+            }
+        }
+    }
+    assert!(captured, "wiremock-backed capture must reach 'captured'");
 }
 
 #[tokio::test]

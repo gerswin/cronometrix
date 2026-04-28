@@ -347,6 +347,99 @@ async fn purge_5xx_marks_mapping_pending_delete() {
 }
 
 // =============================================================================
+// Missing employee — get_employee_status Err path (lines 92-94 in source)
+// =============================================================================
+
+#[tokio::test]
+async fn purge_unknown_employee_logs_and_returns() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel::<PurgeRequest>();
+    let w = PurgeWorker::new(state.clone(), shutdown.clone());
+    let h = tokio::spawn(async move { w.run(rx).await });
+
+    tx.send(PurgeRequest {
+        employee_id: "no-such-employee-id".into(),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    shutdown.cancel();
+    let r = tokio::time::timeout(Duration::from_secs(5), h).await;
+    assert!(r.is_ok(), "worker must survive an unknown-employee request");
+}
+
+// =============================================================================
+// Device fetch error mid-loop — drop the device after seeding the mapping so
+// `devices_service::get_decrypted` errors → mapping is marked pending_delete.
+// =============================================================================
+
+#[tokio::test]
+async fn purge_marks_pending_when_device_fetch_fails() {
+    let server = MockServer::start().await; // unused but holds a port reservation
+    let _ = &server;
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let config = state.config.clone();
+    let emp_id = seed_employee_inactive(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+
+    // Seed mapping with the active device, then mark device inactive so
+    // get_decrypted (which requires status='active') 404s.
+    let conn = state.db.connect().unwrap();
+    use cronometrix_api::enrollments::service as enr_svc;
+    enr_svc::upsert_device_face_mapping(&conn, &device_id, "face-pd", &emp_id)
+        .await
+        .unwrap();
+    conn.execute(
+        "UPDATE devices SET status = 'inactive' WHERE id = ?1",
+        params![device_id.clone()],
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel::<PurgeRequest>();
+    let w = PurgeWorker::new(state.clone(), shutdown.clone());
+    let h = tokio::spawn(async move { w.run(rx).await });
+
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+
+    // Wait for the mapping to be marked pending_delete via the device-fetch-Err arm.
+    let mut found = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let conn = state.db.connect().unwrap();
+        let mut rows = conn
+            .query(
+                "SELECT state FROM device_face_mappings WHERE employee_id = ?1",
+                params![emp_id.clone()],
+            )
+            .await
+            .unwrap();
+        if let Some(row) = rows.next().await.unwrap() {
+            let st: String = row.get(0).unwrap();
+            if st == "pending_delete" {
+                found = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        found,
+        "inactive-device branch must mark mapping pending_delete"
+    );
+
+    shutdown.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
+}
+
+// =============================================================================
 // Dedup: 5 requests for the same employee → batched into a single iteration.
 // =============================================================================
 
