@@ -63,6 +63,33 @@ pub fn build_facedata_metadata(face_id: &str) -> String {
     .to_string()
 }
 
+/// Build a `reqwest::multipart::Form` for the FaceDataRecord upload.
+///
+/// Extracted as a standalone function so `upload_face` can build the form twice:
+/// once for the unauthenticated first pass and again for the digest-auth retry.
+/// Both passes need a fresh form because multipart bodies are streams and cannot
+/// be replayed by `diqwest::send_digest_auth`.
+pub fn build_multipart_form(
+    face_id: &str,
+    jpeg_bytes: Vec<u8>,
+) -> anyhow::Result<reqwest::multipart::Form> {
+    use anyhow::Context;
+    Ok(reqwest::multipart::Form::new()
+        .part(
+            "FaceDataRecord",
+            reqwest::multipart::Part::text(build_facedata_metadata(face_id))
+                .mime_str("application/json")
+                .context("set FaceDataRecord mime")?,
+        )
+        .part(
+            "FaceImage",
+            reqwest::multipart::Part::bytes(jpeg_bytes)
+                .file_name("face.jpg")
+                .mime_str("image/jpeg")
+                .context("set FaceImage mime")?,
+        ))
+}
+
 /// Build the JSON body for the face delete request (D-15 LOCKED).
 ///
 /// PUT /ISAPI/AccessControl/UserInfoDetail/Delete?format=json

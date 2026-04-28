@@ -87,6 +87,13 @@ pub async fn create_device(
 
     emit_lifecycle(&state, DeviceLifecycleEvent::Start(device.id.clone()));
 
+    // Publish backfill request (D-16). None in test setups — silently skipped.
+    if let Some(tx) = &state.backfill_tx {
+        let _ = tx.send(crate::workers::backfill::BackfillRequest {
+            device_id: device.id.clone(),
+        });
+    }
+
     Ok((StatusCode::CREATED, Json(device)))
 }
 

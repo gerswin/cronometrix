@@ -76,12 +76,20 @@ pub async fn update_employee(
 /// DELETE /api/v1/employees/:id — Soft-delete an employee (sets status=inactive).
 /// Requires Admin role. Returns 204 No Content on success.
 /// No SQL DELETE is executed — per T-01-16 the row is never physically removed.
+/// On success, publishes a PurgeRequest to the PurgeWorker (D-15) if the channel is live.
 pub async fn deactivate_employee(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
     service::deactivate(&conn, &id).await?;
+
+    // Publish purge request (D-15). None in test setups — silently skipped.
+    if let Some(tx) = &state.purge_tx {
+        let _ = tx.send(crate::workers::purge::PurgeRequest {
+            employee_id: id.clone(),
+        });
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

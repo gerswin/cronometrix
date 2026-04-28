@@ -136,42 +136,68 @@ impl DeviceConnection {
     /// Multipart form with two parts:
     ///   - "FaceDataRecord" (application/json): metadata JSON (faceLibType, FDID, FPID)
     ///   - "FaceImage"      (image/jpeg):       raw JPEG bytes ≤200KB after normalisation
+    ///
+    /// NOTE: diqwest cannot clone a multipart RequestBuilder (the body is a stream),
+    /// so we implement a manual two-step digest auth flow here:
+    ///   1. Send without auth.  If the device returns 200, return it directly.
+    ///   2. If 401: parse WWW-Authenticate, compute digest auth header, resend with it.
     pub async fn upload_face(&self, face_id: &str, jpeg_bytes: Vec<u8>) -> Result<String> {
-        use crate::enrollments::isapi_face::build_facedata_metadata;
-        use diqwest::WithDigestAuth;
+        use crate::enrollments::isapi_face::{build_facedata_metadata, build_multipart_form};
 
         let url = format!(
             "{}/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json",
             self.base_url
         );
 
-        let metadata = build_facedata_metadata(face_id);
-
-        let form = reqwest::multipart::Form::new()
-            .part(
-                "FaceDataRecord",
-                reqwest::multipart::Part::text(metadata)
-                    .mime_str("application/json")
-                    .context("set FaceDataRecord mime")?,
-            )
-            .part(
-                "FaceImage",
-                reqwest::multipart::Part::bytes(jpeg_bytes)
-                    .file_name("face.jpg")
-                    .mime_str("image/jpeg")
-                    .context("set FaceImage mime")?,
-            );
-
+        // First attempt — no auth header.
         let resp = self
             .client
             .post(&url)
-            .multipart(form)
-            .send_digest_auth((self.username.as_str(), self.password.as_str()))
+            .multipart(build_multipart_form(face_id, jpeg_bytes.clone())?)
+            .send()
             .await
-            .context("ISAPI FaceDataRecord request failed")?;
+            .context("ISAPI FaceDataRecord first request failed")?;
 
-        let status = resp.status();
-        let text = resp.text().await.context("read ISAPI FaceDataRecord response")?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            let status = resp.status();
+            let text = resp.text().await.context("read ISAPI FaceDataRecord response")?;
+            anyhow::ensure!(
+                status.is_success(),
+                "device returned non-success status {status}: {text}"
+            );
+            return Ok(text);
+        }
+
+        // 401 path: compute digest auth and retry with fresh form.
+        let www_auth = resp
+            .headers()
+            .get(reqwest::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let path = format!("/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json");
+        let context = digest_auth::AuthContext::new_with_method(
+            &self.username,
+            &self.password,
+            &path,
+            None::<&[u8]>, // body bytes not used for multipart digest
+            digest_auth::HttpMethod::POST,
+        );
+        let mut prompt = digest_auth::parse(&www_auth).context("parse WWW-Authenticate")?;
+        let auth_header = prompt.respond(&context).context("compute digest auth")?;
+
+        let resp2 = self
+            .client
+            .post(&url)
+            .header(reqwest::header::AUTHORIZATION, auth_header.to_header_string())
+            .multipart(build_multipart_form(face_id, jpeg_bytes)?)
+            .send()
+            .await
+            .context("ISAPI FaceDataRecord digest-auth request failed")?;
+
+        let status = resp2.status();
+        let text = resp2.text().await.context("read ISAPI FaceDataRecord response")?;
         anyhow::ensure!(
             status.is_success(),
             "device returned non-success status {status}: {text}"
