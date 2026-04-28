@@ -199,3 +199,34 @@ export interface TenantInfo {
   version: number
   updated_at: string
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase 7 — Facial Enrollment & Sync (07-02)
+// Mirrors backend/src/enrollments/models.rs response types
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface EnrollmentDevicePush {
+  device_id: string
+  device_name: string
+  status: 'pending' | 'in_progress' | 'success' | 'failed'
+  error_message: string | null
+  started_at: string | null
+  completed_at: string | null
+}
+
+export interface Enrollment {
+  id: string
+  employee_id: string
+  status: 'in_progress' | 'success' | 'partial' | 'failed'
+  started_at: string
+  completed_at: string | null
+  device_pushes: EnrollmentDevicePush[]
+}
+
+export interface CaptureFromDeviceState {
+  capture_id: string
+  status: 'capturing' | 'captured' | 'timeout' | 'error'
+  photo_path: string | null
+  photo_b64: string | null      // base64 JPEG iff status=='captured'
+  error_message: string | null
+}

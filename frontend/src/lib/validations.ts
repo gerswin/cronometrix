@@ -89,3 +89,20 @@ export const licenseSchema = z.object({
 })
 
 export type LicenseFormData = z.infer<typeof licenseSchema>
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase 7 — Facial Enrollment (07-02)
+// enrollmentSubmitSchema per UI-SPEC § Form Validation Contract
+// ──────────────────────────────────────────────────────────────────────────
+
+export const enrollmentSubmitSchema = z.object({
+  employee_id: z.string().uuid("Debes seleccionar un empleado válido."),
+  captured_via: z.enum(['device', 'webcam', 'upload']),
+  source_device_id: z.string().uuid().nullable(),
+  photo: z.instanceof(Blob, { message: "Falta la foto a enrolar." }),
+}).refine(
+  (data) => data.captured_via !== 'device' || data.source_device_id !== null,
+  { message: "Selecciona el dispositivo Hikvision usado para capturar.", path: ['source_device_id'] }
+)
+
+export type EnrollmentSubmitData = z.infer<typeof enrollmentSubmitSchema>
