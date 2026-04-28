@@ -66,7 +66,7 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
   const { data: captureState } = useQuery<CaptureFromDeviceState>({
     queryKey: ['capture', captureId],
     queryFn: () => api.get(`/enrollments/captures/${captureId}`).then(r => r.data),
-    enabled: !!captureId && kioskState === 'waiting',
+    enabled: !!captureId,
     refetchInterval: (q) => {
       const d = q.state.data as CaptureFromDeviceState | undefined
       if (!d) return 1500

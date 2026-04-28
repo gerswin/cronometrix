@@ -140,9 +140,19 @@ describe('KioskCaptureTab', () => {
 
     const select = screen.getByLabelText(/Seleccionar dispositivo/i) as HTMLSelectElement
     await act(async () => { fireEvent.change(select, { target: { value: 'dev-1' } }) })
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Iniciar Captura/i })) })
 
-    await waitFor(() => screen.queryByRole('alert') !== null, { timeout: 8000 })
+    // Wait for button to become enabled (device selected, not disabled)
+    const btn = await waitFor(() => {
+      const b = screen.getByRole('button', { name: /Iniciar Captura/i })
+      if (b.hasAttribute('disabled')) throw new Error('button still disabled')
+      return b
+    })
+    await act(async () => { fireEvent.click(btn) })
+
+    // Wait for mutation → poll → timeout state transition
+    await waitFor(() => {
+      if (screen.queryByRole('alert') === null) throw new Error('alert not yet visible')
+    }, { timeout: 10000 })
     const alert = screen.getByRole('alert')
     expect(alert.textContent).toContain('No se detectó captura')
     expect(screen.getByRole('button', { name: /Reintentar/i })).toBeTruthy()
