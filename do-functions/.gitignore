@@ -1,0 +1,21 @@
+# Private keys — NEVER commit production keys.
+# Test keys live at test-keys/test_priv.pem and test_pub.pem and ARE committed
+# (they are well-known test fixtures, not secrets). The patterns below
+# explicitly target production key conventions, not the test fixture filenames.
+*.private.pem
+license_private.pem
+
+# DO Functions / Nimbella build artifacts
+node_modules/
+.nimbella/
+
+# Local-only env files
+.env
+.env.local
+
+# npm / node tooling output
+package-lock.json
+npm-debug.log*
+
+# OS noise
+.DS_Store
