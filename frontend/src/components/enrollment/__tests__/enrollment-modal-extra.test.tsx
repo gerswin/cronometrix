@@ -143,4 +143,201 @@ describe('EnrollmentModal — extra branches', () => {
       expect(toastError).toHaveBeenCalledWith('No se pudo registrar el enrolamiento.')
     )
   })
+
+  it('terminal poll all-success: fires toast.success with completed copy', async () => {
+    // First api.post for /enrollments creates the enrollment_id; subsequent
+    // api.get('/enrollments/enr-1') returns the polling status. We resolve
+    // every poll with a fully-success enrollment to trigger the all-success
+    // toast branch (line 99-101).
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-1',
+        device_pushes: [
+          { device_id: 'd1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/enrollments/enr-1')) {
+        return Promise.resolve({
+          data: {
+            id: 'enr-1', employee_id: EMPLOYEE.id, status: 'success',
+            started_at: '2026-04-28T12:00:00Z', completed_at: '2026-04-28T12:01:00Z',
+            device_pushes: [
+              { device_id: 'd1', device_name: 'Entrada', status: 'success', error_message: null, started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
+
+    await act(async () => {
+      render(<EnrollmentModal open={true} employee={EMPLOYEE} onClose={() => {}} />, { wrapper: makeWrapper() })
+    })
+    await act(async () => { fireEvent.click(screen.getByText('Subir JPG')) })
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] } })
+    })
+    await waitFor(() => {
+      const btn = screen.getByRole('button', { name: /Enrolar/i })
+      return btn.getAttribute('aria-disabled') === 'false'
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    })
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled(), { timeout: 3000 })
+    const successCalls = toastSuccess.mock.calls.map((c) => c[0])
+    expect(successCalls.some((m) => typeof m === 'string' && m.includes('Enrolamiento completado'))).toBe(true)
+  })
+
+  it('terminal poll partial: fires toast.warning with partial copy', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-2',
+        device_pushes: [
+          { device_id: 'd1', device_name: 'A', status: 'pending', error_message: null, started_at: null, completed_at: null },
+          { device_id: 'd2', device_name: 'B', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/enrollments/enr-2')) {
+        return Promise.resolve({
+          data: {
+            id: 'enr-2', employee_id: EMPLOYEE.id, status: 'partial',
+            started_at: '2026-04-28T12:00:00Z', completed_at: '2026-04-28T12:01:00Z',
+            device_pushes: [
+              { device_id: 'd1', device_name: 'A', status: 'success', error_message: null, started_at: null, completed_at: null },
+              { device_id: 'd2', device_name: 'B', status: 'failed', error_message: 'oh no', started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
+
+    await act(async () => {
+      render(<EnrollmentModal open={true} employee={EMPLOYEE} onClose={() => {}} />, { wrapper: makeWrapper() })
+    })
+    await act(async () => { fireEvent.click(screen.getByText('Subir JPG')) })
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] } })
+    })
+    await waitFor(() => {
+      const btn = screen.getByRole('button', { name: /Enrolar/i })
+      return btn.getAttribute('aria-disabled') === 'false'
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    })
+    await waitFor(() => expect(toastWarning).toHaveBeenCalled(), { timeout: 3000 })
+    const warnArg = toastWarning.mock.calls[0][0] as string
+    expect(warnArg).toContain('Enrolamiento parcial')
+    expect(warnArg).toContain('1/2')
+  })
+
+  it('terminal poll all-failed: fires toast.error with all-failed copy', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-3',
+        device_pushes: [
+          { device_id: 'd1', device_name: 'A', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/enrollments/enr-3')) {
+        return Promise.resolve({
+          data: {
+            id: 'enr-3', employee_id: EMPLOYEE.id, status: 'failed',
+            started_at: '2026-04-28T12:00:00Z', completed_at: '2026-04-28T12:01:00Z',
+            device_pushes: [
+              { device_id: 'd1', device_name: 'A', status: 'failed', error_message: 'down', started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
+
+    await act(async () => {
+      render(<EnrollmentModal open={true} employee={EMPLOYEE} onClose={() => {}} />, { wrapper: makeWrapper() })
+    })
+    await act(async () => { fireEvent.click(screen.getByText('Subir JPG')) })
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] } })
+    })
+    await waitFor(() => {
+      const btn = screen.getByRole('button', { name: /Enrolar/i })
+      return btn.getAttribute('aria-disabled') === 'false'
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    })
+    await waitFor(() => expect(toastError).toHaveBeenCalled(), { timeout: 3000 })
+    const errArgs = toastError.mock.calls.map((c) => c[0]) as string[]
+    expect(errArgs.some((m) => typeof m === 'string' && m.includes('falló en todos los dispositivos'))).toBe(true)
+  })
+
+  it('Cerrar mid-flight (non-terminal status): fires sticky toast with Infinity duration', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-4',
+        device_pushes: [
+          { device_id: 'd1', device_name: 'A', status: 'in_progress', error_message: null, started_at: null, completed_at: null },
+          { device_id: 'd2', device_name: 'B', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/enrollments/enr-4')) {
+        return Promise.resolve({
+          data: {
+            id: 'enr-4', employee_id: EMPLOYEE.id, status: 'in_progress',
+            started_at: '2026-04-28T12:00:00Z', completed_at: null,
+            device_pushes: [
+              { device_id: 'd1', device_name: 'A', status: 'in_progress', error_message: null, started_at: null, completed_at: null },
+              { device_id: 'd2', device_name: 'B', status: 'pending', error_message: null, started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
+
+    const onClose = vi.fn()
+    await act(async () => {
+      render(<EnrollmentModal open={true} employee={EMPLOYEE} onClose={onClose} />, { wrapper: makeWrapper() })
+    })
+    await act(async () => { fireEvent.click(screen.getByText('Subir JPG')) })
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] } })
+    })
+    await waitFor(() => {
+      const btn = screen.getByRole('button', { name: /Enrolar/i })
+      return btn.getAttribute('aria-disabled') === 'false'
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    })
+    // Wait for the polling query to kick in
+    await waitFor(() =>
+      expect(screen.getByText(/Enrolamiento enviado/)).toBeTruthy(),
+      { timeout: 3000 }
+    )
+    // Click Cerrar — sticky toast should fire (duration: Infinity)
+    const closeBtn = screen.getByRole('button', { name: /Cerrar/i })
+    await act(async () => { fireEvent.click(closeBtn) })
+
+    await waitFor(() => expect(toastBase).toHaveBeenCalled())
+    const [msg, opts] = toastBase.mock.calls[0]
+    expect(msg as string).toContain('Enrolamiento en curso')
+    expect((opts as { duration?: number }).duration).toBe(Infinity)
+    expect(onClose).toHaveBeenCalled()
+  })
 })

@@ -95,4 +95,23 @@ describe('CommandModal', () => {
     expect(onClose).toHaveBeenCalled()
     expect(postMock).not.toHaveBeenCalled()
   })
+
+  it('selecting enrollment_mode and submitting POSTs the enrollment_mode payload', async () => {
+    render(wrap(<CommandModal open={true} device={DEVICE} onClose={() => {}} />))
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'enrollment_mode' } })
+    const submit = screen.getByRole('button', { name: /Enviar Comando/i })
+    await act(async () => { fireEvent.click(submit) })
+    await waitFor(() => expect(postMock).toHaveBeenCalled())
+    expect(postMock).toHaveBeenCalledWith('/devices/dev-1/commands', { command: 'enrollment_mode' })
+  })
+
+  it('selecting reboot then switching back to door_open hides the warning copy again', () => {
+    render(wrap(<CommandModal open={true} device={DEVICE} onClose={() => {}} />))
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'reboot' } })
+    expect(screen.getByText(/dispositivo perderá conexión/i)).toBeTruthy()
+    fireEvent.change(select, { target: { value: 'door_open' } })
+    expect(screen.queryByText(/dispositivo perderá conexión/i)).toBeNull()
+  })
 })
