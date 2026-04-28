@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Reached 08-04C human-verify checkpoint
-last_updated: "2026-04-28T19:52:33.364Z"
+stopped_at: Wave 4 (04A+04B+04C) approved; ready for Plan 05
+last_updated: "2026-04-28T21:44:11.542Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
@@ -135,6 +135,7 @@ Recent decisions affecting current work:
 - Phase 8 04C: Pre-existing flaky enrollment-modal.test.tsx (from Phase 7-02) was a Rule 1 bug — the global api.get mock returned the paginated employee-list shape for the /enrollments/:id polling endpoint, crashing on device_pushes.map. Fixed by routing api.get based on URL prefix (test-only fix, production unchanged).
 - Phase 8 04C: 6 branch-bump test files added beyond the 21 bucket files (under Rule 2) to clear the 85% project branch gate from 81.88% → 85.12%. Targeted drill-down-dialog, filters-bar, period-picker, tenant-info-form, validations, and command-modal — all bumps are existing-file branch coverage, no new bucket scope.
 - Phase 8 04C: FakeEventSource shim (custom class on globalThis) is the canonical pattern for testing useSSE — msw's EventSource doesn't simulate auto-close-on-error and progressive backoff. Custom shim makes all 5 backoff levels (1/2/4/8/30s capped) deterministic.
+- Phase 8 04C approved: 2 macOS-only backend exclusions accepted (license/fingerprint.rs + license/service.rs); 6 Rule-2 branch-bump tests accepted; Rule-1 enrollment-modal fix accepted; Plan 05 (CI gate) unblocked
 
 ### Pending Todos
 
@@ -154,8 +155,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T19:52:33.361Z
-Stopped at: Reached 08-04C human-verify checkpoint
+Last session: 2026-04-28T21:44:10.099Z
+Stopped at: Wave 4 (04A+04B+04C) approved; ready for Plan 05
 Resume file: None
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z

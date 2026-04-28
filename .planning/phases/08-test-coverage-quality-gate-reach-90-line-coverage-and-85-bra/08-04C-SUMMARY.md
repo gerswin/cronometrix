@@ -421,6 +421,18 @@ Verified by sample inspection (3 random new test files):
 
 ## Human Checkpoint (Task 3) — Status
 
+**Checkpoint resolved: approved** (2026-04-28)
+- Reviewer accepted all 4 decisions:
+  1. Accept the 2 macOS-only backend exclusions (`license/fingerprint.rs`, `license/service.rs`) — Plan 05 CI on Linux nightly is authoritative
+  2. Accept the 6 branch-bump test files added under Rule 2
+  3. Accept the Rule 1 fix to `enrollment-modal.test.tsx`
+  4. Approve progression to Plan 05 (CI gate)
+- Final verification (post-approval re-run):
+  - Backend: 731 tests pass / 22 skipped (cargo nextest run)
+  - Frontend: 305 tests pass / 102 files, `make coverage-frontend` exits 0
+  - Frontend project gates: Statements 93.98%, Branches 85.12%, Functions 92.80%, Lines 95.30% — all green
+- Wave 4 (04A + 04B + 04C) is fully complete; Plan 05 is unblocked.
+
 **Type:** human-verify (blocking)
 **Coverage state at checkpoint:**
 
