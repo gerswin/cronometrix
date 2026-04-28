@@ -1,5 +1,6 @@
 pub mod anomalies;
 pub mod enrollments;
+pub mod workers;
 pub mod auth;
 pub mod calc;
 pub mod common;

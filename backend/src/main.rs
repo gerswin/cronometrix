@@ -84,6 +84,9 @@ async fn main() -> anyhow::Result<()> {
         recompute_tx: Some(recompute_tx),
         event_broadcast: Some(event_tx),
         license_valid: license_valid.clone(),
+        purge_tx: None,    // Task 6 wires the real channel
+        backfill_tx: None, // Task 6 wires the real channel
+        captures: cronometrix_api::enrollments::handlers::new_captures_map(),
     };
 
     // Start the supervisor: one tokio task per active device for alertStream

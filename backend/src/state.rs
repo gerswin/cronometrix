@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
+use crate::enrollments::handlers::CapturesMap;
 use crate::recompute::RecomputeRequest;
 use crate::supervisor::LifecycleTx;
 
@@ -38,6 +39,12 @@ pub struct AttendanceEventSSEPayload {
 /// build AppState without a broadcast channel. Handlers and service code use
 /// `.as_ref().map(|tx| tx.send(...))` so a None silently skips — no SSE
 /// clients means no subscribers, so non-fatal.
+///
+/// `purge_tx` and `backfill_tx` (Phase 7): Option for the same reason as above.
+/// Both are None in tests that do not spin up workers; handlers skip silently.
+///
+/// `captures`: Phase 7 kiosk-capture in-memory state (D-02 LOCKED).
+/// Always Some — initialised at startup via `enrollments::handlers::new_captures_map()`.
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<libsql::Database>,
@@ -51,4 +58,11 @@ pub struct AppState {
     /// flipped to true on successful activation. Stays true after JWT
     /// `exp` per D-07 soft expiry.
     pub license_valid: Arc<std::sync::atomic::AtomicBool>,
+    /// Phase 7: purge worker channel (D-15). None in test setups.
+    pub purge_tx: Option<UnboundedSender<crate::workers::purge::PurgeRequest>>,
+    /// Phase 7: backfill worker channel (D-16). None in test setups.
+    pub backfill_tx: Option<UnboundedSender<crate::workers::backfill::BackfillRequest>>,
+    /// Phase 7: in-memory kiosk-capture session state (D-02).
+    /// Shared across capture_from_device + get_capture handlers.
+    pub captures: CapturesMap,
 }
