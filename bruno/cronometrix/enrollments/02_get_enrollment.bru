@@ -1,0 +1,15 @@
+meta {
+  name: get enrollment
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/enrollments/{{sample_enrollment_id}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

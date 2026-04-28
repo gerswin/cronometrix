@@ -17,6 +17,7 @@ use cronometrix_api::db;
 use cronometrix_api::departments;
 use cronometrix_api::devices;
 use cronometrix_api::employees;
+use cronometrix_api::enrollments;
 use cronometrix_api::errors::AppError;
 use cronometrix_api::events;
 use cronometrix_api::leaves;
@@ -28,6 +29,7 @@ use cronometrix_api::setup;
 use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
 use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
+use cronometrix_api::workers::{backfill::BackfillWorker, purge::PurgeWorker};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -77,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("license invalid or missing — system gated, /setup/activate available");
     }
 
+    // Phase 7: purge and backfill worker channels.
+    let (purge_tx, purge_rx) = mpsc::unbounded_channel::<cronometrix_api::workers::purge::PurgeRequest>();
+    let (backfill_tx, backfill_rx) = mpsc::unbounded_channel::<cronometrix_api::workers::backfill::BackfillRequest>();
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
@@ -84,8 +90,8 @@ async fn main() -> anyhow::Result<()> {
         recompute_tx: Some(recompute_tx),
         event_broadcast: Some(event_tx),
         license_valid: license_valid.clone(),
-        purge_tx: None,    // Task 6 wires the real channel
-        backfill_tx: None, // Task 6 wires the real channel
+        purge_tx: Some(purge_tx),
+        backfill_tx: Some(backfill_tx),
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
     };
 
@@ -109,6 +115,17 @@ async fn main() -> anyhow::Result<()> {
     let recompute_worker = recompute::worker::RecomputeWorker::new(state.clone(), shutdown.clone());
     let recompute_handle = tokio::spawn(async move {
         recompute_worker.run(recompute_rx).await;
+    });
+
+    // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
+    let purge_worker = PurgeWorker::new(state.clone(), shutdown.clone());
+    let purge_handle = tokio::spawn(async move {
+        purge_worker.run(purge_rx).await;
+    });
+
+    let backfill_worker = BackfillWorker::new(state.clone(), shutdown.clone());
+    let backfill_handle = tokio::spawn(async move {
+        backfill_worker.run(backfill_rx).await;
     });
 
     // Start the nightly reconcile task (tokio::time::sleep to next 02:00 local).
@@ -224,6 +241,41 @@ async fn main() -> anyhow::Result<()> {
             license::middleware::require_license,
         ));
 
+    // Phase 7: enrollment routes (admin-only, D-18). Wrapped with a 3 MB body
+    // limit (RequestBodyLimitLayer) to bound multipart photo uploads (T-7-03).
+    // capture_from_device and get_capture are read/trigger paths with small bodies
+    // and are included in the same limit for simplicity.
+    let enrollment_routes = Router::new()
+        .route(
+            "/enrollments",
+            post(enrollments::handlers::create_enrollment),
+        )
+        .route(
+            "/enrollments/{id}",
+            get(enrollments::handlers::get_enrollment),
+        )
+        .route(
+            "/enrollments/{enrollment_id}/pushes/{device_id}/retry",
+            post(enrollments::handlers::retry_push),
+        )
+        .route(
+            "/enrollments/captures",
+            post(enrollments::handlers::capture_from_device),
+        )
+        .route(
+            "/enrollments/captures/{capture_id}",
+            get(enrollments::handlers::get_capture),
+        )
+        .route_layer(tower_http::limit::RequestBodyLimitLayer::new(3 * 1024 * 1024))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::rbac::require_admin,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            license::middleware::require_license,
+        ));
+
     // Admin-only routes: delete employees, manage departments and rules, manage devices + command dispatch
     let admin_routes = Router::new()
         .route("/employees/{id}", delete(employees::handlers::deactivate_employee))
@@ -256,7 +308,8 @@ async fn main() -> anyhow::Result<()> {
                 .merge(supervisor_read_routes)
                 .merge(supervisor_routes)
                 .merge(report_routes)
-                .merge(admin_routes),
+                .merge(admin_routes)
+                .merge(enrollment_routes),
         )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -278,13 +331,15 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Await supervisor + watchdog shutdown so all child reqwest streams drain
-    // before process exit. Also drain the Phase 3 recompute worker and the
-    // nightly reconcile task so their last recompute commits before exit.
+    // before process exit. Also drain the Phase 3 recompute worker, the
+    // nightly reconcile task, and Phase 7 workers so their last ops commit.
     let _ = supervisor_handle.await;
     let _ = watchdog_handle.await;
     let _ = recompute_handle.await;
     let _ = nightly_handle.await;
     let _ = renewal_handle.await;
+    let _ = purge_handle.await;
+    let _ = backfill_handle.await;
     tracing::info!("shutdown complete");
 
     Ok(())

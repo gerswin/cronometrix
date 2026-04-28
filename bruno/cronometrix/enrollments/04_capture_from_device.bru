@@ -1,0 +1,28 @@
+meta {
+  name: capture from device
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/enrollments/captures
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "device_id": "{{sample_device_id}}",
+    "employee_id": "{{sample_employee_id}}"
+  }
+}
+
+script:post-response {
+  if (res.status === 202 && res.body.capture_id) {
+    bru.setEnvVar("sample_capture_id", res.body.capture_id);
+  }
+}

@@ -1,0 +1,30 @@
+meta {
+  name: create enrollment
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/enrollments
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  employee_id: {{sample_employee_id}}
+  captured_via: upload
+  source_device_id:
+  face_quality_score:
+  photo: @file(/path/to/face.jpg)
+}
+
+script:post-response {
+  if (res.status === 202 && res.body.enrollment_id) {
+    bru.setEnvVar("sample_enrollment_id", res.body.enrollment_id);
+    bru.setEnvVar("sample_face_id", res.body.face_id);
+  }
+}

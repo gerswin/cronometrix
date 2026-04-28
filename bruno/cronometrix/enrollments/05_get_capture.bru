@@ -1,0 +1,15 @@
+meta {
+  name: get capture
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/v1/enrollments/captures/{{sample_capture_id}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
