@@ -1,0 +1,344 @@
+//! Coverage gap-fill for `backend/src/enrollments/models.rs` (08-04B Task 1).
+//!
+//! Baseline 0.00% line. Target ≥70%.
+//!
+//! Pure-data module — DTOs + three validators. We exercise:
+//!   * Each validator's accepted variants.
+//!   * Each validator's rejection branch (covers the negative match arm).
+//!   * Serde serialization for the response DTOs (`Serialize` derive lines).
+//!   * Deserialization for `CaptureFromDeviceRequest` (the only `Deserialize`).
+//!   * `skip_serializing_if = "Option::is_none"` branch on `CaptureResponse.photo_b64`.
+
+use cronometrix_api::enrollments::models::{
+    validate_captured_via, validate_enrollment_status, validate_push_status,
+    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse,
+    CreateEnrollmentRequest, EnrollmentDevicePushResponse, EnrollmentResponse,
+    EnrollmentSubmitResponse, RetryResponse,
+};
+
+// ---------------------------------------------------------------------------
+// validate_captured_via — 3 valid + 1 reject
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_captured_via_accepts_device() {
+    assert!(validate_captured_via("device").is_ok());
+}
+
+#[test]
+fn validate_captured_via_accepts_webcam() {
+    assert!(validate_captured_via("webcam").is_ok());
+}
+
+#[test]
+fn validate_captured_via_accepts_upload() {
+    assert!(validate_captured_via("upload").is_ok());
+}
+
+#[test]
+fn validate_captured_via_rejects_unknown_lowercase() {
+    let err = validate_captured_via("camera").unwrap_err();
+    assert!(err.contains("captured_via"));
+}
+
+#[test]
+fn validate_captured_via_rejects_empty() {
+    assert!(validate_captured_via("").is_err());
+}
+
+#[test]
+fn validate_captured_via_rejects_uppercase_variants() {
+    // The match is case-sensitive — "Device" must reject.
+    assert!(validate_captured_via("Device").is_err());
+    assert!(validate_captured_via("WEBCAM").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// validate_enrollment_status — 4 valid + reject
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_enrollment_status_accepts_in_progress() {
+    assert!(validate_enrollment_status("in_progress").is_ok());
+}
+
+#[test]
+fn validate_enrollment_status_accepts_success() {
+    assert!(validate_enrollment_status("success").is_ok());
+}
+
+#[test]
+fn validate_enrollment_status_accepts_partial() {
+    assert!(validate_enrollment_status("partial").is_ok());
+}
+
+#[test]
+fn validate_enrollment_status_accepts_failed() {
+    assert!(validate_enrollment_status("failed").is_ok());
+}
+
+#[test]
+fn validate_enrollment_status_rejects_random() {
+    let err = validate_enrollment_status("done").unwrap_err();
+    assert!(err.contains("enrollment status"));
+}
+
+// ---------------------------------------------------------------------------
+// validate_push_status — 4 valid + reject
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_push_status_accepts_pending() {
+    assert!(validate_push_status("pending").is_ok());
+}
+
+#[test]
+fn validate_push_status_accepts_in_progress() {
+    assert!(validate_push_status("in_progress").is_ok());
+}
+
+#[test]
+fn validate_push_status_accepts_success() {
+    assert!(validate_push_status("success").is_ok());
+}
+
+#[test]
+fn validate_push_status_accepts_failed() {
+    assert!(validate_push_status("failed").is_ok());
+}
+
+#[test]
+fn validate_push_status_rejects_random() {
+    let err = validate_push_status("retry").unwrap_err();
+    assert!(err.contains("push status"));
+}
+
+// ---------------------------------------------------------------------------
+// Response DTO serialization
+// ---------------------------------------------------------------------------
+
+#[test]
+fn enrollment_device_push_response_serializes_with_all_fields() {
+    let resp = EnrollmentDevicePushResponse {
+        id: "push-1".into(),
+        device_id: "dev-1".into(),
+        device_name: "K1T-A".into(),
+        status: "success".into(),
+        error_message: Some("oops".into()),
+        started_at: Some("2026-04-28T10:00:00Z".into()),
+        completed_at: Some("2026-04-28T10:00:30Z".into()),
+    };
+    let s = serde_json::to_string(&resp).unwrap();
+    assert!(s.contains("\"id\":\"push-1\""));
+    assert!(s.contains("\"device_id\":\"dev-1\""));
+    assert!(s.contains("\"device_name\":\"K1T-A\""));
+    assert!(s.contains("\"status\":\"success\""));
+    assert!(s.contains("\"error_message\":\"oops\""));
+    assert!(s.contains("\"started_at\":\"2026-04-28T10:00:00Z\""));
+}
+
+#[test]
+fn enrollment_response_serializes_nested_device_pushes() {
+    let resp = EnrollmentResponse {
+        id: "enr-1".into(),
+        employee_id: "emp-1".into(),
+        status: "in_progress".into(),
+        started_at: "2026-04-28T10:00:00Z".into(),
+        completed_at: None,
+        version: 1,
+        device_pushes: vec![EnrollmentDevicePushResponse {
+            id: "push-1".into(),
+            device_id: "dev-1".into(),
+            device_name: "K1T".into(),
+            status: "pending".into(),
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+        }],
+    };
+    let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["id"], "enr-1");
+    assert_eq!(v["status"], "in_progress");
+    assert_eq!(v["device_pushes"][0]["device_id"], "dev-1");
+    // completed_at is Option<String> with no skip — must be present as null.
+    assert!(v["completed_at"].is_null());
+}
+
+#[test]
+fn enrollment_submit_response_serializes_face_id() {
+    let resp = EnrollmentSubmitResponse {
+        enrollment_id: "enr-1".into(),
+        face_id: "face-uuid".into(),
+        device_pushes: vec![],
+    };
+    let s = serde_json::to_string(&resp).unwrap();
+    assert!(s.contains("\"face_id\":\"face-uuid\""));
+    assert!(s.contains("\"device_pushes\":[]"));
+}
+
+#[test]
+fn retry_response_serializes() {
+    let resp = RetryResponse {
+        enrollment_id: "enr-1".into(),
+        device_id: "dev-1".into(),
+        status: "pending".into(),
+    };
+    let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["enrollment_id"], "enr-1");
+    assert_eq!(v["device_id"], "dev-1");
+    assert_eq!(v["status"], "pending");
+}
+
+#[test]
+fn capture_from_device_response_serializes() {
+    let resp = CaptureFromDeviceResponse {
+        capture_id: "cap-1".into(),
+        status: "capturing".into(),
+    };
+    let s = serde_json::to_string(&resp).unwrap();
+    assert!(s.contains("\"capture_id\":\"cap-1\""));
+    assert!(s.contains("\"status\":\"capturing\""));
+}
+
+// ---------------------------------------------------------------------------
+// CaptureResponse — skip_serializing_if branches
+// ---------------------------------------------------------------------------
+
+#[test]
+fn capture_response_omits_photo_b64_when_none() {
+    let resp = CaptureResponse {
+        capture_id: "cap-1".into(),
+        status: "capturing".into(),
+        photo_path: None,
+        photo_b64: None,
+        error_message: None,
+    };
+    let s = serde_json::to_string(&resp).unwrap();
+    // photo_b64 must be absent (skip_serializing_if = "Option::is_none").
+    assert!(!s.contains("photo_b64"), "expected photo_b64 omitted, got: {s}");
+}
+
+#[test]
+fn capture_response_includes_photo_b64_when_some() {
+    let resp = CaptureResponse {
+        capture_id: "cap-1".into(),
+        status: "captured".into(),
+        photo_path: Some("/tmp/cap-1.jpg".into()),
+        photo_b64: Some("aGVsbG8=".into()),
+        error_message: None,
+    };
+    let s = serde_json::to_string(&resp).unwrap();
+    assert!(s.contains("\"photo_b64\":\"aGVsbG8=\""));
+}
+
+// ---------------------------------------------------------------------------
+// CaptureFromDeviceRequest deserialization
+// ---------------------------------------------------------------------------
+
+#[test]
+fn capture_from_device_request_deserializes_json() {
+    let json = serde_json::json!({
+        "device_id": "dev-1",
+        "employee_id": "emp-1",
+    });
+    let req: CaptureFromDeviceRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(req.device_id, "dev-1");
+    assert_eq!(req.employee_id, "emp-1");
+}
+
+#[test]
+fn capture_from_device_request_rejects_missing_field() {
+    let json = serde_json::json!({"device_id": "dev-1"});
+    let result: Result<CaptureFromDeviceRequest, _> = serde_json::from_value(json);
+    assert!(result.is_err(), "expected missing field rejection");
+}
+
+// ---------------------------------------------------------------------------
+// Debug impls — exercise the derive
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dtos_have_debug_impls() {
+    let r = RetryResponse {
+        enrollment_id: "x".into(),
+        device_id: "y".into(),
+        status: "pending".into(),
+    };
+    let s = format!("{:?}", r);
+    assert!(s.contains("RetryResponse"));
+
+    let c = CaptureResponse {
+        capture_id: "c".into(),
+        status: "capturing".into(),
+        photo_path: None,
+        photo_b64: None,
+        error_message: None,
+    };
+    let s = format!("{:?}", c);
+    assert!(s.contains("CaptureResponse"));
+
+    let s = format!("{:?}", CaptureFromDeviceResponse {
+        capture_id: "c".into(),
+        status: "capturing".into(),
+    });
+    assert!(s.contains("CaptureFromDeviceResponse"));
+
+    let s = format!(
+        "{:?}",
+        EnrollmentDevicePushResponse {
+            id: "p".into(),
+            device_id: "d".into(),
+            device_name: "n".into(),
+            status: "pending".into(),
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+        }
+    );
+    assert!(s.contains("EnrollmentDevicePushResponse"));
+
+    let s = format!(
+        "{:?}",
+        EnrollmentResponse {
+            id: "e".into(),
+            employee_id: "emp".into(),
+            status: "in_progress".into(),
+            started_at: "ts".into(),
+            completed_at: None,
+            version: 1,
+            device_pushes: vec![],
+        }
+    );
+    assert!(s.contains("EnrollmentResponse"));
+
+    let s = format!(
+        "{:?}",
+        EnrollmentSubmitResponse {
+            enrollment_id: "e".into(),
+            face_id: "f".into(),
+            device_pushes: vec![],
+        }
+    );
+    assert!(s.contains("EnrollmentSubmitResponse"));
+
+    let s = format!(
+        "{:?}",
+        CaptureFromDeviceRequest {
+            device_id: "d".into(),
+            employee_id: "e".into(),
+        }
+    );
+    assert!(s.contains("CaptureFromDeviceRequest"));
+
+    let s = format!(
+        "{:?}",
+        CreateEnrollmentRequest {
+            employee_id: "emp-1".into(),
+            captured_via: "upload".into(),
+            source_device_id: None,
+            face_quality_score: None,
+            photo_bytes: vec![0xFF, 0xD8, 0xFF],
+        }
+    );
+    assert!(s.contains("CreateEnrollmentRequest"));
+}
