@@ -159,14 +159,14 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 5. Reports & Payroll Export | 0/2 | Not started | - |
 | 6. Licensing & Deployment | 0/4 | Not started | - |
 | 7. Facial Enrollment & Sync | 0/2 | Not started | - |
-| 8. Test Coverage & Quality Gate | 6/6 | Code complete (live CI validation deferred — see 08-05 Manual Follow-up) | 2026-04-28 |
+| 8. Test Coverage & Quality Gate | 8/8 | Complete    | 2026-04-28 |
 
 ### Phase 8: Test Coverage & Quality Gate — Reach >=90% line coverage and >=85% branch coverage on backend (cargo-llvm-cov) and frontend (Vitest+v8); add CI thresholds; fix leave_tests cwd-dependent failure; document coverage commands in CLAUDE.md
 
 **Goal:** Hard-fail coverage gate active in CI: backend (cargo-llvm-cov + nightly --branch) and frontend (Vitest+v8) both enforce >=90% line / >=85% branch project-wide and >=70/60 per-file; the leave_tests cwd-dependent failure is fixed via AppState `Paths` injection; CLAUDE.md documents the gate, exclusions, and the path-injection convention so future phases cannot regress them silently.
 **Requirements**: QUALITY-GATE (cross-cutting; D-01..D-23 from 08-CONTEXT.md are the binding contract)
 **Depends on:** Phase 7
-**Plans:** 6 plans
+**Plans:** 8/8 plans complete
 
 Plans:
 - [x] 08-01-PLAN.md — AppState `Paths` substruct + 5 source-side call-site updates (leaves/events/enrollments/daily_records); preserves env vars + defaults (D-17/D-18/D-19/D-21)
