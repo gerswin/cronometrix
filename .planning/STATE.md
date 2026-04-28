@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 07-01-PLAN.md (enrollment backend wave 1)
-last_updated: "2026-04-28T04:41:34.773Z"
+stopped_at: "Completed tasks 1-4 of 07-02-PLAN.md; at checkpoint:human-verify Task 5"
+last_updated: "2026-04-28T05:02:39.657Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 7
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 25
-  completed_plans: 24
-  percent: 96
+  completed_plans: 25
+  percent: 100
 ---
 
 # Project State
@@ -62,6 +62,7 @@ Progress: [██████████] 96%
 | Phase 03-time-calculation-engine P02 | 9 | 2 tasks | 7 files |
 | Phase 03 P03 | 28 | 2 tasks | 10 files |
 | Phase 07 P01 | 180 | 6 tasks | 23 files |
+| Phase 07 P02 | 18 minutes | 4 tasks | 30 files |
 
 ## Accumulated Context
 
@@ -103,6 +104,9 @@ Recent decisions affecting current work:
 - D-06: JoinSet fire-and-forget fan-out for enrollment push
 - diqwest-multipart: manual 2-step digest auth for multipart upload (stream body not cloneable)
 - D-15/D-16: PurgeWorker + BackfillWorker via mpsc channels, workers spawned in main.rs
+- Button.asChild not in @base-ui/react — AccessRestricted uses plain Link with Tailwind classes
+- Kiosk query enabled: !!captureId only — refetchInterval handles terminal stop (kioskState condition caused test race)
+- In-progress list v1 session-scoped — no list endpoint in 07-01; future plan adds GET /enrollments?status=in_progress
 
 ### Pending Todos
 
@@ -116,8 +120,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T04:41:34.769Z
-Stopped at: Completed 07-01-PLAN.md (enrollment backend wave 1)
-Resume file: None
+Last session: 2026-04-28T05:02:30.175Z
+Stopped at: Completed tasks 1-4 of 07-02-PLAN.md; at checkpoint:human-verify Task 5
+Resume file: .planning/phases/07-facial-enrollment-sync/07-02-CHECKPOINT.md
 
 **Planned Phase:** 7 (Facial Enrollment & Sync) — 2 plans — 2026-04-28T03:12:48.969Z

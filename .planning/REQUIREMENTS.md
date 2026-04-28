@@ -14,11 +14,16 @@
 
 ### Facial Enrollment
 
-- [ ] **ENRL-01**: Admin can capture a facial profile via Hikvision device camera
-- [ ] **ENRL-02**: Admin can upload a JPG photo for facial enrollment
-- [ ] **ENRL-03**: Admin can capture a facial profile via webcam
-- [ ] **ENRL-04**: System syncs enrolled facial profile to all registered devices simultaneously
-- [ ] **ENRL-05**: Admin can see per-device sync status during enrollment (progress/success/failure)
+- [x] **ENRL-01
+**: Admin can capture a facial profile via Hikvision device camera
+- [x] **ENRL-02
+**: Admin can upload a JPG photo for facial enrollment
+- [x] **ENRL-03
+**: Admin can capture a facial profile via webcam
+- [x] **ENRL-04
+**: System syncs enrolled facial profile to all registered devices simultaneously
+- [x] **ENRL-05
+**: Admin can see per-device sync status during enrollment (progress/success/failure)
 
 ### Event Capture
 
