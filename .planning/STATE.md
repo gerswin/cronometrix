@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 08-02-PLAN.md
-last_updated: "2026-04-28T17:27:37.406Z"
+stopped_at: Completed 08-03-PLAN.md
+last_updated: "2026-04-28T17:43:40.223Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
   completed_phases: 7
   total_plans: 31
-  completed_plans: 27
-  percent: 87
+  completed_plans: 28
+  percent: 90
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 8 (test-coverage-quality-gate) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-04-28
 
-Progress: [█████████░] 87%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -65,6 +65,7 @@ Progress: [█████████░] 87%
 | Phase 07 P02 | 18 minutes | 4 tasks | 30 files |
 | Phase 08 P01 | 25 | 2 tasks | 11 files |
 | Phase 08 P02 | 50 | 3 tasks | 16 files |
+| Phase 08 P03 | 11 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -118,6 +119,8 @@ Recent decisions affecting current work:
 - persist_attendance_event signature gains events_root: &Path rather than &AppState — function only takes &Connection so threading a single &Path matches write_photo_atomic's shape
 - Phase 8 D-20 (Wave 2): test_state_with_tmpdir returns (AppState, TempDir) tuple — type system surfaces Pitfall 1 (premature drop) at compile time; uniform across 16 test files
 - Phase 8 Wave 2: scope expanded from 4 → 12 sibling files mid-execution — cargo build --tests revealed 8 additional callers of common::test_state with the 2-arg signature; per Rule 3 (blocking) all 12 migrated together
+- Phase 8 D-22 (Wave 3 / Plan 03): Coverage tooling shipped — Vitest config with two-level threshold via glob form (no perFile:true; RESEARCH § Pitfall 4); awk-based lcov post-processor for per-file floor enforcement (cargo-llvm-cov has no per-file flag); rust-toolchain.toml pins nightly-2026-04-01 + llvm-tools-preview; baseline reveals 51 files below floor (27 backend + 24 frontend) — Plan 04 must triage scope-cap
+- Phase 8 Plan 03: backend baseline measured without --branch (stable rustc 1.93.0 on local box, no rustup); BRF=0 across all records; line% = 63.09% measured accurately; backend branch% deferred to Plan 05 CI run under nightly
 
 ### Pending Todos
 
@@ -137,8 +140,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T17:27:37.402Z
-Stopped at: Completed 08-02-PLAN.md
+Last session: 2026-04-28T17:43:40.220Z
+Stopped at: Completed 08-03-PLAN.md
 Resume file: None
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z
