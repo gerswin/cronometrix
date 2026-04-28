@@ -4,13 +4,10 @@
 //! Follows the Phase 1/2 service convention: pure I/O functions, no business
 //! logic beyond persistence. Business logic lives in handlers and pusher.
 
-use std::path::PathBuf;
-
 use libsql::{params, Connection};
 use uuid::Uuid;
 
 use crate::common::{epoch_to_iso, epoch_to_iso_opt};
-use crate::devices::models::DeviceWithPlaintext;
 use crate::devices::service as devices_service;
 use crate::errors::AppError;
 use crate::events::service::write_photo_atomic;
@@ -21,23 +18,14 @@ use super::models::{
 };
 
 // =============================================================================
-// Root directory helpers
+// Filesystem roots
 // =============================================================================
-
-/// Base directory for canonical face enrollment photos.
-/// `ENROLLMENTS_DIR` env overrides the default for tests/Docker volume mounts.
-pub fn enrollments_root() -> PathBuf {
-    std::env::var("ENROLLMENTS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./data/enrollments"))
-}
-
-/// Base directory for temporary kiosk-capture JPEGs.
-/// Files live here until the admin accepts the photo; then they flow through
-/// `create_enrollment` → `enrollments_root()`.
-pub fn captures_tmp_root() -> PathBuf {
-    PathBuf::from("/tmp/enrollments-captures")
-}
+//
+// Phase 8 (D-18/D-19): the canonical enrollment photo root and the kiosk
+// capture tmp root live on `state.paths` (Paths::from_env in production,
+// Paths::for_test(tempdir) in tests). The free-function helpers that used to
+// read env vars at use-site (`enrollments_root()` / `captures_tmp_root()`)
+// were removed because they made tests cwd-dependent and parallel-unsafe.
 
 // =============================================================================
 // Row mappers
@@ -262,7 +250,7 @@ pub async fn start_enrollment(
     }
 
     // 6. Write JPEG to disk atomically (write_photo_atomic handles create_dir_all).
-    write_photo_atomic(&enrollments_root(), &photo_relpath, normalized_bytes)
+    write_photo_atomic(&state.paths.enrollments_root, &photo_relpath, normalized_bytes)
         .map_err(AppError::Internal)?;
 
     Ok(EnrollmentSubmitResponse {

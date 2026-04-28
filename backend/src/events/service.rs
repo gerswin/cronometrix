@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{TimeZone, Utc};
 use libsql::{params, Connection};
@@ -69,14 +69,6 @@ const EVENT_SELECT_COLS: &str =
     "id, employee_id, device_id, direction, captured_at, is_unknown, face_id, \
      employee_no_string, photo_path, created_at";
 
-/// Root directory for event JPEGs. Configurable via env for tests.
-/// Falls back to `./data/events` in production.
-pub fn events_root() -> PathBuf {
-    std::env::var("CRONOMETRIX_EVENTS_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./data/events"))
-}
-
 fn row_to_event(row: libsql::Row) -> Result<AttendanceEventResponse, AppError> {
     let is_unknown_int: i64 = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
     Ok(AttendanceEventResponse {
@@ -98,8 +90,13 @@ fn row_to_event(row: libsql::Row) -> Result<AttendanceEventResponse, AppError> {
 /// tuple already exists (D-05/D-06). Photo JPEG is written to disk ONLY when the
 /// INSERT succeeds — `write_photo_atomic` is invoked only if `rows_affected == 1`
 /// so dedup hits never leave orphan files (D-13).
+///
+/// `events_root` is the filesystem root for the JPEG (Phase 8, D-18/D-19): the
+/// caller passes `&state.paths.events_root` from production code or a tempdir
+/// path from tests, eliminating the cwd-dependent + env-var-race anti-pattern.
 pub async fn persist_attendance_event(
     conn: &Connection,
+    events_root: &Path,
     event: NewAttendanceEvent,
 ) -> Result<PersistOutcome, AppError> {
     let bucket = event.captured_at / 30;
@@ -141,7 +138,7 @@ pub async fn persist_attendance_event(
 
     // Only write the JPEG AFTER confirming the DB insert succeeded (no orphaned files on dedup).
     if let (Some(bytes), Some(rel)) = (event.photo_bytes.as_ref(), photo_relpath.as_ref()) {
-        write_photo_atomic(&events_root(), rel, bytes)
+        write_photo_atomic(events_root, rel, bytes)
             .map_err(AppError::Internal)?;
     }
 
@@ -362,45 +359,15 @@ pub async fn get_photo_path(conn: &Connection, id: &str) -> Result<String, AppEr
 mod tests {
     use super::*;
     use libsql::{Builder, Database};
-    use std::sync::Mutex;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use uuid::Uuid;
 
-    // `CRONOMETRIX_EVENTS_ROOT` is process-global; serialize the tests that
-    // mutate it so they don't race each other.
-    static ENV_GUARD: Mutex<()> = Mutex::new(());
-
-    struct EventsRootGuard<'a> {
-        _lock: std::sync::MutexGuard<'a, ()>,
-        _dir: TempDir,
-        prev: Option<String>,
-    }
-
-    impl<'a> EventsRootGuard<'a> {
-        fn new() -> (Self, PathBuf) {
-            let lock = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-            let dir = TempDir::new().expect("temp dir");
-            let path = dir.path().to_path_buf();
-            let prev = std::env::var("CRONOMETRIX_EVENTS_ROOT").ok();
-            std::env::set_var("CRONOMETRIX_EVENTS_ROOT", &path);
-            (
-                EventsRootGuard {
-                    _lock: lock,
-                    _dir: dir,
-                    prev,
-                },
-                path,
-            )
-        }
-    }
-
-    impl<'a> Drop for EventsRootGuard<'a> {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(v) => std::env::set_var("CRONOMETRIX_EVENTS_ROOT", v),
-                None => std::env::remove_var("CRONOMETRIX_EVENTS_ROOT"),
-            }
-        }
+    /// Each test owns a TempDir that supplies the `events_root` path directly
+    /// to `persist_attendance_event` (Phase 8, D-18/D-19). No env mutation, no
+    /// process-global mutex — TempDir cleanup happens at end of test scope.
+    fn fresh_events_root() -> TempDir {
+        TempDir::new().expect("temp dir")
     }
 
     async fn setup_db() -> Database {
@@ -483,7 +450,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_dedup_within_30s() {
-        let (_guard, _root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -492,17 +459,21 @@ mod tests {
         // bucket_30s is floor(captured_at / 30). Bucket 33 = [990..=1019].
         // Two inserts inside the same bucket must dedup.
         let e1 = sample_event("evt-1", Some("e1"), "d1", "entry", 1000);
-        let o1 = persist_attendance_event(&conn, e1).await.unwrap();
+        let o1 = persist_attendance_event(&conn, tmp.path(), e1)
+            .await
+            .unwrap();
         assert!(matches!(o1, PersistOutcome::Inserted { .. }));
 
         let e2 = sample_event("evt-2", Some("e1"), "d1", "entry", 1019);
-        let o2 = persist_attendance_event(&conn, e2).await.unwrap();
+        let o2 = persist_attendance_event(&conn, tmp.path(), e2)
+            .await
+            .unwrap();
         assert_eq!(o2, PersistOutcome::Deduplicated);
     }
 
     #[tokio::test]
     async fn persist_cross_device_within_30s() {
-        let (_guard, _root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -512,15 +483,19 @@ mod tests {
         let e1 = sample_event("evt-1", Some("e1"), "d1", "entry", 1000);
         let e2 = sample_event("evt-2", Some("e1"), "d2", "entry", 1010);
 
-        let o1 = persist_attendance_event(&conn, e1).await.unwrap();
-        let o2 = persist_attendance_event(&conn, e2).await.unwrap();
+        let o1 = persist_attendance_event(&conn, tmp.path(), e1)
+            .await
+            .unwrap();
+        let o2 = persist_attendance_event(&conn, tmp.path(), e2)
+            .await
+            .unwrap();
         assert!(matches!(o1, PersistOutcome::Inserted { .. }));
         assert!(matches!(o2, PersistOutcome::Inserted { .. }));
     }
 
     #[tokio::test]
     async fn persist_adjacent_buckets() {
-        let (_guard, _root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -530,15 +505,19 @@ mod tests {
         let e1 = sample_event("evt-1", Some("e1"), "d1", "entry", 1000);
         let e2 = sample_event("evt-2", Some("e1"), "d1", "entry", 1030);
 
-        let o1 = persist_attendance_event(&conn, e1).await.unwrap();
-        let o2 = persist_attendance_event(&conn, e2).await.unwrap();
+        let o1 = persist_attendance_event(&conn, tmp.path(), e1)
+            .await
+            .unwrap();
+        let o2 = persist_attendance_event(&conn, tmp.path(), e2)
+            .await
+            .unwrap();
         assert!(matches!(o1, PersistOutcome::Inserted { .. }));
         assert!(matches!(o2, PersistOutcome::Inserted { .. }));
     }
 
     #[tokio::test]
     async fn persist_epoch_is_utc_integer() {
-        let (_guard, _root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -546,7 +525,9 @@ mod tests {
 
         let epoch = 1_700_000_000_i64;
         let ev = sample_event("evt-1", Some("e1"), "d1", "entry", epoch);
-        let _ = persist_attendance_event(&conn, ev).await.unwrap();
+        let _ = persist_attendance_event(&conn, tmp.path(), ev)
+            .await
+            .unwrap();
 
         let mut rows = conn
             .query(
@@ -562,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_raw_xml_round_trip() {
-        let (_guard, _root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -575,7 +556,9 @@ mod tests {
                    </EventNotificationAlert>";
         let mut ev = sample_event("evt-1", Some("e1"), "d1", "entry", 1000);
         ev.raw_xml = xml.to_string();
-        let _ = persist_attendance_event(&conn, ev).await.unwrap();
+        let _ = persist_attendance_event(&conn, tmp.path(), ev)
+            .await
+            .unwrap();
 
         let mut rows = conn
             .query(
@@ -591,7 +574,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_unknown_face_sets_is_unknown() {
-        let (_guard, _root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -600,7 +583,9 @@ mod tests {
         ev.is_unknown = true;
         ev.employee_no_string = None; // unknown faces have no resolved employee
         ev.face_id = Some("42".to_string());
-        let _ = persist_attendance_event(&conn, ev).await.unwrap();
+        let _ = persist_attendance_event(&conn, tmp.path(), ev)
+            .await
+            .unwrap();
 
         let mut rows = conn
             .query(
@@ -620,7 +605,8 @@ mod tests {
 
     #[tokio::test]
     async fn persist_photo_written_on_insert() {
-        let (_guard, root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
+        let root = tmp.path().to_path_buf();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -630,7 +616,7 @@ mod tests {
         let mut ev = sample_event("evt-photo-1", Some("e1"), "d1", "entry", captured_at);
         ev.photo_bytes = Some(vec![0xFF, 0xD8, 0xFF, 0xE0, b'J', b'F', b'I', b'F']);
 
-        let outcome = persist_attendance_event(&conn, ev).await.unwrap();
+        let outcome = persist_attendance_event(&conn, &root, ev).await.unwrap();
         let relpath = match outcome {
             PersistOutcome::Inserted { photo_path } => photo_path.expect("relpath"),
             other => panic!("expected Inserted, got {:?}", other),
@@ -646,7 +632,8 @@ mod tests {
 
     #[tokio::test]
     async fn persist_photo_skipped_on_dedup() {
-        let (_guard, root) = EventsRootGuard::new();
+        let tmp = fresh_events_root();
+        let root = tmp.path().to_path_buf();
         let db = setup_db().await;
         let conn = db.connect().unwrap();
         seed_device(&conn, "d1").await;
@@ -658,11 +645,11 @@ mod tests {
         // bucket 33 covers [990..=1019]; both inserts must land in the same bucket.
         let mut e1 = sample_event("evt-dup-1", Some("e1"), "d1", "entry", 1000);
         e1.photo_bytes = Some(first_bytes.clone());
-        let _ = persist_attendance_event(&conn, e1).await.unwrap();
+        let _ = persist_attendance_event(&conn, &root, e1).await.unwrap();
 
         let mut e2 = sample_event("evt-dup-2", Some("e1"), "d1", "entry", 1015);
         e2.photo_bytes = Some(second_bytes.clone());
-        let outcome2 = persist_attendance_event(&conn, e2).await.unwrap();
+        let outcome2 = persist_attendance_event(&conn, &root, e2).await.unwrap();
         assert_eq!(outcome2, PersistOutcome::Deduplicated);
 
         // Walk the events root and count JPEGs — must be exactly one from the first insert.

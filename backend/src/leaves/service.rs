@@ -5,9 +5,10 @@
 //! - get_by_id / list: Viewer+ reads.
 //! - cancel: soft-delete with optimistic concurrency.
 //! - fetch_active_leave_for_date: populates EngineInput.leave (D-16 overlay).
-//! - leaves_root: filesystem root for evidence files (env-overridable in tests).
-
-use std::path::PathBuf;
+//!
+//! Filesystem root for evidence files is provided by `state.paths.leaves_root`
+//! (Phase 8, D-18/D-19) — handlers read it from AppState rather than calling a
+//! free function that reads env at use-site.
 
 use chrono::NaiveDate;
 use libsql::{params, Connection};
@@ -22,14 +23,6 @@ use super::models::{CreateLeaveRequest, LeaveListQuery, LeaveResponse};
 const LEAVE_SELECT_COLS: &str =
     "id, employee_id, from_date, to_date, leave_type, justification, evidence_path, \
      created_by, status, deleted_at, version, created_at, updated_at";
-
-/// Root directory for evidence files. Configurable via env for tests.
-/// Mirrors `events::service::events_root()` pattern.
-pub fn leaves_root() -> PathBuf {
-    std::env::var("CRONOMETRIX_LEAVES_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./data/leaves"))
-}
 
 /// Create a new leave row.
 ///

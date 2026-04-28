@@ -263,7 +263,7 @@ pub async fn retry_push(
         })?;
     drop(conn);
 
-    let photo_bytes = tokio::fs::read(service::enrollments_root().join(&photo_path))
+    let photo_bytes = tokio::fs::read(state.paths.enrollments_root.join(&photo_path))
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("read photo for retry: {e}")))?;
 
@@ -378,7 +378,7 @@ pub async fn capture_from_device(
         match result {
             Ok(Ok(jpeg_bytes)) => {
                 // Write to /tmp/enrollments-captures/{capture_id}.jpg
-                let tmp_root = service::captures_tmp_root();
+                let tmp_root = state.paths.captures_tmp_root.clone();
                 let _ = tokio::fs::create_dir_all(&tmp_root).await;
                 let path = tmp_root.join(format!("{}.jpg", cid));
                 match tokio::fs::write(&path, &jpeg_bytes).await {

@@ -83,9 +83,12 @@ async fn main() -> anyhow::Result<()> {
     let (purge_tx, purge_rx) = mpsc::unbounded_channel::<cronometrix_api::workers::purge::PurgeRequest>();
     let (backfill_tx, backfill_rx) = mpsc::unbounded_channel::<cronometrix_api::workers::backfill::BackfillRequest>();
 
+    let paths = Arc::new(cronometrix_api::state::Paths::from_env());
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
+        paths,
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: Some(recompute_tx),
         event_broadcast: Some(event_tx),

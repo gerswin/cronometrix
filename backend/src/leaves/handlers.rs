@@ -9,7 +9,7 @@
 //!
 //! Security invariants:
 //! - Evidence paths are SERVER-GENERATED from UUID + extension (T-3-15).
-//! - Evidence read path canonicalizes + verifies under `leaves_root()` (T-3-18).
+//! - Evidence read path canonicalizes + verifies under `state.paths.leaves_root` (T-3-18).
 //! - Content-Type enum restricted to pdf/jpeg/png (T-3-16).
 //! - Hard size cap 10MB enforced before DB commit (T-3-21).
 //! - Create + cancel publish RecomputeRequest for each anchor_date in the
@@ -164,7 +164,7 @@ pub async fn create_leave(
         (evidence_bytes.as_ref(), evidence_ext)
     {
         let rel = format!("{}.{}", Uuid::new_v4(), ext);
-        write_photo_atomic(&service::leaves_root(), &rel, bytes)
+        write_photo_atomic(&state.paths.leaves_root, &rel, bytes)
             .map_err(AppError::Internal)?;
         Some(rel)
     } else {
@@ -244,7 +244,7 @@ pub async fn cancel_leave(
 /// Defence in depth (T-3-15 + T-3-18): `evidence_path` is server-generated,
 /// but we still reject any stored value containing `..` or starting with `/`,
 /// then canonicalize the resolved absolute path and verify it stays under
-/// `leaves_root()`. If canonicalize/read fails, we return 404 with
+/// `state.paths.leaves_root`. If canonicalize/read fails, we return 404 with
 /// `LEAVE_EVIDENCE_NOT_FOUND` (never 500) so a missing file never leaks as
 /// an internal error.
 pub async fn get_leave_evidence(
@@ -273,7 +273,7 @@ pub async fn get_leave_evidence(
         });
     }
 
-    let root = service::leaves_root();
+    let root = state.paths.leaves_root.clone();
     let root_canonical = root.canonicalize().map_err(|e| {
         tracing::error!(?root, error = %e, "leaves_root canonicalize failed");
         AppError::NotFound {

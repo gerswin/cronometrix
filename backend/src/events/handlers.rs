@@ -80,9 +80,9 @@ pub async fn get_event(
 /// helper from a UUID + ISO date, so untrusted clients never control it. Still,
 /// we reject any stored value containing `..` or starting with `/`, then
 /// canonicalize the resolved absolute path and verify it stays under
-/// `events_root()` before reading bytes. If canonicalize/read fails, we return
-/// 404 with `EVENT_PHOTO_NOT_FOUND` (never 500) so a missing/tampered file
-/// never leaks as an internal error.
+/// `state.paths.events_root` before reading bytes. If canonicalize/read fails,
+/// we return 404 with `EVENT_PHOTO_NOT_FOUND` (never 500) so a missing/tampered
+/// file never leaks as an internal error.
 pub async fn get_event_photo(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -102,7 +102,7 @@ pub async fn get_event_photo(
         });
     }
 
-    let root = service::events_root();
+    let root = state.paths.events_root.clone();
     let root_canonical = root.canonicalize().map_err(|e| {
         tracing::error!(events_root = ?root, error = %e, "events_root canonicalize failed");
         AppError::NotFound {

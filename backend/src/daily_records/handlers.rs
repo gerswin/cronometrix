@@ -195,12 +195,12 @@ pub async fn create_override(
         });
     }
 
-    // Write evidence to disk — UUID path (same pattern as leaves, T-4-10 mitigation)
+    // Write evidence to disk — UUID path (same pattern as leaves, T-4-10 mitigation).
+    // Phase 8 (D-18/D-19): the overrides root comes from `state.paths.overrides_root`
+    // (populated once at startup from `DATA_DIR`/overrides via Paths::from_env).
     let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext) {
         let rel = format!("{}.{}", Uuid::new_v4(), ext);
-        let overrides_root = std::path::PathBuf::from(
-            std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into())
-        ).join("overrides");
+        let overrides_root = state.paths.overrides_root.clone();
         write_photo_atomic(&overrides_root, &rel, bytes).map_err(AppError::Internal)?;
         Some(rel)
     } else {
