@@ -20,7 +20,6 @@ use axum::Router;
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::devices;
-use cronometrix_api::state::AppState;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -45,14 +44,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let state = common::test_state(Arc::new(db), config);
 
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))
@@ -432,14 +424,7 @@ async fn dispatch_door_open_writes_audit() {
         do_functions_renew_url: String::new(),
     });
     let db_arc = Arc::new(db);
-    let state = AppState {
-        db: db_arc.clone(),
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let state = common::test_state(db_arc.clone(), config);
 
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))
@@ -543,14 +528,7 @@ async fn dispatch_timeout_returns_504() {
         do_functions_renew_url: String::new(),
     });
     let db_arc = Arc::new(db);
-    let state = AppState {
-        db: db_arc.clone(),
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let state = common::test_state(db_arc.clone(), config);
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
         .route(
@@ -628,14 +606,7 @@ async fn dispatch_bad_gateway_on_500() {
         do_functions_renew_url: String::new(),
     });
     let db_arc = Arc::new(db);
-    let state = AppState {
-        db: db_arc.clone(),
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let state = common::test_state(db_arc.clone(), config);
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
         .route(
@@ -781,14 +752,7 @@ async fn patch_updates_password_and_reencrypts() {
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
     });
-    let state = AppState {
-        db: db_arc.clone(),
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let state = common::test_state(db_arc.clone(), config);
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))
         .route("/devices/{id}", get(devices::handlers::get_device))

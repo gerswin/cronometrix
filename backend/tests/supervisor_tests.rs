@@ -141,14 +141,8 @@ async fn bootstrap_spawns_one_task_per_active_device() {
     }
 
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: Some(lifecycle_tx),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config);
+    state.lifecycle_tx = Some(lifecycle_tx);
     let shutdown = CancellationToken::new();
 
     // Build the supervisor and a SECOND handle clone so we can poll
@@ -255,14 +249,8 @@ async fn start_signal_spawns_new_task() {
     let config = make_config();
     // Do NOT seed the device in the DB yet — start with 0 devices.
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let state = AppState {
-        db: Arc::new(db),
-        config: config.clone(),
-        lifecycle_tx: Some(lifecycle_tx.clone()),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config.clone());
+    state.lifecycle_tx = Some(lifecycle_tx.clone());
     let shutdown = CancellationToken::new();
 
     let supervisor = Supervisor::new(state.clone(), shutdown.clone());
@@ -323,14 +311,8 @@ async fn stop_signal_cancels_task() {
         seed_device(&conn, "d-stop", &config.device_creds_key).await;
     }
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let state = AppState {
-        db: Arc::new(db),
-        config: config.clone(),
-        lifecycle_tx: Some(lifecycle_tx.clone()),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config.clone());
+    state.lifecycle_tx = Some(lifecycle_tx.clone());
     let shutdown = CancellationToken::new();
 
     let supervisor = Supervisor::new(state.clone(), shutdown.clone());
@@ -366,14 +348,8 @@ async fn restart_signal_stops_then_starts() {
         seed_device(&conn, "d-restart", &config.device_creds_key).await;
     }
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let state = AppState {
-        db: Arc::new(db),
-        config: config.clone(),
-        lifecycle_tx: Some(lifecycle_tx.clone()),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config.clone());
+    state.lifecycle_tx = Some(lifecycle_tx.clone());
     let shutdown = CancellationToken::new();
 
     let supervisor = Supervisor::new(state.clone(), shutdown.clone());
@@ -449,14 +425,8 @@ async fn graceful_shutdown_within_5s() {
         seed_device(&conn, "d-sd-2", &config.device_creds_key).await;
     }
     let (_lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: Some(_lifecycle_tx),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config);
+    state.lifecycle_tx = Some(_lifecycle_tx);
     let shutdown = CancellationToken::new();
 
     let supervisor = Supervisor::new(state, shutdown.clone());
@@ -497,14 +467,8 @@ async fn watchdog_flips_device_offline_after_90s() {
         .unwrap();
     }
     let (_lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel::<DeviceLifecycleEvent>();
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: Some(_lifecycle_tx),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config);
+    state.lifecycle_tx = Some(_lifecycle_tx);
 
     // Call run_once directly — avoids the 10s interval.
     let rows = watchdog::run_once(&state).await.unwrap();
@@ -541,14 +505,8 @@ async fn watchdog_leaves_fresh_device_alone() {
         .unwrap();
     }
     let (_lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel::<DeviceLifecycleEvent>();
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: Some(_lifecycle_tx),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config);
+    state.lifecycle_tx = Some(_lifecycle_tx);
 
     let _ = watchdog::run_once(&state).await.unwrap();
 
@@ -586,14 +544,8 @@ async fn watchdog_flips_device_with_null_last_seen() {
         .unwrap();
     }
     let (_lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel::<DeviceLifecycleEvent>();
-    let state = AppState {
-        db: Arc::new(db),
-        config,
-        lifecycle_tx: Some(_lifecycle_tx),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(Arc::new(db), config);
+    state.lifecycle_tx = Some(_lifecycle_tx);
 
     let _ = watchdog::run_once(&state).await.unwrap();
 
@@ -654,14 +606,8 @@ async fn build_test_app(
     let db_arc = Arc::new(db);
 
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let state = AppState {
-        db: db_arc.clone(),
-        config,
-        lifecycle_tx: Some(lifecycle_tx),
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    };
+    let mut state = common::test_state(db_arc.clone(), config);
+    state.lifecycle_tx = Some(lifecycle_tx);
 
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
