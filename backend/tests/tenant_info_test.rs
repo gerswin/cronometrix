@@ -13,7 +13,9 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 /// Build a test app with tenant_info routes only (GET viewer + PATCH admin).
-async fn build_test_app(db: libsql::Database) -> Router {
+/// Returns (Router, TempDir) per Plan 08-02 D-20: caller binds the TempDir to
+/// a local that outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
+async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test".to_string(),
         turso_url: String::new(),
@@ -29,7 +31,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = common::test_state(Arc::new(db), config);
+    let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 
     let viewer_routes = Router::new()
         .route("/tenant-info", get(tenant_info::handlers::get_tenant_info))
@@ -45,9 +47,10 @@ async fn build_test_app(db: libsql::Database) -> Router {
             auth::rbac::require_admin,
         ));
 
-    Router::new()
+    let app = Router::new()
         .nest("/api/v1", viewer_routes.merge(admin_routes))
-        .with_state(state)
+        .with_state(state);
+    (app, tmp)
 }
 
 async fn body_to_json(body: Body) -> Value {
@@ -61,7 +64,7 @@ async fn get_returns_seed_row() {
     let db = common::test_db().await;
     let viewer_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&viewer_id, "viewer");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     let req = Request::builder()
         .method(Method::GET)
@@ -90,7 +93,7 @@ async fn admin_patch_succeeds() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     let req = Request::builder()
         .method(Method::PATCH)
@@ -124,7 +127,7 @@ async fn supervisor_blocked() {
     let db = common::test_db().await;
     let sup_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&sup_id, "supervisor");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     let req = Request::builder()
         .method(Method::PATCH)
@@ -154,7 +157,7 @@ async fn version_conflict() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     let req = Request::builder()
         .method(Method::PATCH)
@@ -196,7 +199,7 @@ async fn audit_trigger_fires() {
     // afterwards. (We re-connect via the app's state too — both connections share the file.)
     let conn = db.connect().expect("connect");
 
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     let req = Request::builder()
         .method(Method::PATCH)

@@ -12,8 +12,10 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use http_body_util::BodyExt;
 
-/// Build a test app with rules routes only.
-async fn build_test_app(db: libsql::Database) -> Router {
+/// Build a test app with rules routes only. Returns (Router, TempDir) per
+/// Plan 08-02 D-20: caller binds the TempDir to a local that outlives every
+/// assertion (Pitfall 1 in 08-RESEARCH.md).
+async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test".to_string(),
         turso_url: String::new(),
@@ -29,7 +31,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = common::test_state(Arc::new(db), config);
+    let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 
     // GET rules: any authenticated role
     let viewer_routes = Router::new()
@@ -47,9 +49,10 @@ async fn build_test_app(db: libsql::Database) -> Router {
             auth::rbac::require_admin,
         ));
 
-    Router::new()
+    let app = Router::new()
         .nest("/api/v1", viewer_routes.merge(admin_routes))
-        .with_state(state)
+        .with_state(state);
+    (app, tmp)
 }
 
 /// Collect response body into JSON.
@@ -63,7 +66,7 @@ async fn rules_tolerance_endpoint() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // GET /rules — verify default singleton values (seeded in migration: 10/10)
     let get_req = Request::builder()
@@ -120,7 +123,7 @@ async fn rules_bonus_minutes_config() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // GET to fetch current version
     let get_req = Request::builder()
@@ -174,7 +177,7 @@ async fn rules_effective_from_updates_on_change() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // GET to capture initial effective_from and version
     let get_req = Request::builder()

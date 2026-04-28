@@ -48,7 +48,12 @@ use seed::{
 // Harness
 // -----------------------------------------------------------------------------
 
-fn make_state(db: libsql::Database) -> AppState {
+/// Build (AppState, TempDir) for report tests. Per Plan 08-02 D-20: AppState
+/// carries a tempdir-rooted `Paths`; the caller binds the returned TempDir
+/// to a local that outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
+/// Reports tests do not currently touch any of the path roots, but AppState
+/// requires `paths` to be populated to match the production shape.
+fn make_state(db: libsql::Database) -> (AppState, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test.db".into(),
         turso_url: String::new(),
@@ -63,7 +68,7 @@ fn make_state(db: libsql::Database) -> AppState {
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
     });
-    common::test_state(Arc::new(db), config)
+    common::test_state_with_tmpdir(Arc::new(db), config)
 }
 
 fn build_test_app(state: AppState) -> Router {
@@ -149,7 +154,8 @@ async fn period_presets_in_payload() {
     let _emp = seed_employee(&db, "E001", "Alice", &dept, "Dev").await;
     set_tenant_branding(&db, "Acme", "J-12345").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
 
     // Weekly: from 2026-04-25 (Sat) → ISO Mon = 2026-04-20, Sun = 2026-04-26.
     let (status, body) = post_report(
@@ -231,7 +237,8 @@ async fn override_takes_precedence() {
     let dr = seed_daily_record(&db, &emp, &dept, "2026-04-15", "day", 120, 0, 0, 0, None).await;
     seed_override(&db, &dr, 480, &admin).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -272,7 +279,8 @@ async fn medical_leave_excluded() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -313,7 +321,8 @@ async fn vacation_paid_full() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -354,7 +363,8 @@ async fn unpaid_leave_zero_pay() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -394,7 +404,8 @@ async fn manual_leave_zero_pay() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -429,7 +440,8 @@ async fn full_week_vacation_no_captures_counts_correctly() {
     // Mon 2026-04-20 → Fri 2026-04-24 (5 weekdays). NO daily_records.
     let _ = seed_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-24", &admin).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -469,7 +481,8 @@ async fn full_week_medical_leave_no_captures() {
     let emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
     let _ = seed_leave(&db, &emp, "medical", "2026-04-20", "2026-04-24", &admin).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -514,7 +527,8 @@ async fn leave_overlay_does_not_double_count() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -580,7 +594,8 @@ async fn night_premium_uses_daily_record_shift_type() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -631,7 +646,8 @@ async fn shift_type_night_premium_applied() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -670,7 +686,8 @@ async fn shift_type_day_no_night_premium() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -702,7 +719,8 @@ async fn anomaly_codes_in_payload() {
     seed_anomaly(&db, &dr, "MISSING_EXIT").await;
     seed_anomaly(&db, &dr, "OT_CAP_EXCEEDED_DAILY").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -738,7 +756,8 @@ async fn subtotals_match_constituents() {
     let _ = seed_daily_record(&db, &e1, &dept, "2026-04-15", "day", 480, 0, 0, 0, None).await;
     let _ = seed_daily_record(&db, &e2, &dept, "2026-04-15", "day", 240, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (_, body) = post_report(
         &app,
         &token,
@@ -774,7 +793,8 @@ async fn grand_total_matches_subtotals() {
     let _ = seed_daily_record(&db, &ea, &dept_a, "2026-04-15", "day", 480, 0, 0, 0, None).await;
     let _ = seed_daily_record(&db, &eb, &dept_b, "2026-04-15", "day", 480, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (_, body) = post_report(
         &app,
         &token,
@@ -803,7 +823,8 @@ async fn admin_can_export() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _) = post_report(
         &app,
         &token,
@@ -822,7 +843,8 @@ async fn supervisor_can_export() {
     let db = common::test_db().await;
     let sup = create_test_supervisor(&db).await;
     let token = test_access_token(&sup, "supervisor");
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _) = post_report(
         &app,
         &token,
@@ -841,7 +863,8 @@ async fn viewer_blocked_on_export() {
     let db = common::test_db().await;
     let v = create_test_viewer(&db).await;
     let token = test_access_token(&v, "viewer");
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _) = post_report(
         &app,
         &token,
@@ -864,7 +887,7 @@ async fn audit_entry_on_export() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     // Clone the Arc<Database> so we can verify audit_log after the POST.
     let state_db = state.db.clone();
     let app = build_test_app(state);
@@ -891,7 +914,7 @@ async fn no_audit_on_failure() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let state_db = state.db.clone();
     let app = build_test_app(state);
 
@@ -921,7 +944,8 @@ async fn period_too_long_rejected() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
 
     let (status, body) = post_report(
         &app,
@@ -960,7 +984,8 @@ async fn department_filter_applied() {
     let _ = seed_daily_record(&db, &ea, &dept_a, "2026-04-15", "day", 480, 0, 0, 0, None).await;
     let _ = seed_daily_record(&db, &eb, &dept_b, "2026-04-15", "day", 480, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, body) = post_report(
         &app,
         &token,
@@ -996,7 +1021,8 @@ async fn rest_day_surcharge_only_when_flagged() {
     // E2 worked normal day (rest_day_worked=0)
     let _ = seed_daily_record(&db, &e2, &dept, "2026-04-15", "day", 480, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (_, body) = post_report(
         &app,
         &token,
@@ -1027,7 +1053,8 @@ async fn dias_trabajados_count() {
     let _ = seed_daily_record(&db, &emp, &dept, "2026-04-15", "day", 60, 0, 0, 0, None).await;
     let _ = seed_daily_record(&db, &emp, &dept, "2026-04-16", "day", 0, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (_, body) = post_report(
         &app,
         &token,
@@ -1055,7 +1082,8 @@ async fn dias_ausentes_weekday_only() {
     let emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
     let _ = seed_daily_record(&db, &emp, &dept, "2026-04-13", "day", 480, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (_, body) = post_report(
         &app,
         &token,
@@ -1092,7 +1120,8 @@ async fn include_inactive_filter_works() {
     )
     .await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (_, body) = post_report(
         &app,
         &token,

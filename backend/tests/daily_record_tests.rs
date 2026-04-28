@@ -18,7 +18,10 @@ use uuid::Uuid;
 
 use common::{create_test_department_with_shift, test_device_creds_key};
 
-fn make_state(db: libsql::Database) -> AppState {
+/// Build (AppState, TempDir) for daily_record tests. Per Plan 08-02 D-20:
+/// AppState is rooted in a per-test tempdir; caller binds the TempDir to a
+/// local that outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
+fn make_state(db: libsql::Database) -> (AppState, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test.db".into(),
         turso_url: String::new(),
@@ -33,7 +36,7 @@ fn make_state(db: libsql::Database) -> AppState {
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
     });
-    common::test_state(Arc::new(db), config)
+    common::test_state_with_tmpdir(Arc::new(db), config)
 }
 
 async fn seed_employee(db: &libsql::Database, dept_id: &str, code: &str) -> String {
@@ -179,7 +182,7 @@ async fn recompute_upsert_preserves_id_and_replaces_anomalies() {
     )
     .await;
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp_id, anchor)
         .await
         .expect("first recompute ok");
@@ -257,7 +260,7 @@ async fn recompute_flags_recompute_after_edit_on_second_call() {
     )
     .await;
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp_id, anchor)
         .await
         .expect("first ok");
@@ -324,7 +327,7 @@ async fn recompute_overnight_captures_post_midnight_events() {
     seed_event(&db, &emp_id, "dev-night-1", "entry", entry_epoch).await;
     seed_event(&db, &emp_id, "dev-night-1", "exit", exit_epoch).await;
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp_id, anchor)
         .await
         .expect("overnight recompute");

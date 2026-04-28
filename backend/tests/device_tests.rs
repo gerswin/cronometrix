@@ -27,8 +27,10 @@ use wiremock::matchers::{method as wm_method, path as wm_path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Build a fully-wired test Router covering all device routes with the real
-/// RBAC middleware stack. Mirrors `main.rs`; we do NOT mock auth.
-async fn build_test_app(db: libsql::Database) -> Router {
+/// RBAC middleware stack. Mirrors `main.rs`; we do NOT mock auth. Returns
+/// (Router, TempDir) per Plan 08-02 D-20: caller binds the TempDir to a
+/// local that outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
+async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test".to_string(),
         turso_url: String::new(),
@@ -44,7 +46,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = common::test_state(Arc::new(db), config);
+    let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))
@@ -67,12 +69,13 @@ async fn build_test_app(db: libsql::Database) -> Router {
             auth::rbac::require_admin,
         ));
 
-    Router::new()
+    let app = Router::new()
         .nest(
             "/api/v1",
             viewer_routes.merge(admin_routes),
         )
-        .with_state(state)
+        .with_state(state);
+    (app, tmp)
 }
 
 async fn body_to_json(body: Body) -> Value {
@@ -132,7 +135,7 @@ async fn register_device(
 #[tokio::test]
 async fn create_device_encrypts_password() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
 
     let body = register_device(&app, &token, "D1", "10.0.0.1", 8443, "https").await;
@@ -157,7 +160,7 @@ async fn create_device_encrypts_password() {
 #[tokio::test]
 async fn create_device_stores_encrypted() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
 
     let body = register_device(&app, &token, "D1", "10.0.0.2", 8443, "https").await;
@@ -200,7 +203,7 @@ async fn create_device_stores_encrypted() {
 #[tokio::test]
 async fn create_duplicate_ip_port_conflict() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
 
     let _first = register_device(&app, &token, "D-A", "10.0.0.3", 8443, "https").await;
@@ -233,7 +236,7 @@ async fn create_duplicate_ip_port_conflict() {
 #[tokio::test]
 async fn create_after_deactivate_succeeds() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
 
     let first = register_device(&app, &token, "D-A", "10.0.0.4", 8443, "https").await;
@@ -256,7 +259,7 @@ async fn create_after_deactivate_succeeds() {
 #[tokio::test]
 async fn create_validation_rejects_bad_ip() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
 
     let req = Request::builder()
@@ -286,7 +289,7 @@ async fn create_validation_rejects_bad_ip() {
 #[tokio::test]
 async fn create_validation_rejects_bad_port() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
 
     let req = Request::builder()
@@ -318,7 +321,7 @@ async fn create_validation_rejects_bad_port() {
 #[tokio::test]
 async fn list_devices_exposes_connection_state() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
 
     let _ = register_device(&app, &token, "A", "10.0.1.1", 8443, "https").await;
@@ -353,7 +356,7 @@ async fn list_devices_exposes_connection_state() {
 async fn viewer_can_list_devices() {
     let db = common::test_db().await;
     // Also create a device as admin first.
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, admin_tok) = admin_token();
     let _ = register_device(&app, &admin_tok, "X", "10.0.2.1", 8443, "https").await;
 
@@ -424,7 +427,10 @@ async fn dispatch_door_open_writes_audit() {
         do_functions_renew_url: String::new(),
     });
     let db_arc = Arc::new(db);
-    let state = common::test_state(db_arc.clone(), config);
+    // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let state = common::test_state(db_arc.clone(), config, paths);
 
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))
@@ -528,7 +534,10 @@ async fn dispatch_timeout_returns_504() {
         do_functions_renew_url: String::new(),
     });
     let db_arc = Arc::new(db);
-    let state = common::test_state(db_arc.clone(), config);
+    // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let state = common::test_state(db_arc.clone(), config, paths);
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
         .route(
@@ -606,7 +615,10 @@ async fn dispatch_bad_gateway_on_500() {
         do_functions_renew_url: String::new(),
     });
     let db_arc = Arc::new(db);
-    let state = common::test_state(db_arc.clone(), config);
+    // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let state = common::test_state(db_arc.clone(), config, paths);
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
         .route(
@@ -667,7 +679,7 @@ async fn dispatch_bad_gateway_on_500() {
 #[tokio::test]
 async fn dispatch_viewer_forbidden() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, admin_tok) = admin_token();
     let device = register_device(&app, &admin_tok, "V", "10.0.3.1", 8443, "https").await;
     let device_id = device["id"].as_str().unwrap().to_string();
@@ -688,7 +700,7 @@ async fn dispatch_viewer_forbidden() {
 #[tokio::test]
 async fn dispatch_supervisor_forbidden() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, admin_tok) = admin_token();
     let device = register_device(&app, &admin_tok, "S", "10.0.3.2", 8443, "https").await;
     let device_id = device["id"].as_str().unwrap().to_string();
@@ -710,7 +722,7 @@ async fn dispatch_supervisor_forbidden() {
 #[tokio::test]
 async fn dispatch_invalid_command_422() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (admin_id, token) = admin_token();
     let device = register_device(&app, &token, "I", "10.0.3.3", 8443, "https").await;
     let device_id = device["id"].as_str().unwrap().to_string();
@@ -752,7 +764,10 @@ async fn patch_updates_password_and_reencrypts() {
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
     });
-    let state = common::test_state(db_arc.clone(), config);
+    // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let state = common::test_state(db_arc.clone(), config, paths);
     let viewer_routes = Router::new()
         .route("/devices", get(devices::handlers::list_devices))
         .route("/devices/{id}", get(devices::handlers::get_device))
@@ -838,7 +853,7 @@ async fn patch_updates_password_and_reencrypts() {
 #[tokio::test]
 async fn patch_requires_correct_version() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
     let created = register_device(&app, &token, "V", "10.0.4.2", 8443, "https").await;
     let id = created["id"].as_str().unwrap().to_string();
@@ -865,7 +880,7 @@ async fn patch_requires_correct_version() {
 #[tokio::test]
 async fn deactivate_sets_status_inactive_and_deleted_at() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
     let created = register_device(&app, &token, "D", "10.0.4.3", 8443, "https").await;
     let id = created["id"].as_str().unwrap().to_string();
@@ -895,7 +910,7 @@ async fn deactivate_sets_status_inactive_and_deleted_at() {
 #[tokio::test]
 async fn deactivate_soft_delete_idempotent() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
     let (_admin_id, token) = admin_token();
     let created = register_device(&app, &token, "D", "10.0.4.4", 8443, "https").await;
     let id = created["id"].as_str().unwrap().to_string();

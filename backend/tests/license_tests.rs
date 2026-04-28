@@ -324,13 +324,14 @@ mod gate_behavior_tests {
 
     /// Build a router with the license gate wired exactly as main.rs.
     /// `license_valid` parameter controls the gate state for the test.
-    /// Returns (Router, the AtomicBool clone) so the caller can observe
-    /// the post-activation flip.
+    /// Returns (Router, the AtomicBool clone, TempDir) so the caller can
+    /// observe the post-activation flip and keep the per-test path roots
+    /// alive (Plan 08-02 D-20 / Pitfall 1 in 08-RESEARCH.md).
     async fn build_gated_app(
         db: libsql::Database,
         license_valid: bool,
         do_url: String,
-    ) -> (Router, Arc<AtomicBool>) {
+    ) -> (Router, Arc<AtomicBool>, tempfile::TempDir) {
         let lv = Arc::new(AtomicBool::new(license_valid));
         let config = Arc::new(Config {
             database_path: "test".to_string(),
@@ -350,7 +351,9 @@ mod gate_behavior_tests {
             do_functions_renew_url: String::new(),
         });
 
-        let mut state = common::test_state(Arc::new(db), config);
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = Arc::new(cronometrix_api::state::Paths::for_test(tmp.path()));
+        let mut state = common::test_state(Arc::new(db), config, paths);
         state.license_valid = lv.clone();
 
         let public_routes = Router::new()
@@ -375,7 +378,7 @@ mod gate_behavior_tests {
         let app = Router::new()
             .nest("/api/v1", public_routes.merge(viewer_routes))
             .with_state(state);
-        (app, lv)
+        (app, lv, tmp)
     }
 
     async fn body_to_json(body: Body) -> serde_json::Value {
@@ -389,7 +392,7 @@ mod gate_behavior_tests {
     #[tokio::test]
     async fn test_license_gate_blocks_unlicensed_protected_route() {
         let db = common::test_db().await;
-        let (app, _lv) = build_gated_app(db, false, String::new()).await;
+        let (app, _lv, _tmp) = build_gated_app(db, false, String::new()).await;
         let token = common::test_access_token("admin-id", "admin");
         let req = Request::builder()
             .method(Method::GET)
@@ -409,7 +412,7 @@ mod gate_behavior_tests {
     #[tokio::test]
     async fn test_license_gate_allows_licensed_protected_route() {
         let db = common::test_db().await;
-        let (app, _lv) = build_gated_app(db, true, String::new()).await;
+        let (app, _lv, _tmp) = build_gated_app(db, true, String::new()).await;
         let token = common::test_access_token("admin-id", "admin");
         let req = Request::builder()
             .method(Method::GET)
@@ -437,7 +440,7 @@ mod gate_behavior_tests {
     #[tokio::test]
     async fn test_public_setup_status_ungated_when_unlicensed() {
         let db = common::test_db().await;
-        let (app, _lv) = build_gated_app(db, false, String::new()).await;
+        let (app, _lv, _tmp) = build_gated_app(db, false, String::new()).await;
         let req = Request::builder()
             .method(Method::GET)
             .uri("/api/v1/setup/status")
@@ -461,7 +464,7 @@ mod gate_behavior_tests {
     #[tokio::test]
     async fn test_setup_activate_validates_license_key_format() {
         let db = common::test_db().await;
-        let (app, _lv) = build_gated_app(db, false, "http://unused".to_string()).await;
+        let (app, _lv, _tmp) = build_gated_app(db, false, "http://unused".to_string()).await;
         let req = Request::builder()
             .method(Method::POST)
             .uri("/api/v1/setup/activate")
@@ -502,7 +505,7 @@ mod gate_behavior_tests {
 
         let url = format!("{}/licenses/activate", mock.uri());
         let db = common::test_db().await;
-        let (app, lv) = build_gated_app(db, false, url).await;
+        let (app, lv, _tmp) = build_gated_app(db, false, url).await;
         assert!(!lv.load(Ordering::Relaxed));
 
         let req = Request::builder()
@@ -548,7 +551,7 @@ mod gate_behavior_tests {
 
         let url = format!("{}/licenses/activate", mock.uri());
         let db = common::test_db().await;
-        let (app, _lv) = build_gated_app(db, false, url).await;
+        let (app, _lv, _tmp) = build_gated_app(db, false, url).await;
 
         let req = Request::builder()
             .method(Method::POST)

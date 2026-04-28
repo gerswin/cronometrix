@@ -13,8 +13,10 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use http_body_util::BodyExt;
 
-/// Build a test app with employee + department routes (department needed for FK constraint tests).
-async fn build_test_app(db: libsql::Database) -> Router {
+/// Build a test app with employee + department routes (department needed for FK
+/// constraint tests). Returns (Router, TempDir) per Plan 08-02 D-20: caller binds
+/// the TempDir to a local that outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
+async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test".to_string(),
         turso_url: String::new(),
@@ -30,7 +32,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = common::test_state(Arc::new(db), config);
+    let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 
     // Read-only routes for any authenticated user
     let viewer_routes = Router::new()
@@ -61,12 +63,13 @@ async fn build_test_app(db: libsql::Database) -> Router {
             auth::rbac::require_admin,
         ));
 
-    Router::new()
+    let app = Router::new()
         .nest(
             "/api/v1",
             viewer_routes.merge(supervisor_routes).merge(admin_routes),
         )
-        .with_state(state)
+        .with_state(state);
+    (app, tmp)
 }
 
 /// Collect response body into JSON.
@@ -105,7 +108,7 @@ async fn crud_employee_endpoints() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // Create a department first (FK requirement)
     let dept_id = create_test_department(&app, &token, "Engineering").await;
@@ -204,7 +207,7 @@ async fn soft_delete_only_no_hard_delete() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // Create department + employee
     let dept_id = create_test_department(&app, &token, "SoftDelete Dept").await;
@@ -315,7 +318,7 @@ async fn employee_search_and_filter() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // Create two departments
     let dept_a = create_test_department(&app, &token, "Alpha Dept").await;
@@ -397,7 +400,7 @@ async fn employee_department_constraint() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
     let token = common::test_access_token(&admin_id, "admin");
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // Attempt to create an employee with a non-existent department_id
     let fake_dept_id = uuid::Uuid::new_v4().to_string();

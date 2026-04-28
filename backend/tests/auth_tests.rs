@@ -12,8 +12,10 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use http_body_util::BodyExt;
 
-/// Build a test app with all auth + setup routes wired up.
-async fn build_test_app(db: libsql::Database) -> Router {
+/// Build a test app with all auth + setup routes wired up. Returns
+/// (Router, TempDir) per Plan 08-02 D-20: caller binds the TempDir to a
+/// local that outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
+async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test".to_string(),
         turso_url: String::new(),
@@ -29,7 +31,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = common::test_state(Arc::new(db), config);
+    let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 
     let public_routes = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -50,9 +52,10 @@ async fn build_test_app(db: libsql::Database) -> Router {
             auth::rbac::require_admin,
         ));
 
-    Router::new()
+    let app = Router::new()
         .nest("/api/v1", public_routes.merge(cookie_auth_routes).merge(admin_routes))
-        .with_state(state)
+        .with_state(state);
+    (app, tmp)
 }
 
 /// Helper: collect response body bytes into a serde_json::Value
@@ -92,7 +95,7 @@ async fn auth_login_returns_jwt() {
     .await
     .unwrap();
 
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     let request = Request::builder()
         .method(Method::POST)
@@ -116,7 +119,7 @@ async fn auth_login_returns_jwt() {
 #[tokio::test]
 async fn rbac_middleware_blocks_unauthorized() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // Create a viewer token
     let viewer_id = uuid::Uuid::new_v4().to_string();
@@ -155,7 +158,7 @@ async fn jwt_refresh_rotates_tokens() {
     .await
     .unwrap();
 
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // Login first to get refresh cookie
     let login_request = Request::builder()
@@ -211,7 +214,7 @@ async fn jwt_refresh_rotates_tokens() {
 #[tokio::test]
 async fn setup_wizard_creates_admin() {
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _tmp) = build_test_app(db).await;
 
     // First call — should succeed with 201
     let request = Request::builder()

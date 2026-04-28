@@ -141,7 +141,9 @@ async fn bootstrap_spawns_one_task_per_active_device() {
     }
 
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let mut state = common::test_state(Arc::new(db), config);
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config, paths);
     state.lifecycle_tx = Some(lifecycle_tx);
     let shutdown = CancellationToken::new();
 
@@ -249,7 +251,9 @@ async fn start_signal_spawns_new_task() {
     let config = make_config();
     // Do NOT seed the device in the DB yet — start with 0 devices.
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let mut state = common::test_state(Arc::new(db), config.clone());
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config.clone(), paths);
     state.lifecycle_tx = Some(lifecycle_tx.clone());
     let shutdown = CancellationToken::new();
 
@@ -311,7 +315,9 @@ async fn stop_signal_cancels_task() {
         seed_device(&conn, "d-stop", &config.device_creds_key).await;
     }
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let mut state = common::test_state(Arc::new(db), config.clone());
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config.clone(), paths);
     state.lifecycle_tx = Some(lifecycle_tx.clone());
     let shutdown = CancellationToken::new();
 
@@ -348,7 +354,9 @@ async fn restart_signal_stops_then_starts() {
         seed_device(&conn, "d-restart", &config.device_creds_key).await;
     }
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let mut state = common::test_state(Arc::new(db), config.clone());
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config.clone(), paths);
     state.lifecycle_tx = Some(lifecycle_tx.clone());
     let shutdown = CancellationToken::new();
 
@@ -425,7 +433,9 @@ async fn graceful_shutdown_within_5s() {
         seed_device(&conn, "d-sd-2", &config.device_creds_key).await;
     }
     let (_lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let mut state = common::test_state(Arc::new(db), config);
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config, paths);
     state.lifecycle_tx = Some(_lifecycle_tx);
     let shutdown = CancellationToken::new();
 
@@ -467,7 +477,9 @@ async fn watchdog_flips_device_offline_after_90s() {
         .unwrap();
     }
     let (_lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel::<DeviceLifecycleEvent>();
-    let mut state = common::test_state(Arc::new(db), config);
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config, paths);
     state.lifecycle_tx = Some(_lifecycle_tx);
 
     // Call run_once directly — avoids the 10s interval.
@@ -505,7 +517,9 @@ async fn watchdog_leaves_fresh_device_alone() {
         .unwrap();
     }
     let (_lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel::<DeviceLifecycleEvent>();
-    let mut state = common::test_state(Arc::new(db), config);
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config, paths);
     state.lifecycle_tx = Some(_lifecycle_tx);
 
     let _ = watchdog::run_once(&state).await.unwrap();
@@ -544,7 +558,9 @@ async fn watchdog_flips_device_with_null_last_seen() {
         .unwrap();
     }
     let (_lifecycle_tx, _lifecycle_rx) = mpsc::unbounded_channel::<DeviceLifecycleEvent>();
-    let mut state = common::test_state(Arc::new(db), config);
+    let _tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(_tmp.path()));
+    let mut state = common::test_state(Arc::new(db), config, paths);
     state.lifecycle_tx = Some(_lifecycle_tx);
 
     let _ = watchdog::run_once(&state).await.unwrap();
@@ -597,16 +613,25 @@ mod backoff {
 // =============================================================================
 
 /// Build a minimal test Router with the admin device routes wired and a
-/// captured `lifecycle_rx` we can drain in tests.
+/// captured `lifecycle_rx` we can drain in tests. Returns a 4-tuple including
+/// the TempDir per Plan 08-02 D-20: caller binds the TempDir to a local that
+/// outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
 async fn build_test_app(
     db: libsql::Database,
-) -> (Router, AppState, mpsc::UnboundedReceiver<DeviceLifecycleEvent>) {
+) -> (
+    Router,
+    AppState,
+    mpsc::UnboundedReceiver<DeviceLifecycleEvent>,
+    tempfile::TempDir,
+) {
     use axum::routing::{delete, get, patch, post};
     let config = make_config();
     let db_arc = Arc::new(db);
 
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
-    let mut state = common::test_state(db_arc.clone(), config);
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = Arc::new(cronometrix_api::state::Paths::for_test(tmp.path()));
+    let mut state = common::test_state(db_arc.clone(), config, paths);
     state.lifecycle_tx = Some(lifecycle_tx);
 
     let admin_routes = Router::new()
@@ -633,7 +658,7 @@ async fn build_test_app(
         )
         .with_state(state.clone());
 
-    (app, state, lifecycle_rx)
+    (app, state, lifecycle_rx, tmp)
 }
 
 async fn seed_admin_user(db: &libsql::Database) -> String {
@@ -662,7 +687,7 @@ async fn post_device_emits_start_event() {
     let db = common::test_db().await;
     let user_id = seed_admin_user(&db).await;
     let token = test_access_token(&user_id, "admin");
-    let (app, _state, mut rx) = build_test_app(db).await;
+    let (app, _state, mut rx, _tmp) = build_test_app(db).await;
 
     let body = json!({
         "name": "Test Device",
@@ -708,7 +733,7 @@ async fn patch_ip_emits_restart_event() {
         seed_device(&conn, "d-patch-ip", &config.device_creds_key).await;
     }
 
-    let (app, _state, mut rx) = build_test_app(db).await;
+    let (app, _state, mut rx, _tmp) = build_test_app(db).await;
 
     let patch_body = json!({
         "ip": "10.0.0.99",
@@ -746,7 +771,7 @@ async fn patch_name_only_does_not_emit_restart() {
         let conn = db.connect().unwrap();
         seed_device(&conn, "d-patch-name", &config.device_creds_key).await;
     }
-    let (app, _state, mut rx) = build_test_app(db).await;
+    let (app, _state, mut rx, _tmp) = build_test_app(db).await;
 
     let patch_body = json!({
         "name": "Renamed",
@@ -785,7 +810,7 @@ async fn delete_device_emits_stop_event() {
         let conn = db.connect().unwrap();
         seed_device(&conn, "d-delete", &config.device_creds_key).await;
     }
-    let (app, _state, mut rx) = build_test_app(db).await;
+    let (app, _state, mut rx, _tmp) = build_test_app(db).await;
 
     let resp = app
         .oneshot(
@@ -818,7 +843,7 @@ async fn patch_password_emits_restart_event() {
         let conn = db.connect().unwrap();
         seed_device(&conn, "d-patch-pw", &config.device_creds_key).await;
     }
-    let (app, _state, mut rx) = build_test_app(db).await;
+    let (app, _state, mut rx, _tmp) = build_test_app(db).await;
 
     let patch_body = json!({
         "password": "rotated-secret",

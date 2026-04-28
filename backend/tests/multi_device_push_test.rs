@@ -127,36 +127,9 @@ async fn test_joinset_fans_out_to_all_active_devices_concurrently() {
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
 
-    // Build minimal AppState with the test DB.
-    let state = {
-        let db = Arc::new(db);
-        // We only need db — workers are None for this test.
-        let config = Arc::new(cronometrix_api::config::Config {
-            database_path: String::new(),
-            turso_url: String::new(),
-            turso_token: String::new(),
-            jwt_secret: "test".to_string(),
-            server_host: "127.0.0.1".to_string(),
-            server_port: 3000,
-            turso_sync_interval_secs: 300,
-            device_creds_key: common::test_device_creds_key(),
-            timezone: chrono_tz::America::Caracas,
-            license_jwt_path: String::new(),
-            do_functions_activate_url: String::new(),
-            do_functions_renew_url: String::new(),
-        });
-        cronometrix_api::state::AppState {
-            db,
-            config,
-            lifecycle_tx: None,
-            recompute_tx: None,
-            event_broadcast: None,
-            license_valid: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            purge_tx: None,
-            backfill_tx: None,
-            captures: cronometrix_api::enrollments::handlers::new_captures_map(),
-        }
-    };
+    // Build minimal AppState with the test DB (per Plan 08-02 D-20:
+    // tempdir-rooted Paths via the shared helper).
+    let (state, _tmp) = build_test_state(db);
 
     // Call spawn_enrollment_pushes and wait for it to complete.
     cronometrix_api::enrollments::pusher::spawn_enrollment_pushes(
@@ -213,7 +186,7 @@ async fn test_partial_failure_sets_enrollment_status_partial() {
         seed_enrollment_scenario(&conn, 2, &urls).await;
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
-    let state = build_test_state(db);
+    let (state, _tmp) = build_test_state(db);
 
     cronometrix_api::enrollments::pusher::spawn_enrollment_pushes(
         state.clone(),
@@ -260,7 +233,7 @@ async fn test_zero_devices_succeed_sets_failed() {
         seed_enrollment_scenario(&conn, 1, &urls).await;
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
-    let state = build_test_state(db);
+    let (state, _tmp) = build_test_state(db);
 
     cronometrix_api::enrollments::pusher::spawn_enrollment_pushes(
         state.clone(),
@@ -300,7 +273,7 @@ async fn test_all_devices_succeed_sets_success() {
         seed_enrollment_scenario(&conn, 2, &urls).await;
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
-    let state = build_test_state(db);
+    let (state, _tmp) = build_test_state(db);
 
     cronometrix_api::enrollments::pusher::spawn_enrollment_pushes(
         state.clone(),
@@ -339,8 +312,14 @@ async fn test_backfill_respects_semaphore_4_max_in_flight() {
 // Shared test state builder
 // ---------------------------------------------------------------------------
 
-fn build_test_state(db: libsql::Database) -> cronometrix_api::state::AppState {
-    let db = Arc::new(db);
+/// Build (AppState, TempDir) for multi-device push tests. Per Plan 08-02
+/// D-20: AppState carries a tempdir-rooted `Paths`; the caller binds the
+/// returned TempDir to a local that outlives every assertion (Pitfall 1 in
+/// 08-RESEARCH.md). Drives off the same shared helper as every other
+/// integration test in this crate.
+fn build_test_state(
+    db: libsql::Database,
+) -> (cronometrix_api::state::AppState, tempfile::TempDir) {
     let config = Arc::new(cronometrix_api::config::Config {
         database_path: String::new(),
         turso_url: String::new(),
@@ -355,15 +334,5 @@ fn build_test_state(db: libsql::Database) -> cronometrix_api::state::AppState {
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
     });
-    cronometrix_api::state::AppState {
-        db,
-        config,
-        lifecycle_tx: None,
-        recompute_tx: None,
-        event_broadcast: None,
-        license_valid: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        purge_tx: None,
-        backfill_tx: None,
-        captures: cronometrix_api::enrollments::handlers::new_captures_map(),
-    }
+    common::test_state_with_tmpdir(Arc::new(db), config)
 }

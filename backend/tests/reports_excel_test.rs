@@ -48,7 +48,13 @@ use seed::{
 // /reports/excel under the supervisor middleware so the same JWT works.
 // -----------------------------------------------------------------------------
 
-fn make_state(db: libsql::Database) -> AppState {
+/// Build (AppState, TempDir) for excel report tests. Per Plan 08-02 D-20:
+/// AppState carries a tempdir-rooted `Paths`; the caller binds the returned
+/// TempDir to a local that outlives every assertion (Pitfall 1 in
+/// 08-RESEARCH.md). Excel report tests do not currently touch any of the
+/// path roots, but AppState requires `paths` to be populated to match the
+/// production shape.
+fn make_state(db: libsql::Database) -> (AppState, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test.db".into(),
         turso_url: String::new(),
@@ -63,7 +69,7 @@ fn make_state(db: libsql::Database) -> AppState {
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
     });
-    common::test_state(Arc::new(db), config)
+    common::test_state_with_tmpdir(Arc::new(db), config)
 }
 
 fn build_test_app(state: AppState) -> Router {
@@ -164,7 +170,8 @@ async fn excel_response_headers() {
     let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
     let _emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, headers, _bytes) = post_excel(
         &app,
         &token,
@@ -215,7 +222,8 @@ async fn excel_round_trip() {
     let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
     let _emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, bytes) = post_excel(
         &app,
         &token,
@@ -257,7 +265,8 @@ async fn excel_branding_header_present() {
     let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
     let _emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, bytes) = post_excel(
         &app,
         &token,
@@ -317,7 +326,8 @@ async fn excel_branding_header_dashes_when_empty() {
     let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
     let _emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, bytes) = post_excel(
         &app,
         &token,
@@ -353,7 +363,8 @@ async fn excel_column_headers_present() {
     let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
     let _emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, bytes) = post_excel(
         &app,
         &token,
@@ -416,7 +427,8 @@ async fn excel_dept_subtotals_present() {
     let _ = seed_daily_record(&db, &a1, &dept_a, "2026-04-15", "day", 480, 0, 0, 0, None).await;
     let _ = seed_daily_record(&db, &a2, &dept_a, "2026-04-15", "day", 480, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, bytes) = post_excel(
         &app,
         &token,
@@ -472,7 +484,8 @@ async fn excel_grand_total_present() {
     let _ = seed_daily_record(&db, &p1, &dept_p, "2026-04-15", "day", 480, 0, 0, 0, None).await;
     let _ = seed_daily_record(&db, &a1, &dept_a, "2026-04-15", "day", 480, 0, 0, 0, None).await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, bytes) = post_excel(
         &app,
         &token,
@@ -513,7 +526,8 @@ async fn excel_anomaly_data_present() {
     seed_anomaly(&db, &dr, "MISSING_ENTRY").await;
     seed_anomaly(&db, &dr, "OT_CAP_EXCEEDED_DAILY").await;
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, bytes) = post_excel(
         &app,
         &token,
@@ -558,7 +572,8 @@ async fn viewer_blocked_on_excel() {
     let db = common::test_db().await;
     let viewer = create_test_viewer(&db).await;
     let token = test_access_token(&viewer, "viewer");
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let (status, _, _) = post_excel(
         &app,
         &token,
@@ -581,7 +596,7 @@ async fn audit_entry_on_excel_export() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let state_db = state.db.clone();
     let app = build_test_app(state);
 
@@ -614,7 +629,8 @@ async fn period_too_long_rejected_excel() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
 
     let (status, _, body) = post_excel(
         &app,
@@ -684,7 +700,8 @@ async fn bench_1000_employees_under_5s() {
         }
     }
 
-    let app = build_test_app(make_state(db));
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
     let start = Instant::now();
     let (status, _, _bytes) = post_excel(
         &app,
