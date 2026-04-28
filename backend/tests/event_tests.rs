@@ -7,14 +7,13 @@
 //!   - GET /api/v1/events/:id/photo: JPEG bytes, content-type, 404 paths,
 //!     and path-traversal rejection (T-2-06 defense in depth)
 //!
-//! These tests use an in-process Router (no network bind) and a `TempDir` per
-//! test for `CRONOMETRIX_EVENTS_ROOT`. The env var is process-global so the
-//! tests that mutate it are serialized via a Mutex.
+//! These tests use an in-process Router (no network bind) and a per-test
+//! `TempDir` injected via `Paths::for_test` (Plan 08-02 D-20). No env-var
+//! mutation; tests run cleanly in parallel under cargo nextest / cargo-llvm-cov.
 
 mod common;
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -23,48 +22,18 @@ use axum::Router;
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::events;
+use cronometrix_api::state::AppState;
 use http_body_util::BodyExt;
 use libsql::params;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-// Process-wide serialization for tests that mutate CRONOMETRIX_EVENTS_ROOT.
-static ENV_GUARD: Mutex<()> = Mutex::new(());
-
-struct EventsRootGuard {
-    _lock: MutexGuard<'static, ()>,
-    _dir: TempDir,
-    pub path: PathBuf,
-    prev: Option<String>,
-}
-
-impl EventsRootGuard {
-    fn new() -> Self {
-        let lock = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = TempDir::new().expect("tempdir");
-        let path = dir.path().to_path_buf();
-        let prev = std::env::var("CRONOMETRIX_EVENTS_ROOT").ok();
-        std::env::set_var("CRONOMETRIX_EVENTS_ROOT", &path);
-        EventsRootGuard {
-            _lock: lock,
-            _dir: dir,
-            path,
-            prev,
-        }
-    }
-}
-
-impl Drop for EventsRootGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var("CRONOMETRIX_EVENTS_ROOT", v),
-            None => std::env::remove_var("CRONOMETRIX_EVENTS_ROOT"),
-        }
-    }
-}
-
-async fn build_test_app(db: libsql::Database) -> Router {
+/// Build (Router, AppState, TempDir) for the events read API. The TempDir is
+/// returned so callers bind it to a local that outlives every assertion (see
+/// Pitfall 1 in 08-RESEARCH.md). `state.paths.events_root` points inside the
+/// TempDir, so any photo-related assertion uses that path directly.
+async fn build_test_app(db: libsql::Database) -> (Router, AppState, TempDir) {
     let config = Arc::new(Config {
         database_path: "test".to_string(),
         turso_url: String::new(),
@@ -80,7 +49,7 @@ async fn build_test_app(db: libsql::Database) -> Router {
         do_functions_renew_url: String::new(),
     });
 
-    let state = common::test_state(Arc::new(db), config);
+    let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 
     let viewer_routes = Router::new()
         .route("/events", get(events::handlers::list_events))
@@ -91,9 +60,10 @@ async fn build_test_app(db: libsql::Database) -> Router {
             auth::middleware::require_auth,
         ));
 
-    Router::new()
+    let app = Router::new()
         .nest("/api/v1", viewer_routes)
-        .with_state(state)
+        .with_state(state.clone());
+    (app, state, tmp)
 }
 
 async fn body_to_json(body: Body) -> Value {
@@ -155,9 +125,12 @@ async fn seed_employee(conn: &libsql::Connection, id: &str, code: &str) {
 }
 
 /// Insert an event via the production persist helper so the dedup path and
-/// photo-write path are exercised the same way as in prod.
+/// photo-write path are exercised the same way as in prod. `events_root` is
+/// the per-test tempdir-rooted JPEG directory (Plan 08-02 D-20) — the caller
+/// passes `state.paths.events_root` to keep the JPEG inside the test's TempDir.
 async fn seed_event(
     conn: &libsql::Connection,
+    events_root: &std::path::Path,
     id: &str,
     employee_id: Option<&str>,
     device_id: &str,
@@ -178,7 +151,9 @@ async fn seed_event(
         raw_xml: "<EventNotificationAlert/>".to_string(),
         photo_bytes,
     };
-    persist_attendance_event(conn, ev).await.expect("persist");
+    persist_attendance_event(conn, events_root, ev)
+        .await
+        .expect("persist");
 }
 
 // =============================================================================
@@ -187,9 +162,8 @@ async fn seed_event(
 
 #[tokio::test]
 async fn list_events_empty_returns_empty_array() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _state, _tmp) = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -207,20 +181,20 @@ async fn list_events_empty_returns_empty_array() {
 
 #[tokio::test]
 async fn list_events_pagination_clamps_limit() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.0.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         // seed 3 events in distinct buckets
-        seed_event(&conn, "evt-1", Some("e1"), "d1", 1000, None).await;
-        seed_event(&conn, "evt-2", Some("e1"), "d1", 2000, None).await;
-        seed_event(&conn, "evt-3", Some("e1"), "d1", 3000, None).await;
+        seed_event(&conn, &events_root, "evt-1", Some("e1"), "d1", 1000, None).await;
+        seed_event(&conn, &events_root, "evt-2", Some("e1"), "d1", 2000, None).await;
+        seed_event(&conn, &events_root, "evt-3", Some("e1"), "d1", 3000, None).await;
     }
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -238,20 +212,20 @@ async fn list_events_pagination_clamps_limit() {
 
 #[tokio::test]
 async fn list_events_filters_by_employee_id() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.1.1", 8443).await;
         seed_employee(&conn, "eA", "EMPA").await;
         seed_employee(&conn, "eB", "EMPB").await;
-        seed_event(&conn, "evt-1", Some("eA"), "d1", 1000, None).await;
-        seed_event(&conn, "evt-2", Some("eA"), "d1", 2000, None).await;
-        seed_event(&conn, "evt-3", Some("eB"), "d1", 3000, None).await;
+        seed_event(&conn, &events_root, "evt-1", Some("eA"), "d1", 1000, None).await;
+        seed_event(&conn, &events_root, "evt-2", Some("eA"), "d1", 2000, None).await;
+        seed_event(&conn, &events_root, "evt-3", Some("eB"), "d1", 3000, None).await;
     }
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -271,19 +245,19 @@ async fn list_events_filters_by_employee_id() {
 
 #[tokio::test]
 async fn list_events_filters_by_device_id() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "dA", "10.1.2.1", 8443).await;
         seed_device(&conn, "dB", "10.1.2.2", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(&conn, "evt-1", Some("e1"), "dA", 1000, None).await;
-        seed_event(&conn, "evt-2", Some("e1"), "dB", 2000, None).await;
+        seed_event(&conn, &events_root, "evt-1", Some("e1"), "dA", 1000, None).await;
+        seed_event(&conn, &events_root, "evt-2", Some("e1"), "dB", 2000, None).await;
     }
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -301,20 +275,20 @@ async fn list_events_filters_by_device_id() {
 
 #[tokio::test]
 async fn list_events_filters_by_time_range() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.3.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         // Buckets: 1000 -> bkt 33 ; 2000 -> bkt 66 ; 3000 -> bkt 100
-        seed_event(&conn, "evt-1", Some("e1"), "d1", 1000, None).await;
-        seed_event(&conn, "evt-2", Some("e1"), "d1", 2000, None).await;
-        seed_event(&conn, "evt-3", Some("e1"), "d1", 3000, None).await;
+        seed_event(&conn, &events_root, "evt-1", Some("e1"), "d1", 1000, None).await;
+        seed_event(&conn, &events_root, "evt-2", Some("e1"), "d1", 2000, None).await;
+        seed_event(&conn, &events_root, "evt-3", Some("e1"), "d1", 3000, None).await;
     }
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -331,17 +305,17 @@ async fn list_events_filters_by_time_range() {
 
 #[tokio::test]
 async fn list_events_viewer_can_read() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.4.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(&conn, "evt-1", Some("e1"), "d1", 1000, None).await;
+        seed_event(&conn, &events_root, "evt-1", Some("e1"), "d1", 1000, None).await;
     }
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -356,9 +330,8 @@ async fn list_events_viewer_can_read() {
 
 #[tokio::test]
 async fn list_events_unauthenticated_401() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _state, _tmp) = build_test_app(db).await;
 
     let req = Request::builder()
         .method(Method::GET)
@@ -375,9 +348,8 @@ async fn list_events_unauthenticated_401() {
 
 #[tokio::test]
 async fn get_event_by_id_404_if_missing() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
-    let app = build_test_app(db).await;
+    let (app, _state, _tmp) = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -398,16 +370,18 @@ async fn get_event_by_id_404_if_missing() {
 
 #[tokio::test]
 async fn get_event_photo_returns_jpeg_bytes() {
-    let guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     let photo_bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, b'J', b'F', b'I', b'F', 0xFF, 0xD9];
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.5.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         seed_event(
             &conn,
+            &events_root,
             "evt-photo-1",
             Some("e1"),
             "d1",
@@ -416,11 +390,10 @@ async fn get_event_photo_returns_jpeg_bytes() {
         )
         .await;
     }
-    // Sanity: file must be on disk under the guard root.
-    let expected = guard.path.join("2023-11-14/evt-photo-1.jpg");
+    // Sanity: file must be on disk under the per-test events root.
+    let expected = events_root.join("2023-11-14/evt-photo-1.jpg");
     assert!(expected.exists(), "photo file must be on disk: {:?}", expected);
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -441,17 +414,17 @@ async fn get_event_photo_returns_jpeg_bytes() {
 
 #[tokio::test]
 async fn get_event_photo_404_if_no_photo_path() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.6.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(&conn, "evt-no-photo", Some("e1"), "d1", 1000, None).await;
+        seed_event(&conn, &events_root, "evt-no-photo", Some("e1"), "d1", 1000, None).await;
     }
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -468,16 +441,18 @@ async fn get_event_photo_404_if_no_photo_path() {
 
 #[tokio::test]
 async fn get_event_photo_404_if_file_missing() {
-    let guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
+    let events_root = state.paths.events_root.clone();
 
     let photo_bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.7.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         seed_event(
             &conn,
+            &events_root,
             "evt-missing-file",
             Some("e1"),
             "d1",
@@ -487,11 +462,10 @@ async fn get_event_photo_404_if_file_missing() {
         .await;
     }
     // Delete the on-disk file but keep the DB row pointing at it.
-    let victim = guard.path.join("2023-11-14/evt-missing-file.jpg");
+    let victim = events_root.join("2023-11-14/evt-missing-file.jpg");
     assert!(victim.exists(), "file should have been written by seed_event");
     std::fs::remove_file(&victim).expect("remove photo file");
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()
@@ -512,11 +486,11 @@ async fn get_event_photo_404_if_file_missing() {
 
 #[tokio::test]
 async fn get_event_photo_rejects_path_traversal() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
+    let (app, state, _tmp) = build_test_app(db).await;
 
     {
-        let conn = db.connect().unwrap();
+        let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.8.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         // Insert the row WITHOUT going through persist_attendance_event so we can
@@ -539,7 +513,6 @@ async fn get_event_photo_rejects_path_traversal() {
         .expect("insert tampered row");
     }
 
-    let app = build_test_app(db).await;
     let token = viewer_token();
 
     let req = Request::builder()

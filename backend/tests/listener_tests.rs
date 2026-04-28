@@ -8,7 +8,6 @@
 mod common;
 
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use cronometrix_api::config::Config;
 use cronometrix_api::isapi::stream::{connect_and_stream, DeviceConfig};
@@ -21,39 +20,6 @@ use common::mock_hikvision::{
     spawn_mock_hikvision_401, spawn_mock_hikvision_digest, spawn_mock_hikvision_plain,
 };
 use common::{build_multipart_fixture, k1t341_event_xml, test_device_creds_key, MINI_JPEG};
-
-// Serialize tests that mutate CRONOMETRIX_EVENTS_ROOT — std::env is process-
-// global and integration tests run in the same process.
-static ENV_GUARD: Mutex<()> = Mutex::new(());
-
-struct EventsRootGuard<'a> {
-    _lock: std::sync::MutexGuard<'a, ()>,
-    _dir: TempDir,
-    prev: Option<String>,
-}
-
-impl<'a> EventsRootGuard<'a> {
-    fn new() -> Self {
-        let lock = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = TempDir::new().expect("temp dir");
-        let prev = std::env::var("CRONOMETRIX_EVENTS_ROOT").ok();
-        std::env::set_var("CRONOMETRIX_EVENTS_ROOT", dir.path());
-        Self {
-            _lock: lock,
-            _dir: dir,
-            prev,
-        }
-    }
-}
-
-impl<'a> Drop for EventsRootGuard<'a> {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var("CRONOMETRIX_EVENTS_ROOT", v),
-            None => std::env::remove_var("CRONOMETRIX_EVENTS_ROOT"),
-        }
-    }
-}
 
 fn make_config() -> Arc<Config> {
     Arc::new(Config {
@@ -72,8 +38,12 @@ fn make_config() -> Arc<Config> {
     })
 }
 
-fn make_state(db: libsql::Database) -> AppState {
-    common::test_state(Arc::new(db), make_config())
+/// Build (AppState, TempDir) for the alertStream listener tests. Per Plan
+/// 08-02 D-20: tempdir-rooted Paths replace the env-var-mutation pattern, so
+/// these tests run cleanly in parallel under cargo nextest / cargo-llvm-cov.
+/// Caller binds the TempDir to a local that outlives every assertion.
+fn make_state(db: libsql::Database) -> (AppState, TempDir) {
+    common::test_state_with_tmpdir(Arc::new(db), make_config())
 }
 
 /// Seed an active device row. The port value stored here is only for display —
@@ -154,7 +124,6 @@ fn device_cfg(id: &str, addr: std::net::SocketAddr) -> DeviceConfig {
 
 #[tokio::test]
 async fn connect_and_stream_persists_one_event() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
 
     {
@@ -167,7 +136,7 @@ async fn connect_and_stream_persists_one_event() {
     let body = build_multipart_fixture(&k1t341_event_xml(), Some(MINI_JPEG));
     let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let cfg = device_cfg("d1", addr);
 
     connect_and_stream(&cfg, &state)
@@ -195,8 +164,7 @@ async fn connect_and_stream_persists_one_event() {
     assert!(raw_xml.contains("<EventNotificationAlert"));
     assert_eq!(is_unknown, 0);
     let relpath = photo_path.expect("photo_path populated");
-    let root = cronometrix_api::events::service::events_root();
-    let on_disk = root.join(&relpath);
+    let on_disk = state.paths.events_root.join(&relpath);
     assert!(on_disk.exists(), "photo jpeg must be on disk at {:?}", on_disk);
 
     // No additional rows.
@@ -206,7 +174,6 @@ async fn connect_and_stream_persists_one_event() {
 
 #[tokio::test]
 async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
 
     {
@@ -217,7 +184,7 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
     let body = build_multipart_fixture(&common::heartbeat_event_xml(), None);
     let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let cfg = device_cfg("d-hb", addr);
     connect_and_stream(&cfg, &state).await.expect("stream ok");
 
@@ -256,7 +223,6 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
 
 #[tokio::test]
 async fn unknown_face_persists_with_is_unknown() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
 
     {
@@ -267,7 +233,7 @@ async fn unknown_face_persists_with_is_unknown() {
     let body = build_multipart_fixture(&common::unknown_face_event_xml(), Some(MINI_JPEG));
     let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let cfg = device_cfg("d-unk", addr);
     connect_and_stream(&cfg, &state).await.expect("stream ok");
 
@@ -293,7 +259,6 @@ async fn unknown_face_persists_with_is_unknown() {
 
 #[tokio::test]
 async fn second_identical_event_deduplicates() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
     {
         let conn = db.connect().unwrap();
@@ -307,7 +272,7 @@ async fn second_identical_event_deduplicates() {
     // Two sequential connections, each serving the same fixture. The second
     // must hit the dedup branch (same employee_id, device_id, direction, bucket_30s).
     let addr1 = spawn_mock_hikvision_plain(body.clone(), "MIME_boundary").await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let cfg1 = device_cfg("d-dup", addr1);
     connect_and_stream(&cfg1, &state).await.expect("first stream");
 
@@ -333,7 +298,6 @@ async fn second_identical_event_deduplicates() {
 
 #[tokio::test]
 async fn connect_and_stream_fails_cleanly_on_401() {
-    let _guard = EventsRootGuard::new();
     let db = common::test_db().await;
     {
         let conn = db.connect().unwrap();
@@ -341,7 +305,7 @@ async fn connect_and_stream_fails_cleanly_on_401() {
     }
 
     let addr = spawn_mock_hikvision_401("admin").await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let cfg = device_cfg("d-401", addr);
     let result = connect_and_stream(&cfg, &state).await;
     assert!(result.is_err(), "401 must bubble up as Err");
@@ -371,7 +335,7 @@ async fn digest_auth_mock_serves_body_after_challenge() {
     // does NOT call connect_and_stream because diqwest's retry semantics
     // would couple the test to crate internals; we instead use reqwest +
     // diqwest directly here to exercise the fixture.
-    let _guard = EventsRootGuard::new();
+    // No state/tmpdir needed — this test exercises the digest mock directly.
 
     let body = build_multipart_fixture(&k1t341_event_xml(), Some(MINI_JPEG));
     let addr = spawn_mock_hikvision_digest(body.clone(), "MIME_boundary", "admin", "secret").await;

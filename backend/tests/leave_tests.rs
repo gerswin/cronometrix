@@ -40,36 +40,11 @@ use common::{
 // Harness
 // -----------------------------------------------------------------------------
 
-/// Guard that sets CRONOMETRIX_LEAVES_ROOT for the duration of a test and
-/// restores the previous value on drop. Mirrors EventsRootGuard in events.
-struct LeavesRootGuard {
-    prev: Option<String>,
-    _tmp: tempfile::TempDir,
-}
-
-impl LeavesRootGuard {
-    fn new() -> Self {
-        let prev = std::env::var("CRONOMETRIX_LEAVES_ROOT").ok();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        // SAFETY: test is single-threaded per nextest target; env mutation ok.
-        std::env::set_var("CRONOMETRIX_LEAVES_ROOT", tmp.path());
-        LeavesRootGuard {
-            prev,
-            _tmp: tmp,
-        }
-    }
-}
-
-impl Drop for LeavesRootGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var("CRONOMETRIX_LEAVES_ROOT", v),
-            None => std::env::remove_var("CRONOMETRIX_LEAVES_ROOT"),
-        }
-    }
-}
-
-fn make_state(db: libsql::Database) -> AppState {
+/// Build (AppState, TempDir) for a leave test. The TempDir is returned so the
+/// caller binds it to a local variable that outlives every assertion — see
+/// Pitfall 1 in 08-RESEARCH.md. Per D-20 (Plan 08-02), tests pass a tempdir
+/// path via Paths::for_test instead of mutating CRONOMETRIX_LEAVES_ROOT.
+fn make_state(db: libsql::Database) -> (AppState, tempfile::TempDir) {
     let config = Arc::new(Config {
         database_path: "test.db".into(),
         turso_url: String::new(),
@@ -84,7 +59,7 @@ fn make_state(db: libsql::Database) -> AppState {
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
     });
-    common::test_state(Arc::new(db), config)
+    common::test_state_with_tmpdir(Arc::new(db), config)
 }
 
 fn build_test_app(state: AppState) -> Router {
@@ -230,13 +205,12 @@ fn caracas_epoch(date: NaiveDate, hh: u32, mm: u32) -> i64 {
 
 #[tokio::test]
 async fn create_leave_medical_with_evidence() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
-    let state = make_state(db);
-    let app = build_test_app(state);
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state.clone());
 
     let token = test_access_token(&admin, "admin");
     // Mini JPEG magic bytes (SOI + JFIF APP0 + EOI).
@@ -274,21 +248,19 @@ async fn create_leave_medical_with_evidence() {
         body_json["evidence_path"]
     );
 
-    // Evidence file must exist at leaves_root/{evidence_path}.
-    let root = leaves::service::leaves_root();
+    // Evidence file must exist at state.paths.leaves_root/{evidence_path}.
     let relpath = body_json["evidence_path"].as_str().unwrap();
-    let full = root.join(relpath);
+    let full = state.paths.leaves_root.join(relpath);
     assert!(full.exists(), "evidence file should exist on disk at {:?}", full);
 }
 
 #[tokio::test]
 async fn create_leave_medical_without_evidence_rejected() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&admin, "admin");
 
@@ -323,12 +295,11 @@ async fn create_leave_medical_without_evidence_rejected() {
 
 #[tokio::test]
 async fn create_leave_manual_without_evidence() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&admin, "admin");
 
@@ -366,14 +337,13 @@ async fn create_leave_manual_without_evidence() {
 
 #[tokio::test]
 async fn create_leave_overlap_returns_conflict() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     // Seed an existing leave 2026-04-20 to 2026-04-22.
     let _seeded = create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-22", &admin).await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&admin, "admin");
 
@@ -407,13 +377,12 @@ async fn create_leave_overlap_returns_conflict() {
 
 #[tokio::test]
 async fn cancel_leave_optimistic_concurrency() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     let leave_id = create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-20", &admin).await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state.clone());
     let token = test_access_token(&admin, "admin");
 
@@ -472,7 +441,7 @@ async fn leave_overlay_suppresses_work_minutes() {
     seed_event(&db, &emp, "dev-1", "entry", caracas_epoch(anchor, 9, 0)).await;
     seed_event(&db, &emp, "dev-1", "exit", caracas_epoch(anchor, 17, 0)).await;
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp, anchor)
         .await
         .expect("recompute");
@@ -540,7 +509,7 @@ async fn leave_overlay_medical_flag_preserved() {
     let _leave_id = create_test_leave(&db, &emp, "medical", "2026-04-20", "2026-04-20", &admin).await;
     let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp, anchor)
         .await
         .expect("recompute");
@@ -571,12 +540,11 @@ async fn leave_overlay_medical_flag_preserved() {
 
 #[tokio::test]
 async fn create_leave_forbidden_for_supervisor() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let supervisor = create_test_supervisor(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&supervisor, "supervisor");
 
@@ -607,12 +575,11 @@ async fn create_leave_forbidden_for_supervisor() {
 
 #[tokio::test]
 async fn create_leave_forbidden_for_viewer() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let viewer = create_test_viewer(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&viewer, "viewer");
 
@@ -643,7 +610,6 @@ async fn create_leave_forbidden_for_viewer() {
 
 #[tokio::test]
 async fn evidence_path_traversal_rejected() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
@@ -664,7 +630,7 @@ async fn evidence_path_traversal_rejected() {
     .await
     .unwrap();
 
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&admin, "admin");
 
@@ -690,14 +656,13 @@ async fn evidence_path_traversal_rejected() {
 
 #[tokio::test]
 async fn list_leaves_accessible_to_viewer() {
-    let _guard = LeavesRootGuard::new();
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let viewer = create_test_viewer(&db).await;
     let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     let _leave_id = create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-22", &admin).await;
-    let state = make_state(db);
+    let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&viewer, "viewer");
 
