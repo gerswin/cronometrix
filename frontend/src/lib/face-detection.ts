@@ -1,0 +1,60 @@
+// face-detection.ts — lazy load @vladmandic/face-api + per-frame analyzer
+// Vendored tinyFaceDetector model served from /models/ (same-origin, no CDN)
+
+let faceapiCache: typeof import('@vladmandic/face-api') | null = null
+let modelLoaded = false
+
+export async function loadFaceApi(): Promise<typeof import('@vladmandic/face-api')> {
+  if (!faceapiCache) {
+    faceapiCache = await import('@vladmandic/face-api')
+  }
+  if (!modelLoaded) {
+    await faceapiCache.nets.tinyFaceDetector.loadFromUri('/models')
+    modelLoaded = true
+  }
+  return faceapiCache
+}
+
+export interface FrameAnalysis {
+  faceDetected: boolean
+  luminanceOk: boolean
+  sizeOk: boolean
+  luminance: number
+  width: number
+  height: number
+}
+
+export async function analyzeFrame(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  faceapi: typeof import('@vladmandic/face-api'),
+): Promise<FrameAnalysis> {
+  const det = await faceapi.detectSingleFace(
+    video,
+    new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 })
+  )
+  const faceDetected = !!det
+  const sizeOk = !!det && det.box.width >= 160 && det.box.height >= 160
+
+  // Luminance — sample 64×48 pixels for speed
+  canvas.width = 64
+  canvas.height = 48
+  const ctx = canvas.getContext('2d')!
+  ctx.drawImage(video, 0, 0, 64, 48)
+  const px = ctx.getImageData(0, 0, 64, 48).data
+  let total = 0
+  for (let i = 0; i < px.length; i += 4) {
+    total += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]
+  }
+  const luminance = total / (px.length / 4)
+  const luminanceOk = luminance >= 80 && luminance <= 200
+
+  return {
+    faceDetected,
+    luminanceOk,
+    sizeOk,
+    luminance,
+    width: det?.box.width ?? 0,
+    height: det?.box.height ?? 0,
+  }
+}
