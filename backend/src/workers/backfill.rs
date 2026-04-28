@@ -174,8 +174,13 @@ impl BackfillWorker {
                     }
                 };
 
-                // Read the photo from disk.
-                let photo_bytes = match tokio::fs::read(&photo_path).await {
+                // Read the photo from disk. `photo_path` is the RELATIVE path
+                // stored in face_enrollments.photo_path (`{emp}/{enr}.jpg`)
+                // — written by start_enrollment under `state.paths.enrollments_root`.
+                // Prefix with the configured root so we read from the same
+                // location the writer used (matches retry_push handler shape).
+                let abs_photo = state.paths.enrollments_root.join(&photo_path);
+                let photo_bytes = match tokio::fs::read(&abs_photo).await {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::warn!(
