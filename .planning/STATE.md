@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Phase 7 UI-SPEC approved
-last_updated: "2026-04-28T03:12:48.975Z"
+status: executing
+stopped_at: Completed 07-01-PLAN.md (enrollment backend wave 1)
+last_updated: "2026-04-28T04:41:34.773Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 7
   completed_phases: 6
   total_plans: 25
-  completed_plans: 23
-  percent: 92
+  completed_plans: 24
+  percent: 96
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-11)
 
 **Core value:** Accurate, auditable time tracking that turns raw biometric events into payroll-ready data — with zero manual calculation and full legal traceability.
-**Current focus:** Phase 06 — licensing-deployment
+**Current focus:** Phase 07 — facial-enrollment-sync
 
 ## Current Position
 
-Phase: 7
-Plan: Not started
-Status: Ready to plan
+Phase: 07 (facial-enrollment-sync) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
 Last activity: 2026-04-28
 
-Progress: [████████░░] 82%
+Progress: [██████████] 96%
 
 ## Performance Metrics
 
@@ -61,6 +61,7 @@ Progress: [████████░░] 82%
 | Phase 03-time-calculation-engine P01 | 26 | 2 tasks | 39 files |
 | Phase 03-time-calculation-engine P02 | 9 | 2 tasks | 7 files |
 | Phase 03 P03 | 28 | 2 tasks | 10 files |
+| Phase 07 P01 | 180 | 6 tasks | 23 files |
 
 ## Accumulated Context
 
@@ -99,6 +100,9 @@ Recent decisions affecting current work:
 - [Phase 03-time-calculation-engine]: No SQL change in daily_records::service for overnight support — because shift_window() now returns an across-midnight (start, end) range, the existing captured_at BETWEEN query picks up post-midnight events automatically. Proven by recompute_overnight_captures_post_midnight_events integration test.
 - [Phase 03]: LEAVE_OVERLAP uses dedicated LeaveConflict variant (HTTP 409), not generic Conflict — distinguishes business-rule overlap from optimistic-concurrency conflicts for Phase 4 UI remediation.
 - [Phase 03]: Evidence files are UUIDv4-named (user filename discarded). cancel_leave soft-deletes DB row but preserves evidence file on disk for LOTTT audit retention.
+- D-06: JoinSet fire-and-forget fan-out for enrollment push
+- diqwest-multipart: manual 2-step digest auth for multipart upload (stream body not cloneable)
+- D-15/D-16: PurgeWorker + BackfillWorker via mpsc channels, workers spawned in main.rs
 
 ### Pending Todos
 
@@ -112,8 +116,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: --stopped-at
-Stopped at: Phase 7 UI-SPEC approved
-Resume file: --resume-file
+Last session: 2026-04-28T04:41:34.769Z
+Stopped at: Completed 07-01-PLAN.md (enrollment backend wave 1)
+Resume file: None
 
 **Planned Phase:** 7 (Facial Enrollment & Sync) — 2 plans — 2026-04-28T03:12:48.969Z
