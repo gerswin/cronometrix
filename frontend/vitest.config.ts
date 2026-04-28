@@ -8,6 +8,37 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/__tests__/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html', 'lcov'],
+      reportsDirectory: './coverage',
+      include: [
+        'src/components/**/*.{ts,tsx}',
+        'src/hooks/**/*.{ts,tsx}',
+        'src/lib/**/*.{ts,tsx}',
+      ],
+      exclude: [
+        'src/components/ui/**',          // shadcn vendored copies (D-10)
+        'src/**/__tests__/**',
+        'src/**/*.test.{ts,tsx}',
+        'src/**/*.spec.{ts,tsx}',
+        'src/**/*.d.ts',
+      ],
+      thresholds: {
+        // Project-wide gate — D-14 line 1
+        lines: 90,
+        branches: 85,
+        functions: 90,
+        statements: 90,
+        // Per-file floor — D-14 line 2 (softer than project gate)
+        '**/*.{ts,tsx}': {
+          lines: 70,
+          branches: 60,
+          functions: 70,
+          statements: 70,
+        },
+      },
+    },
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },

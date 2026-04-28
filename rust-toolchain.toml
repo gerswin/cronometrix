@@ -1,0 +1,8 @@
+# rust-toolchain.toml
+# Phase 8 quality gate uses cargo-llvm-cov --branch which is nightly-only.
+# Pinning prevents nightly drift from breaking CI on an unrelated rustc change.
+# Bump cadence: quarterly, or when nightly introduces an ICE/strict lint that
+# blocks CI. Bump = bump this file + verify `make coverage-backend` still green.
+[toolchain]
+channel = "nightly-2026-04-01"
+components = ["llvm-tools-preview", "rustfmt", "clippy"]
