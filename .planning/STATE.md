@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 08-04B-PLAN.md
-last_updated: "2026-04-28T19:15:53.359Z"
+status: verifying
+stopped_at: Reached 08-04C human-verify checkpoint
+last_updated: "2026-04-28T19:52:33.364Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
   completed_phases: 7
   total_plans: 33
-  completed_plans: 30
-  percent: 91
+  completed_plans: 31
+  percent: 94
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 
 Phase: 8 (test-coverage-quality-gate) — EXECUTING
 Plan: 6 of 6
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-28
 
-Progress: [█████████░] 91%
+Progress: [█████████░] 94%
 
 ## Performance Metrics
 
@@ -68,6 +68,7 @@ Progress: [█████████░] 91%
 | Phase 08 P03 | 11 | 2 tasks | 5 files |
 | Phase 08 P04A | 140 | 16 tasks | 16 files |
 | Phase 08 P04B | 85min | 2 tasks tasks | 11 files files |
+| Phase 08 P04C | 120min | 5 tasks tasks | 27 files files |
 
 ## Accumulated Context
 
@@ -130,6 +131,10 @@ Recent decisions affecting current work:
 - Phase 8 04B: license/{fingerprint, service} cannot reach 70% line on macOS dev (no /proc/cpuinfo); surfaced as Plan 04C exclusion candidate — Linux CI under Plan 05 will measure them at full coverage
 - Phase 8 04B [Rule 1 bug]: workers/backfill.rs read photo_path without joining state.paths.enrollments_root — production bug discovered by test, fixed inline (matches retry_push handler shape)
 - Phase 8 04B: detached-spawn-task tests use polling-with-explicit-drop pattern — drop(rows) + drop(conn) between iterations is required because libsql shared-cache locks would otherwise starve the spawn task
+- Phase 8 04C: face-detection.ts is testable in jsdom via vi.mock at the dynamic-import boundary — the original 'WebAssembly cannot be mocked' hedge does NOT apply when import-level mocking is used. NO exclusion needed.
+- Phase 8 04C: Pre-existing flaky enrollment-modal.test.tsx (from Phase 7-02) was a Rule 1 bug — the global api.get mock returned the paginated employee-list shape for the /enrollments/:id polling endpoint, crashing on device_pushes.map. Fixed by routing api.get based on URL prefix (test-only fix, production unchanged).
+- Phase 8 04C: 6 branch-bump test files added beyond the 21 bucket files (under Rule 2) to clear the 85% project branch gate from 81.88% → 85.12%. Targeted drill-down-dialog, filters-bar, period-picker, tenant-info-form, validations, and command-modal — all bumps are existing-file branch coverage, no new bucket scope.
+- Phase 8 04C: FakeEventSource shim (custom class on globalThis) is the canonical pattern for testing useSSE — msw's EventSource doesn't simulate auto-close-on-error and progressive backoff. Custom shim makes all 5 backoff levels (1/2/4/8/30s capped) deterministic.
 
 ### Pending Todos
 
@@ -149,8 +154,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T19:15:53.355Z
-Stopped at: Completed 08-04B-PLAN.md
+Last session: 2026-04-28T19:52:33.361Z
+Stopped at: Reached 08-04C human-verify checkpoint
 Resume file: None
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z
