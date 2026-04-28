@@ -293,6 +293,110 @@ pub fn unknown_face_event_xml() -> String {
         .to_string()
 }
 
+// =============================================================================
+// Phase 7: Facial Enrollment fixture helpers
+// =============================================================================
+
+/// Generate a synthetic 100×100 JPEG (~50KB) for enrollment tests.
+/// Uses `image` crate to produce a real JPEG that the image pipeline can decode.
+pub fn sample_face_jpeg_50kb() -> Vec<u8> {
+    use image::{ImageBuffer, Rgb};
+    use image::codecs::jpeg::JpegEncoder;
+
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+        ImageBuffer::from_fn(100, 100, |x, y| Rgb([x as u8, y as u8, 128u8]));
+    let dynamic = image::DynamicImage::ImageRgb8(img);
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    JpegEncoder::new_with_quality(&mut buf, 90)
+        .encode_image(&dynamic)
+        .expect("encode 100x100 JPEG");
+    buf.into_inner()
+}
+
+/// Generate a synthetic 2000×2000 JPEG (>2 MB) for downscale tests.
+/// Produces a real JPEG that the image pipeline must compress to ≤200KB.
+pub fn sample_face_jpeg_4mb() -> Vec<u8> {
+    use image::{ImageBuffer, Rgb};
+    use image::codecs::jpeg::JpegEncoder;
+
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+        ImageBuffer::from_fn(2000, 2000, |x, y| Rgb([(x % 256) as u8, (y % 256) as u8, 128u8]));
+    let dynamic = image::DynamicImage::ImageRgb8(img);
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    // Quality 95 on 2000×2000 produces 3–5 MB
+    JpegEncoder::new_with_quality(&mut buf, 95)
+        .encode_image(&dynamic)
+        .expect("encode 2000x2000 JPEG");
+    let bytes = buf.into_inner();
+    // Sanity: must be >2MB so downscale tests can rely on it
+    assert!(
+        bytes.len() > 2 * 1024 * 1024,
+        "sample_face_jpeg_4mb produced {} bytes, expected >2MB",
+        bytes.len()
+    );
+    bytes
+}
+
+/// Spawn a wiremock `MockServer` pre-configured with all Hikvision face
+/// endpoints used by Phase 7:
+///   - POST /ISAPI/AccessControl/UserInfo/Record     → 200 {"statusCode":1}
+///   - POST /ISAPI/Intelligent/FDLib/FaceDataRecord  → 200 {"statusCode":1}
+///   - PUT  /ISAPI/AccessControl/UserInfoDetail/Delete → 200 {"statusCode":1}
+///   - POST /ISAPI/AccessControl/CaptureFaceData     → 200 {"statusCode":1}
+///   - GET  /ISAPI/AccessControl/CapturedFacePicture → 200 <50KB JPEG bytes>
+///
+/// All responses are 200 OK so integration tests exercise the happy path.
+/// Tests that need failure responses should spawn their own MockServer.
+pub async fn mock_hikvision_server() -> wiremock::MockServer {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+
+    let server = MockServer::start().await;
+
+    // UserInfo/Record — create person
+    Mock::given(method("POST"))
+        .and(path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .mount(&server)
+        .await;
+
+    // FaceDataRecord — upload face image (multipart)
+    Mock::given(method("POST"))
+        .and(path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .mount(&server)
+        .await;
+
+    // UserInfoDetail/Delete — delete person by employeeNo
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/UserInfoDetail/Delete"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .mount(&server)
+        .await;
+
+    // CaptureFaceData — enter enrollment mode
+    Mock::given(method("POST"))
+        .and(path("/ISAPI/AccessControl/CaptureFaceData"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .mount(&server)
+        .await;
+
+    // CapturedFacePicture — return a sample JPEG
+    Mock::given(method("GET"))
+        .and(path("/ISAPI/AccessControl/CapturedFacePicture"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "image/jpeg")
+                .set_body_bytes(sample_face_jpeg_50kb()),
+        )
+        .mount(&server)
+        .await;
+
+    server
+}
+
 /// Deterministically (re)generate the three canned multipart byte samples if
 /// any are missing from `tests/fixtures/`. Safe to call from any test — it is
 /// idempotent and only writes when a fixture is absent. The files produced are
