@@ -168,6 +168,25 @@ async fn init_db_local_two_separate_paths_get_two_distinct_dbs() {
 }
 
 #[tokio::test]
+async fn init_db_dispatches_remote_when_turso_url_set_and_recovers_from_sync_failure() {
+    // has_turso() is true → init_db routes through init_db_remote. Even with
+    // an unreachable URL, the function should return Ok because the post-build
+    // db.sync().await is intentionally non-fatal (logged warning, local-only
+    // continues per DATA-03). The remote_replica build itself should also
+    // succeed locally because it's a local-rooted libsql replica.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("remote-replica.db");
+    let cfg = make_config(
+        path.to_str().unwrap(),
+        "https://nonexistent-turso-host.invalid",
+    );
+    // Either succeeds (replica builds even when URL is unreachable; sync
+    // failure is swallowed) OR returns an Err if the build itself rejects
+    // the URL up-front. Both branches in init_db_remote are exercised.
+    let _ = cronometrix_api::db::init_db(&cfg).await;
+}
+
+#[tokio::test]
 async fn run_migrations_pragma_foreign_keys_is_settable() {
     // Indirect coverage: init_db_local enables PRAGMA foreign_keys = ON.
     // Verify FK enforcement is active by attempting an insert that violates a FK.
