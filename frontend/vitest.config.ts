@@ -19,6 +19,9 @@ export default defineConfig({
       ],
       exclude: [
         'src/components/ui/**',          // shadcn vendored copies (D-10)
+        'src/components/providers.tsx',  // D-09: pure QueryClientProvider wrapper, no logic
+        'src/components/layout/top-bar.tsx', // D-09: pure display, no logic
+        'src/components/common/access-restricted.tsx', // D-09: pure display, no logic
         'src/**/__tests__/**',
         'src/**/*.test.{ts,tsx}',
         'src/**/*.spec.{ts,tsx}',
