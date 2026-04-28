@@ -159,3 +159,18 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 5. Reports & Payroll Export | 0/2 | Not started | - |
 | 6. Licensing & Deployment | 0/4 | Not started | - |
 | 7. Facial Enrollment & Sync | 0/2 | Not started | - |
+
+### Phase 8: Test Coverage & Quality Gate — Reach >=90% line coverage and >=85% branch coverage on backend (cargo-llvm-cov) and frontend (Vitest+v8); add CI thresholds; fix leave_tests cwd-dependent failure; document coverage commands in CLAUDE.md
+
+**Goal:** Hard-fail coverage gate active in CI: backend (cargo-llvm-cov + nightly --branch) and frontend (Vitest+v8) both enforce >=90% line / >=85% branch project-wide and >=70/60 per-file; the leave_tests cwd-dependent failure is fixed via AppState `Paths` injection; CLAUDE.md documents the gate, exclusions, and the path-injection convention so future phases cannot regress them silently.
+**Requirements**: QUALITY-GATE (cross-cutting; D-01..D-23 from 08-CONTEXT.md are the binding contract)
+**Depends on:** Phase 7
+**Plans:** 6 plans
+
+Plans:
+- [x] 08-01-PLAN.md — AppState `Paths` substruct + 5 source-side call-site updates (leaves/events/enrollments/daily_records); preserves env vars + defaults (D-17/D-18/D-19/D-21)
+- [ ] 08-02-PLAN.md — Test-helper migration: `common::test_state_with_tmpdir` + remove `LeavesRootGuard`/`EventsRootGuard` from leave/event/listener tests + 4 other AppState construction sites (D-20)
+- [ ] 08-03-PLAN.md — Coverage tooling: vitest.config.ts thresholds + Makefile + scripts/enforce-coverage-floor.sh + rust-toolchain.toml (D-02/D-08/D-14/D-16)
+- [ ] 08-04-PLAN.md — Coverage gap-fill tests (backend + frontend) until `make coverage` exits 0; case-by-case exclusion justifications (D-09/D-12)
+- [ ] 08-05-PLAN.md — `.github/workflows/ci.yml` with two parallel jobs + HTML artifacts + negative-regression validation (D-01/D-03/D-04/D-05/D-13)
+- [ ] 08-06-PLAN.md — CLAUDE.md docs: Test Coverage section + Conventions § Filesystem-root injection (D-22/D-23)

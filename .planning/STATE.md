@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 8 context gathered
-last_updated: "2026-04-28T14:22:12.088Z"
-last_activity: "2026-04-28 - Completed quick task 260428-3qg: fix backend test compile errors"
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-04-28T16:57:19.527Z"
+last_activity: 2026-04-28
 progress:
   total_phases: 8
   completed_phases: 7
-  total_plans: 25
-  completed_plans: 25
-  percent: 100
+  total_plans: 31
+  completed_plans: 26
+  percent: 84
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-11)
 
 **Core value:** Accurate, auditable time tracking that turns raw biometric events into payroll-ready data — with zero manual calculation and full legal traceability.
-**Current focus:** Phase 07 — facial-enrollment-sync
+**Current focus:** Phase 8 — test-coverage-quality-gate
 
 ## Current Position
 
-Phase: 07 (facial-enrollment-sync) — EXECUTING
-Plan: 2 of 2
+Phase: 8 (test-coverage-quality-gate) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-04-28 - Completed quick task 260428-3qg: fix backend test compile errors
+Last activity: 2026-04-28
 
-Progress: [██████████] 96%
+Progress: [████████░░] 84%
 
 ## Performance Metrics
 
@@ -63,6 +63,7 @@ Progress: [██████████] 96%
 | Phase 03 P03 | 28 | 2 tasks | 10 files |
 | Phase 07 P01 | 180 | 6 tasks | 23 files |
 | Phase 07 P02 | 18 minutes | 4 tasks | 30 files |
+| Phase 08 P01 | 25 | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,9 @@ Recent decisions affecting current work:
 - Button.asChild not in @base-ui/react — AccessRestricted uses plain Link with Tailwind classes
 - Kiosk query enabled: !!captureId only — refetchInterval handles terminal stop (kioskState condition caused test race)
 - In-progress list v1 session-scoped — no list endpoint in 07-01; future plan adds GET /enrollments?status=in_progress
+- Phase 8 D-18/D-19 (Wave 1): Paths substruct on AppState — Paths::from_env at startup, Paths::for_test(tempdir) in tests; eliminates the cwd-dependent + env-var-race anti-pattern that broke leave_tests under cargo-llvm-cov
+- Phase 8 D-21 (Wave 1): Backwards compat preserved verbatim — same env var names (CRONOMETRIX_LEAVES_ROOT/CRONOMETRIX_EVENTS_ROOT/ENROLLMENTS_DIR/CRONOMETRIX_CAPTURES_TMP/DATA_DIR) and same string defaults the deleted helpers used
+- persist_attendance_event signature gains events_root: &Path rather than &AppState — function only takes &Connection so threading a single &Path matches write_photo_atomic's shape
 
 ### Pending Todos
 
@@ -130,8 +134,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: --stopped-at
-Stopped at: Phase 8 context gathered
-Resume file: --resume-file
+Last session: 2026-04-28T16:57:19.524Z
+Stopped at: Completed 08-01-PLAN.md
+Resume file: None
 
-**Planned Phase:** 7 (Facial Enrollment & Sync) — 2 plans — 2026-04-28T03:12:48.969Z
+**Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z
