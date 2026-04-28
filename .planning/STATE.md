@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 Phase: 07 (facial-enrollment-sync) — EXECUTING
 Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-04-28
+Last activity: 2026-04-28 - Completed quick task 260428-3qg: fix backend test compile errors
 
 Progress: [██████████] 96%
 
@@ -117,6 +117,12 @@ None yet.
 - [Phase 2]: Hikvision ISAPI XML schema varies by device model (DS-K1T341, DS-K1T342) — capture real alertStream traffic before implementation; do not rely on documentation alone
 - [Phase 3]: Venezuela / America/Caracas / LOTTT compliance — IANA timezone fixed at `America/Caracas` (UTC-4, no DST since May 2016); LOTTT Art. 117/173/178 caps confirmed via Phase 3 research. No blocking DST concern for v1.
 - [Phase 7]: ISAPI batch face profile enrollment failure behavior on partial failure (3 of 4 devices) is undocumented — requires hands-on hardware testing before designing the enrollment modal
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260428-3qg | Fix backend test compile errors via shared common::test_state helper | 2026-04-28 | 022a76a | [260428-3qg-fix-backend-test-compile-errors-by-addin](./quick/260428-3qg-fix-backend-test-compile-errors-by-addin/) |
 
 ## Session Continuity
 
