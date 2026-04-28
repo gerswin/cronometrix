@@ -185,8 +185,204 @@ Cronometrix is a biometric time & attendance product for businesses using Hikvis
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+<!-- Phase 8 D-23 — DO NOT remove on conventions sync; this rule is a binding code convention, not a placeholder. -->
+### Filesystem-root injection (Phase 8)
+
+Code that needs a filesystem root (evidence dir, photo dir, override dir, kiosk
+capture tmp) MUST read it from `state.paths.<field>` — never via
+`std::env::var(...)` at use-site, and never via `PathBuf::from("./data/…")`.
+
+The `Paths` substruct on `AppState` (`backend/src/state/paths.rs`) is populated
+once at startup by `Paths::from_env()` and overridden in tests via
+`Paths::for_test(tempdir)`. This eliminates cwd-dependence (tests failing
+because they run from a different directory) and the env-var process-global
+race (parallel tests clobbering each other's env vars).
+
+| Path field | Env var | Default |
+|-----------|---------|---------|
+| `leaves_root` | `CRONOMETRIX_LEAVES_ROOT` | `./data/leaves` |
+| `events_root` | `CRONOMETRIX_EVENTS_ROOT` | `./data/events` |
+| `enrollments_root` | `ENROLLMENTS_DIR` | `./data/enrollments` |
+| `captures_tmp_root` | `CRONOMETRIX_CAPTURES_TMP` | `/tmp/enrollments-captures` |
+| `overrides_root` | `DATA_DIR` (joined with `overrides`) | `./data/overrides` |
+
+Tests must use `common::test_state_with_tmpdir(db, config)` (returns
+`(AppState, TempDir)`) and bind the returned `TempDir` to a local variable that
+outlives the test's assertions — see `backend/tests/common/mod.rs`.
 <!-- GSD:conventions-end -->
+
+## Test Coverage
+
+Phase 8 established a hard-fail coverage gate. Every PR to `main` runs the
+same checks documented below and cannot merge if any threshold is missed.
+
+### Install (one-time per developer)
+
+```bash
+# Backend coverage tooling (cargo-llvm-cov is a tool, NOT a Cargo dependency)
+cargo install cargo-llvm-cov --locked --version 0.8.5
+
+# Nightly Rust is required for branch coverage (--branch is unstable on stable rustc).
+# The repo's rust-toolchain.toml pins a specific nightly date; rustup honors it
+# automatically. To install that exact toolchain explicitly:
+NIGHTLY=$(grep '^channel' rust-toolchain.toml | sed 's/.*"\(.*\)".*/\1/')
+rustup toolchain install "$NIGHTLY" --component llvm-tools-preview
+
+# Frontend coverage tooling is already installed
+# (vitest + @vitest/coverage-v8 in frontend/package.json)
+cd frontend && npm ci
+```
+
+The pinned nightly is currently `nightly-2026-04-01`. Bump cadence is quarterly
+(or earlier if nightly introduces an ICE / strict lint that blocks CI). Bump =
+update `rust-toolchain.toml` + verify `make coverage-backend` still green.
+
+### Local commands
+
+```bash
+make coverage           # Backend + frontend; both must pass
+make coverage-backend   # Backend only (cargo-llvm-cov + per-file enforcer)
+make coverage-frontend  # Frontend only (Vitest --coverage)
+```
+
+The same commands run in CI (`.github/workflows/ci.yml`), so a green
+`make coverage` locally implies a green PR.
+
+### Thresholds
+
+| Side | Scope | Lines | Branches | Functions | Statements |
+|------|-------|-------|----------|-----------|------------|
+| Backend | Project-wide | >=90% | >=85% | — | — |
+| Backend | Per file | >=70% | >=60% | — | — |
+| Frontend | Project-wide | >=90% | >=85% | >=90% | >=90% |
+| Frontend | Per file | >=70% | >=60% | >=70% | >=70% |
+
+Thresholds are fixed (no ratchet): the gate compares against the threshold,
+not against a stored baseline. A PR that drops coverage from 95% to 91%
+passes; from 91% to 89% fails.
+
+Backend project-wide line gate is enforced by `cargo llvm-cov nextest
+--fail-under-lines 90`; backend project-wide branch gate + per-file floor are
+enforced by `scripts/enforce-coverage-floor.sh lcov.info 85 70 60` (project
+branch min / per-file line min / per-file branch min). Frontend gates are
+enforced natively by Vitest from `frontend/vitest.config.ts`.
+
+### Exclusion policy
+
+Exclusions are minimal — write tests, don't shrink the denominator. Adding a
+new exclusion requires a written justification in this section. The current
+exclusions are:
+
+| Side | Path / regex | Justification |
+|------|--------------|---------------|
+| Backend | `main.rs` | Tokio runtime startup; not unit-testable in this phase |
+| Backend | `tests/common/*` | Test infrastructure — covering test fixtures inflates the denominator without security value |
+| Frontend | `src/components/ui/**` | Vendored shadcn copies; covered upstream (D-10) |
+| Frontend | `src/components/providers.tsx` | D-09: pure QueryClientProvider wrapper, no logic |
+| Frontend | `src/components/layout/top-bar.tsx` | D-09: pure display, no logic |
+| Frontend | `src/components/common/access-restricted.tsx` | D-09: pure display, no logic |
+| Frontend | `src/app/**` | Next.js route pages; not in the coverage `include` set — covered by E2E (out of scope for Phase 8 per CONTEXT D-10) |
+| Frontend | `src/**/*.test.{ts,tsx}` and `*.spec.{ts,tsx}` | Test files |
+| Frontend | `src/**/__tests__/**` | Test fixtures and helpers |
+| Frontend | `src/**/*.d.ts` | Type-only files; no executable code |
+
+The frontend coverage `include` array is whitelist-style (`src/components/**`,
+`src/hooks/**`, `src/lib/**`) — anything outside these globs is implicitly
+excluded. The three D-09 file-specific exclusions above were added during
+Plan 04C because the modules are pure-display wrappers with no branchable
+logic; the exclusions appear in `frontend/vitest.config.ts`.
+
+See
+`.planning/phases/08-test-coverage-quality-gate-reach-90-line-coverage-and-85-bra/08-04C-SUMMARY.md`
+for the case-by-case justifications. If you find yourself wanting to add a new
+exclusion, write the test instead — exclusions cap at 3 per side without an
+explicit re-discussion.
+
+Backend note (macOS dev): `backend/src/license/fingerprint.rs` and
+`backend/src/license/service.rs` cannot reach the per-file floor on macOS
+because they read `/proc/cpuinfo` and `/sys/{class/net,block}` — pseudo-fs
+that do not exist on Darwin. Linux CI under nightly measures both at full
+coverage, and the gate passes there. macOS local runs are informational
+when these two files FAIL the per-file floor; CI is authoritative.
+
+### HTML reports
+
+Local:
+- Backend: `backend/target/llvm-cov/html/index.html`
+- Frontend: `frontend/coverage/index.html`
+
+CI: artifacts named `backend-coverage-html` and `frontend-coverage-html` are
+attached to every workflow run (retention: 14 days). Download from the GitHub
+Actions run page even when the gate is red — the report helps drill into the
+failing file.
+
+### CI gate
+
+Workflow file: `.github/workflows/ci.yml`
+
+Triggers: push to any branch, pull_request targeting `main`.
+
+Jobs (both required):
+- `Backend Coverage` — installs nightly Rust + cargo-llvm-cov + cargo-nextest;
+  runs `cargo llvm-cov nextest --branch --all-features --ignore-filename-regex
+  '(main\.rs|tests/common/.*)' --fail-under-lines 90 --lcov --output-path
+  lcov.info`, then `bash ../scripts/enforce-coverage-floor.sh lcov.info 85 70
+  60`. Threshold miss → job exits non-zero → PR cannot merge.
+- `Frontend Coverage` — installs Node 20; runs `npx vitest run --coverage`.
+  Vitest enforces both project-wide and per-file thresholds natively from
+  `frontend/vitest.config.ts`.
+
+Both jobs run with `permissions: contents: read` (least privilege per
+threat model T-08-15) and pin actions (`actions/checkout@v4`,
+`actions/setup-node@v4`, `actions/upload-artifact@v4`,
+`taiki-e/install-action@v2`, `Swatinem/rust-cache@v2`,
+`cargo-llvm-cov@0.8.5`).
+
+The exclusion regex `(main\.rs|tests/common/.*)` is identical between
+`Makefile` and `.github/workflows/ci.yml` — DO NOT change one without the
+other; drift between local and CI scope makes the gate untrustworthy.
+
+The hard-fail behavior is locked-in (no soft-warn, no override label).
+Aligns with the audit-compliance ethos of the product (D-13).
+
+### Reading a failing run
+
+1. Open the failing job's logs in the Actions tab.
+2. For backend: the post-processor prints `FAIL: <file> line coverage X% < floor 70%`
+   (or branch). Click the file in the HTML artifact to see uncovered lines.
+3. For frontend: Vitest prints a threshold table per file; uncovered lines are
+   highlighted in the HTML report.
+4. Add tests to bring the file above the floor. Don't add an exclusion unless
+   the file is genuinely uncoverable in this phase.
+
+### Note on private vs public repo
+
+HTML reports include source code excerpts. The repo is currently private, so
+artifacts are scoped to repo collaborators. If the repo ever goes public,
+revisit the artifact retention policy and consider scrubbing sensitive
+comment patterns from the HTML output.
+
+### Pending live validation (Plan 05 deferred)
+
+Plan 05 (CI gate) shipped the workflow file but the live runtime
+validation was deferred per user direction. Three checklist items remain
+in
+`.planning/phases/08-test-coverage-quality-gate-reach-90-line-coverage-and-85-bra/08-05-SUMMARY.md`
+under "Manual Follow-up":
+
+1. **Positive verification** — push the branch, confirm both jobs pass green
+   on GitHub Actions, confirm HTML artifacts are downloadable.
+2. **Negative regression PR** — open a deliberate red PR (add an untested
+   `dead_code.rs`), confirm `Backend Coverage` FAILS at the post-processor
+   step with `FAIL: backend/src/dead_code.rs line coverage 0.00% < floor 70%`,
+   then close the PR.
+3. **Branch protection** — in GitHub UI (Settings → Branches), require
+   `Backend Coverage` and `Frontend Coverage` as status checks before merge to
+   `main`.
+
+Phase 8 is NOT considered fully green until A, B, and C all pass on the live
+GitHub Actions runner with branch protection active. Anyone resuming this work
+should consult `08-05-SUMMARY.md` for the exact commands.
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
