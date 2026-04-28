@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Plan 08-05 finalized with deferred manual CI validation; ready for Plan 08-06 (CLAUDE.md docs)
-last_updated: "2026-04-28T22:08:04.227Z"
+stopped_at: Plan 08-06 complete — CLAUDE.md docs landed; Phase 8 docs-complete; Manual Follow-up (08-05) pending
+last_updated: "2026-04-28T22:15:26.250Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 33
-  completed_plans: 32
-  percent: 97
+  completed_plans: 33
+  percent: 100
 ---
 
 # Project State
@@ -30,7 +30,7 @@ Plan: 6 of 6
 Status: Phase complete — ready for verification
 Last activity: 2026-04-28
 
-Progress: [██████████] 97%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -70,6 +70,7 @@ Progress: [██████████] 97%
 | Phase 08 P04B | 85min | 2 tasks tasks | 11 files files |
 | Phase 08 P04C | 120min | 5 tasks tasks | 27 files files |
 | Phase 08 P05 | 35 | 1 tasks | 1 files |
+| Phase 08 P06 | 25 | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -140,6 +141,9 @@ Recent decisions affecting current work:
 - Phase 8 Plan 05 [User direction]: CI validation deferred to manual follow-up — workflow file (.github/workflows/ci.yml) verified statically (grep + YAML parse); positive run, negative regression PR, and branch protection setup tracked as unchecked checklist in 08-05-SUMMARY.md Manual Follow-up section
 - Phase 8 Plan 05: GitHub Actions workflow pinned to actions/checkout@v4, actions/setup-node@v4, actions/upload-artifact@v4, taiki-e/install-action@v2 (cargo-llvm-cov@0.8.5 + cargo-nextest), Swatinem/rust-cache@v2; permissions: contents: read at workflow level (least privilege per T-08-15)
 - Phase 8 Plan 05: CI exclusion regex parity enforced — '(main\.rs|tests/common/.*)' identical between Makefile and .github/workflows/ci.yml backend job; prevents drift between local make coverage and CI gate
+- Phase 8 D-22: CLAUDE.md ## Test Coverage section landed — install/local commands/thresholds/exclusions/HTML reports/CI gate/triage/public-vs-private/pending-validation pointer; documents the gate's design and the deferred-validation tracking (08-05 Manual Follow-up)
+- Phase 8 D-23: CLAUDE.md Conventions § Filesystem-root injection landed inside GSD-managed markers (lines 185-212) with protective HTML comment; documents state.paths.* env var contract and test_state_with_tmpdir helper
+- Phase 8 close-out: 6 of 6 plans complete in code-and-docs; live CI validation (positive run + negative regression PR + branch protection) remains as 08-05 Manual Follow-up to be executed by a human on the live GitHub Actions runner before the gate is declared 'active in production CI'
 
 ### Pending Todos
 
@@ -159,8 +163,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T22:08:04.223Z
-Stopped at: Plan 08-05 finalized with deferred manual CI validation; ready for Plan 08-06 (CLAUDE.md docs)
-Resume file: None
+Last session: 2026-04-28T22:15:15.229Z
+Stopped at: Plan 08-06 complete — CLAUDE.md docs landed; Phase 8 docs-complete; Manual Follow-up (08-05) pending
+Resume file: Plan 05 Manual Follow-up (positive run + negative regression PR + branch protection) — pending human execution
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z

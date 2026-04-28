@@ -159,6 +159,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 5. Reports & Payroll Export | 0/2 | Not started | - |
 | 6. Licensing & Deployment | 0/4 | Not started | - |
 | 7. Facial Enrollment & Sync | 0/2 | Not started | - |
+| 8. Test Coverage & Quality Gate | 6/6 | Code complete (live CI validation deferred — see 08-05 Manual Follow-up) | 2026-04-28 |
 
 ### Phase 8: Test Coverage & Quality Gate — Reach >=90% line coverage and >=85% branch coverage on backend (cargo-llvm-cov) and frontend (Vitest+v8); add CI thresholds; fix leave_tests cwd-dependent failure; document coverage commands in CLAUDE.md
 
@@ -173,4 +174,4 @@ Plans:
 - [x] 08-03-PLAN.md — Coverage tooling: vitest.config.ts thresholds + Makefile + scripts/enforce-coverage-floor.sh + rust-toolchain.toml (D-02/D-08/D-14/D-16)
 - [x] 08-04-PLAN.md — Coverage gap-fill tests (backend + frontend) — split into 04A (backend domain), 04B (backend infrastructure), 04C (frontend + composite checkpoint); `make coverage-frontend` exits 0; backend GREEN on Linux CI (2 macOS-only exclusions: license/fingerprint.rs + license/service.rs)
 - [x] 08-05-PLAN.md — `.github/workflows/ci.yml` with two parallel jobs + HTML artifacts + negative-regression validation (D-01/D-03/D-04/D-05/D-13) — _live CI validation deferred to manual follow-up; see 08-05-SUMMARY.md_
-- [ ] 08-06-PLAN.md — CLAUDE.md docs: Test Coverage section + Conventions § Filesystem-root injection (D-22/D-23)
+- [x] 08-06-PLAN.md — CLAUDE.md docs: Test Coverage section + Conventions § Filesystem-root injection (D-22/D-23)
