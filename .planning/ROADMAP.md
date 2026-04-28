@@ -125,9 +125,9 @@ Plans:
 
 Plans:
 - [x] 06-01-PLAN.md — License backend module: hardware fingerprint (cpu+mac+disk SHA256), RS256 JWT verifier with embedded public key, DO Functions activation call, cached JWT I/O, renewal task, AppError::Unlicensed, full integration tests
-- [ ] 06-02-PLAN.md — License gate wiring: AppState.license_valid + require_license middleware + setup_activate handler + extended setup_status + frontend /setup/license activation page; updates 16 existing test fixtures for the new AppState field
-- [ ] 06-03-PLAN.md — Deployment stack: multi-stage Dockerfiles (Rust 1.93, Node 24-alpine), 3-service docker-compose (api/web/cloudflared:2026.3.0), curl|bash installer with idempotent secret handling, .dockerignore, frontend next.config.ts standalone output
-- [ ] 06-04-PLAN.md — DO Functions license server: activate/renew handlers (RS256 signing, fingerprint binding, Postgres-backed store), project.yml deployment config, Node test harness, operator README
+- [x] 06-02-PLAN.md — License gate wiring: AppState.license_valid + require_license middleware + setup_activate handler + extended setup_status + frontend /setup/license activation page; updates 16 existing test fixtures for the new AppState field
+- [x] 06-03-PLAN.md — Deployment stack: multi-stage Dockerfiles (Rust 1.93, Node 24-alpine), 3-service docker-compose (api/web/cloudflared:2026.3.0), curl|bash installer with idempotent secret handling, .dockerignore, frontend next.config.ts standalone output
+- [x] 06-04-PLAN.md — DO Functions license server: activate/renew handlers (RS256 signing, fingerprint binding, Postgres-backed store), project.yml deployment config, Node test harness, operator README
 
 ### Phase 7: Facial Enrollment & Sync
 **Goal**: Admin can enroll an employee's facial profile through the web UI using a device camera, webcam, or JPG upload, and the system simultaneously pushes the profile to all registered devices with per-device status feedback
