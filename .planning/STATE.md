@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 08-04A-PLAN.md
-last_updated: "2026-04-28T18:36:47.400Z"
+stopped_at: Completed 08-04B-PLAN.md
+last_updated: "2026-04-28T19:15:53.359Z"
 last_activity: 2026-04-28
 progress:
   total_phases: 8
   completed_phases: 7
   total_plans: 33
-  completed_plans: 29
-  percent: 88
+  completed_plans: 30
+  percent: 91
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 8 (test-coverage-quality-gate) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-04-28
 
-Progress: [█████████░] 88%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -67,6 +67,7 @@ Progress: [█████████░] 88%
 | Phase 08 P02 | 50 | 3 tasks | 16 files |
 | Phase 08 P03 | 11 | 2 tasks | 5 files |
 | Phase 08 P04A | 140 | 16 tasks | 16 files |
+| Phase 08 P04B | 85min | 2 tasks tasks | 11 files files |
 
 ## Accumulated Context
 
@@ -125,6 +126,10 @@ Recent decisions affecting current work:
 - Phase 8 04A: AppError variant pattern-match assertions over Display strings — service-layer error tests must match { Variant { code, message } => ... } because Display only emits the variant tag
 - Phase 8 04A: wiremock + Mock::given(method).and(path) is the canonical pattern for ISAPI client digest-auth coverage; happy + 5xx + 401-without-WWW-Authenticate exhaust the retry-loop branches without real hardware
 - Phase 8 04A: process-Mutex (static ENV_LOCK) around Paths::from_env / Config::from_env tests — needed under cargo nextest parallel execution; tolerate poisoned mutex via .unwrap_or_else(|e| e.into_inner()) for chained tests
+- Phase 8 04B: tokio::test(start_paused=true) + tokio::time::advance is the canonical pattern for testing scheduler/worker async loops; tokio test-util feature already enabled at backend/Cargo.toml line 51
+- Phase 8 04B: license/{fingerprint, service} cannot reach 70% line on macOS dev (no /proc/cpuinfo); surfaced as Plan 04C exclusion candidate — Linux CI under Plan 05 will measure them at full coverage
+- Phase 8 04B [Rule 1 bug]: workers/backfill.rs read photo_path without joining state.paths.enrollments_root — production bug discovered by test, fixed inline (matches retry_push handler shape)
+- Phase 8 04B: detached-spawn-task tests use polling-with-explicit-drop pattern — drop(rows) + drop(conn) between iterations is required because libsql shared-cache locks would otherwise starve the spawn task
 
 ### Pending Todos
 
@@ -144,8 +149,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-28T18:36:47.396Z
-Stopped at: Completed 08-04A-PLAN.md
+Last session: 2026-04-28T19:15:53.355Z
+Stopped at: Completed 08-04B-PLAN.md
 Resume file: None
 
 **Planned Phase:** 8 (Test Coverage & Quality Gate) — 6 plans — 2026-04-28T16:39:18.898Z
