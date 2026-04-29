@@ -186,5 +186,30 @@ None.
 
 ---
 
+## Addendum (2026-04-28) — Resolution of Research-Surfaced Conflicts
+
+The researcher (09-RESEARCH.md) identified three CONTEXT.md decisions in conflict with current codebase state. User-confirmed resolutions:
+
+### D-04 Audit Screen → Build in Wave 0 (LOCKED)
+Backend has no `/api/v1/audit` endpoint and `frontend/src/app/(dashboard)/audit/page.tsx` is a 10-line "Próximamente" placeholder. Phase 9 Wave 0 MUST add:
+- Backend: `GET /api/v1/audit` paginated read endpoint (filter by user, date range; RBAC: Admin + Supervisor read; Viewer 403). Reads from existing `audit_log` table.
+- Frontend: replace placeholder `audit/page.tsx` with TanStack Table-based audit list (filter by user/date, sortable, paginated). data-testid attributes added.
+- Then D-04 tests (audit log lists immutable entries; filter by user/date works) become viable.
+
+### D-14 Hikvision Integration → Mock alertStream Source (LOCKED, supersedes original D-14)
+Original D-14 wording mentioned `/api/v1/webhooks/hikvision`. That endpoint does NOT exist. The actual integration is **outbound alertStream polling** (`backend/src/isapi/stream.rs` connects to `/ISAPI/Event/notification/alertStream` on the device). Phase 9 mock device:
+- Test-only Axum mock server impersonates a Hikvision unit on `localhost:${MOCK_DEVICE_PORT}`.
+- Mock serves `GET /ISAPI/Event/notification/alertStream` as a multipart streaming response with canned `EventNotificationAlert` XML chunks (and optional JPEG payload), with digest auth handshake.
+- Mock also serves outbound endpoints used by enrollments + door open + status check (`/ISAPI/AccessControl/UserInfo/Record`, `/ISAPI/Intelligent/FDLib/FaceDataRecord`, `/ISAPI/AccessControl/UserInfoDetail/Delete`, `/ISAPI/RemoteControl/door/0`, `/ISAPI/System/status`).
+- Tests inject events by pushing XML chunks into the mock's stream queue (HTTP API on the mock or a shared file/channel).
+- No new production webhook route is added.
+
+### D-19 Login UI Language → Test English Copy Now (LOCKED, supersedes original D-19 for login screen only)
+`frontend/src/app/login/page.tsx` currently uses English ("Username", "Password", "Log in", error strings). Phase 9 tests the **current English copy** of the login form. Spanish i18n for the login screen is deferred to a future phase. Other dashboard routes (Marcaciones, Empleados, Dispositivos, Reportes, Auditoría, KPI tile labels) ARE Spanish today and tests assert Spanish copy where load-bearing.
+
+These three resolutions DO expand Phase 9 scope (audit endpoint + UI in Wave 0). Planner sizes additional plans accordingly.
+
+---
+
 *Phase: 09-e2e-playwright-test-suite-login-dashboard-marcaciones-emplea*
 *Context gathered: 2026-04-28*
