@@ -18,6 +18,9 @@ export const SEL = {
   kpiAlertas: 'kpi-alertas-diurnas',
   donutDept: 'donut-by-dept',
   ringBuffer: 'ring-buffer',
+  ringRow: (id: string) => `ring-row-${id}`,
+  photoImg: 'photo-img',
+  photoFallback: 'photo-fallback',
   sseBanner: 'sse-disconnect-banner',
 
   // Audit page (added by Plan 05)
