@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 09-08-PLAN.md — dashboard.spec.ts with 7 tests + data-testid attributes on 5 dashboard surfaces
-last_updated: "2026-04-29T04:01:35.837Z"
+stopped_at: Completed 09-09-PLAN.md — timesheet.spec.ts (8 tests) + employees.spec.ts (9 tests) + employee CRUD dialogs + data-testids
+last_updated: "2026-04-29T04:15:20.422Z"
 last_activity: 2026-04-29
 progress:
   total_phases: 9
   completed_phases: 8
   total_plans: 46
-  completed_plans: 41
-  percent: 89
+  completed_plans: 42
+  percent: 91
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 09 (e2e-playwright-test-suite) — EXECUTING
-Plan: 9 of 13
+Plan: 10 of 13
 Status: Ready to execute
 Last activity: 2026-04-29
 
-Progress: [█████████░] 89%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -80,6 +80,7 @@ Progress: [█████████░] 89%
 | Phase 09 P06 | 3 | 4 tasks | 10 files |
 | Phase 09 P07 | 2 | 1 tasks | 1 files |
 | Phase 09 P08 | 18 | 2 tasks | 7 files |
+| Phase 09 P09 | 11 | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -173,6 +174,9 @@ Recent decisions affecting current work:
 - T-09-09 open-redirect CR-02: safeRedirect rejects //evil.com covered by T-11; English copy locked per D-19 Addendum (7 strings enumerated in SUMMARY for i18n handoff)
 - SSE banner always rendered in DOM using hidden attr instead of conditional render — enables toBeAttached() in Playwright without triggering disconnect
 - KPITile accepts optional testId prop; page passes kpi-{slug} per tile to decouple test id from display text
+- Employee.version added to frontend type — aligns with backend UpdateEmployeeRequest optimistic concurrency; hire_date corrected to string|null
+- Employee CRUD dialogs built inline in employees/page.tsx — create/edit/deactivate wired to backend REST; deactivate button only on active rows with onDeactivateClick prop
+- mutation->audit pattern: getAudit + expect.poll with 15s timeout — canonical pattern for Plan 10 devices+reports specs
 
 ### Pending Todos
 
@@ -192,8 +196,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-29T04:01:35.834Z
-Stopped at: Completed 09-08-PLAN.md — dashboard.spec.ts with 7 tests + data-testid attributes on 5 dashboard surfaces
+Last session: 2026-04-29T04:15:20.418Z
+Stopped at: Completed 09-09-PLAN.md — timesheet.spec.ts (8 tests) + employees.spec.ts (9 tests) + employee CRUD dialogs + data-testids
 Resume file: None
 
 **Planned Phase:** 9 (E2E Playwright test suite) — 13 plans — 2026-04-29T01:09:39.584Z
