@@ -11,7 +11,7 @@
  * Language: Spanish copy per D-19 (timesheet page is Spanish locale).
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page, type APIRequestContext } from '@playwright/test'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { resetMutableTables, getAudit, pushHikvisionEvent } from './fixtures/api'
@@ -31,7 +31,7 @@ async function readEvent(filename: string): Promise<string> {
 }
 
 /** Push entry + exit for Ana Pérez and wait for her to appear in the grid. */
-async function seedAnaAndWait(page: Parameters<Parameters<typeof test>[1]>[0], request: Parameters<Parameters<typeof test>[1]>[0]['request']) {
+async function seedAnaAndWait(page: Page, request: APIRequestContext) {
   const entry = await readEvent('ana-entrada.xml')
   const exit = await readEvent('ana-salida.xml')
   await pushHikvisionEvent(request, entry)
