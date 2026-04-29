@@ -330,18 +330,34 @@ async fn main() -> anyhow::Result<()> {
             license::middleware::require_license,
         ));
 
+    // Phase 9: __test_reset route — gated at REGISTRATION time by CRONOMETRIX_E2E=true.
+    // Defense in depth: the handler (test_reset::test_reset) ALSO re-checks the env.
+    // Both guards must hold. Without CRONOMETRIX_E2E the route does not exist at all,
+    // so clients receive 404 from the router — not from the handler. This is the
+    // strongest possible gate short of compile-time exclusion (which is not possible
+    // for a runtime env var). Locked by backend/tests/test_reset_gating.rs (T-09-02).
+    let mut api_v1 = public_routes
+        .merge(cookie_auth_routes)
+        .merge(viewer_routes)
+        .merge(supervisor_read_routes)
+        .merge(supervisor_routes)
+        .merge(report_routes)
+        .merge(admin_routes)
+        .merge(enrollment_routes);
+
+    if std::env::var("CRONOMETRIX_E2E").as_deref() == Ok("true") {
+        tracing::warn!(
+            "registering /__test_reset route — CRONOMETRIX_E2E=true detected; \
+             this route MUST NOT be reachable in production"
+        );
+        api_v1 = api_v1.merge(
+            Router::new()
+                .route("/__test_reset", post(cronometrix_api::test_reset::test_reset)),
+        );
+    }
+
     let app = Router::new()
-        .nest(
-            "/api/v1",
-            public_routes
-                .merge(cookie_auth_routes)
-                .merge(viewer_routes)
-                .merge(supervisor_read_routes)
-                .merge(supervisor_routes)
-                .merge(report_routes)
-                .merge(admin_routes)
-                .merge(enrollment_routes),
-        )
+        .nest("/api/v1", api_v1)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());
