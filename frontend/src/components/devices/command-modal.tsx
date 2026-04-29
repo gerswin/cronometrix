@@ -39,7 +39,7 @@ export function CommandModal({ open, device, onClose }: CommandModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-sm" data-testid="command-modal">
         <DialogHeader>
           <DialogTitle>Enviar Comando ISAPI</DialogTitle>
         </DialogHeader>
@@ -53,6 +53,7 @@ export function CommandModal({ open, device, onClose }: CommandModalProps) {
               value={selectedCommand}
               onChange={e => setSelectedCommand(e.target.value as CommandValue)}
               className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+              data-testid="command-modal-select"
             >
               {COMMANDS.map(c => (
                 <option key={c.value} value={c.value}>{c.label}</option>
@@ -70,6 +71,7 @@ export function CommandModal({ open, device, onClose }: CommandModalProps) {
           <Button
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending}
+            data-testid="command-modal-submit"
           >
             {mutation.isPending ? 'Enviando…' : 'Enviar Comando'}
           </Button>

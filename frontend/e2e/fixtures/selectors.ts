@@ -42,6 +42,16 @@ export const SEL = {
   deviceRow: (id: string) => `device-row-${id}`,
   deviceStatus: (id: string) => `device-status-${id}`,
 
+  // Device table per-row testids (Plan 09-10)
+  devRow: (id: string) => `dev-row-${id}`,
+  devActions: (id: string) => `dev-actions-${id}`,
+  devStatus: (id: string) => `dev-status-${id}`,
+
+  // Command modal testids (Plan 09-10)
+  commandModal: 'command-modal',
+  commandModalSelect: 'command-modal-select',
+  commandModalSubmit: 'command-modal-submit',
+
   // Timesheet / Marcaciones page
   timesheetPage: 'timesheet-page',
   timesheetRow: (id: string) => `timesheet-row-${id}`,

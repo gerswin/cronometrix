@@ -4,7 +4,7 @@ import { Terminal } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import type { Device } from '@/types/api'
 
-function StatusBadge({ status }: { status: Device['status'] }) {
+function StatusBadge({ status, deviceId }: { status: Device['status']; deviceId: string }) {
   const map = {
     online: 'bg-green-100 text-green-700',
     offline: 'bg-red-100 text-red-700',
@@ -12,7 +12,10 @@ function StatusBadge({ status }: { status: Device['status'] }) {
   }
   const labels = { online: 'En línea', offline: 'Offline', unknown: 'Desconocido' }
   return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${map[status]}`}>
+    <span
+      className={`px-2 py-0.5 rounded-full text-xs font-medium ${map[status]}`}
+      data-testid={`dev-status-${deviceId}`}
+    >
       {labels[status]}
     </span>
   )
@@ -39,14 +42,18 @@ export function DeviceTable({ devices, onCommandClick }: DeviceTableProps) {
       </thead>
       <tbody>
         {devices.map(device => (
-          <tr key={device.id} className="border-b border-slate-100 hover:bg-slate-50">
+          <tr
+            key={device.id}
+            className="border-b border-slate-100 hover:bg-slate-50"
+            data-testid={`dev-row-${device.id}`}
+          >
             <td className="px-3 py-3 font-medium text-slate-800">{device.name}</td>
             <td className="px-3 py-3 text-slate-600 font-mono text-xs">{device.ip_address}</td>
             <td className="px-3 py-3 text-slate-600 capitalize">
               {device.direction === 'entry' ? 'Entrada' : device.direction === 'exit' ? 'Salida' : 'Ambos'}
             </td>
             <td className="px-3 py-3">
-              <StatusBadge status={device.status} />
+              <StatusBadge status={device.status} deviceId={device.id} />
             </td>
             <td className="px-3 py-3 text-xs text-slate-500">
               {device.last_seen_at
@@ -60,6 +67,7 @@ export function DeviceTable({ devices, onCommandClick }: DeviceTableProps) {
                   onClick={() => onCommandClick(device)}
                   className="flex items-center gap-1.5 px-3 py-1 text-xs rounded border border-slate-200 hover:bg-slate-50 text-slate-600"
                   aria-label={`Enviar comando a ${device.name}`}
+                  data-testid={`dev-actions-${device.id}`}
                 >
                   <Terminal size={12} />
                   Comando
