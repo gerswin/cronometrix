@@ -83,3 +83,57 @@ jobs:
           name: frontend-coverage-html
           path: frontend/coverage
           retention-days: 14
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/Caracas
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install stable Rust toolchain (mirrors Phase 8 backend-coverage pattern)
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustup component add clippy
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Install npm deps
+        working-directory: frontend
+        run: npm ci
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Build backend release binaries (cronometrix + mock_hikvision + seed_e2e)
+        working-directory: backend
+        run: |
+          cargo build --release --bin cronometrix
+          cargo build --release --bin mock_hikvision --features mock-hikvision
+          cargo build --release --bin seed_e2e --features seed-e2e
+      - name: Run Playwright tests (full E2E suite)
+        working-directory: frontend
+        env:
+          CI: 'true'
+          TZ: America/Caracas
+        run: npx playwright test
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-html-report
+          path: frontend/playwright-report
+          retention-days: 14
+      - name: Upload test results (videos / traces / screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: frontend/test-results
+          retention-days: 14
