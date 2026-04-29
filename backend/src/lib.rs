@@ -1,4 +1,5 @@
 pub mod anomalies;
+pub mod audit;
 pub mod enrollments;
 pub mod workers;
 pub mod auth;

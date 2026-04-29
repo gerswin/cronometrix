@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use cronometrix_api::anomalies;
+use cronometrix_api::audit;
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::daily_records;
@@ -233,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
     // Supervisor-or-above read routes: supervisor queue for anomalies (T-3-04).
     let supervisor_read_routes = Router::new()
         .route("/anomalies", get(anomalies::handlers::list_anomalies))
+        .route("/audit", get(audit::handlers::list_audit))   // NEW Plan 09-04
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
