@@ -3,6 +3,25 @@ name = "cronometrix-api"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+seed-e2e = []
+mock-hikvision = []
+
+[[bin]]
+name = "cronometrix"
+path = "src/main.rs"
+
+[[bin]]
+name = "seed_e2e"
+path = "src/bin/seed_e2e.rs"
+required-features = ["seed-e2e"]
+
+[[bin]]
+name = "mock_hikvision"
+path = "src/bin/mock_hikvision.rs"
+required-features = ["mock-hikvision"]
+
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1"

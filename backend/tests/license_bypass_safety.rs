@@ -58,7 +58,7 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
 /// stderr MUST contain "CRONOMETRIX_LICENSE_BYPASS" (the FATAL eprintln! message).
 #[test]
 fn bypass_without_e2e_aborts_with_code_2() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cronometrix-api"))
+    let out = Command::new(env!("CARGO_BIN_EXE_cronometrix"))
         .env_clear()
         // Pass PATH so the binary can locate dynamic libraries.
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -71,7 +71,7 @@ fn bypass_without_e2e_aborts_with_code_2() {
         .env("CRONOMETRIX_LICENSE_BYPASS", "true")
         // Deliberately DO NOT set CRONOMETRIX_E2E — this is the trigger condition.
         .output()
-        .expect("failed to spawn cronometrix-api binary");
+        .expect("failed to spawn cronometrix binary");
 
     assert_eq!(
         out.status.code(),
@@ -108,7 +108,7 @@ fn bypass_with_e2e_proceeds_past_license_gate() {
     let tmp_dir = tempfile::TempDir::new().expect("tempdir");
     let db_path = tmp_dir.path().join("test.db");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cronometrix-api"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cronometrix"))
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         // Required by Config::from_env
@@ -126,7 +126,7 @@ fn bypass_with_e2e_proceeds_past_license_gate() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("failed to spawn cronometrix-api binary");
+        .expect("failed to spawn cronometrix binary");
 
     // Poll the TCP port for up to 20s to detect that the server is accepting
     // connections. This is more reliable than parsing tracing output.
