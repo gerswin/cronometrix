@@ -23,3 +23,17 @@ coverage-backend:
 coverage-frontend:
 	cd frontend && npx vitest run --coverage
 	@echo "Frontend HTML: frontend/coverage/index.html"
+
+.PHONY: e2e e2e-install e2e-build
+
+e2e-install:
+	cd frontend && npm ci && npx playwright install --with-deps chromium
+
+e2e-build:
+	cd backend && cargo build --release --bin cronometrix
+	cd backend && cargo build --release --bin mock_hikvision --features mock-hikvision
+	cd backend && cargo build --release --bin seed_e2e --features seed-e2e
+
+e2e: e2e-build
+	cd frontend && npx playwright test
+	@echo "E2E HTML: frontend/playwright-report/index.html"
