@@ -277,4 +277,120 @@ describe('AuditFilters', () => {
     const recordInput = document.querySelector('[data-testid="audit-filter-record-id"]') as HTMLInputElement
     expect(recordInput.value).toBe('rec-999')
   })
+
+  it('from date input calls onChange with from_ts epoch (start of day)', () => {
+    const onChange = vi.fn()
+    render(
+      <AuditFilters
+        value={{}}
+        onChange={onChange}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const fromInput = document.querySelector('[data-testid="audit-filter-from"]') as HTMLInputElement
+    fireEvent.change(fromInput, { target: { value: '2024-01-15' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      from_ts: expect.any(Number),
+    }))
+    const call = onChange.mock.calls[0][0]
+    // Should be a valid epoch (seconds since 1970)
+    expect(call.from_ts).toBeGreaterThan(0)
+  })
+
+  it('to date input calls onChange with to_ts epoch (end of day)', () => {
+    const onChange = vi.fn()
+    render(
+      <AuditFilters
+        value={{}}
+        onChange={onChange}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const toInput = document.querySelector('[data-testid="audit-filter-to"]') as HTMLInputElement
+    fireEvent.change(toInput, { target: { value: '2024-01-15' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      to_ts: expect.any(Number),
+    }))
+  })
+
+  it('clearing from date input calls onChange with from_ts undefined', () => {
+    const onChange = vi.fn()
+    render(
+      <AuditFilters
+        value={{ from_ts: 1700000000 }}
+        onChange={onChange}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const fromInput = document.querySelector('[data-testid="audit-filter-from"]') as HTMLInputElement
+    fireEvent.change(fromInput, { target: { value: '' } })
+    const call = onChange.mock.calls[0][0]
+    expect(call.from_ts).toBeUndefined()
+  })
+
+  it('from date input shows current from_ts value as YYYY-MM-DD', () => {
+    // epoch for 2024-01-15T00:00:00Z = 1705276800
+    render(
+      <AuditFilters
+        value={{ from_ts: 1705276800 }}
+        onChange={() => {}}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const fromInput = document.querySelector('[data-testid="audit-filter-from"]') as HTMLInputElement
+    // epochToDate converts back to YYYY-MM-DD
+    expect(fromInput.value).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('clearing actor dropdown sets actor_id to undefined', () => {
+    const onChange = vi.fn()
+    render(
+      <AuditFilters
+        value={{ actor_id: 'user-1' }}
+        onChange={onChange}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const select = document.querySelector('[data-testid="audit-filter-actor"]') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '' } })
+    const call = onChange.mock.calls[0][0]
+    expect(call.actor_id).toBeUndefined()
+  })
+
+  it('clearing operation dropdown sets operation to undefined', () => {
+    const onChange = vi.fn()
+    render(
+      <AuditFilters
+        value={{ operation: 'INSERT' }}
+        onChange={onChange}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const select = document.querySelector('[data-testid="audit-filter-operation"]') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '' } })
+    const call = onChange.mock.calls[0][0]
+    expect(call.operation).toBeUndefined()
+  })
+
+  it('clearing record_id input sets record_id to undefined', () => {
+    const onChange = vi.fn()
+    render(
+      <AuditFilters
+        value={{ record_id: 'old-id' }}
+        onChange={onChange}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const input = document.querySelector('[data-testid="audit-filter-record-id"]') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '' } })
+    const call = onChange.mock.calls[0][0]
+    expect(call.record_id).toBeUndefined()
+  })
 })
