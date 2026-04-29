@@ -6,15 +6,19 @@ interface KPITileProps {
   value: string | number
   sub?: ReactNode
   variant?: 'default' | 'warning' | 'danger'
+  testId?: string
 }
 
-export function KPITile({ title, value, sub, variant = 'default' }: KPITileProps) {
+export function KPITile({ title, value, sub, variant = 'default', testId }: KPITileProps) {
   return (
-    <div className={cn(
-      'rounded-xl border p-4 bg-white shadow-sm',
-      variant === 'warning' && 'border-yellow-300',
-      variant === 'danger' && 'border-red-300',
-    )}>
+    <div
+      data-testid={testId}
+      className={cn(
+        'rounded-xl border p-4 bg-white shadow-sm',
+        variant === 'warning' && 'border-yellow-300',
+        variant === 'danger' && 'border-red-300',
+      )}
+    >
       <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">{title}</p>
       <p className="text-3xl font-bold text-slate-800">{value}</p>
       {sub && <div className="mt-1">{sub}</div>}

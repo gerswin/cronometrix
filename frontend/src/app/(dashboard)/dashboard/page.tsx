@@ -43,15 +43,16 @@ export default function DashboardPage() {
       <div className="p-6 space-y-6">
         {/* KPI row — D-5 */}
         <div className="grid grid-cols-4 gap-4">
-          <KPITile title="Empleados Presentes" value={kpis.present} />
-          <KPITile title="% Retraso Hoy" value={`${latePercent}%`} />
+          <KPITile testId="kpi-empleados-presentes" title="Empleados Presentes" value={kpis.present} />
+          <KPITile testId="kpi-retraso-hoy" title="% Retraso Hoy" value={`${latePercent}%`} />
           <KPITile
+            testId="kpi-dispositivos-activos"
             title="Dispositivos Activos"
             value={`${devices.length - offlineCount}/${devices.length}`}
             sub={<DeviceStatusSummary devices={devices} />}
             variant={deviceVariant}
           />
-          <KPITile title="Alertas Diurnas" value={alertCount} variant={alertCount > 0 ? 'warning' : 'default'} />
+          <KPITile testId="kpi-alertas-diurnas" title="Alertas Diurnas" value={alertCount} variant={alertCount > 0 ? 'warning' : 'default'} />
         </div>
 
         {/* Bottom panels — D-5: left 60% activity feed, right 40% donut */}

@@ -18,31 +18,33 @@ export function DeptChart({ records }: DeptChartProps) {
 
   if (data.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-slate-400 text-sm">
+      <div data-testid="donut-by-dept" className="flex items-center justify-center h-full text-slate-400 text-sm">
         Sin datos para hoy
       </div>
     )
   }
 
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <PieChart>
-        <Pie
-          data={data}
-          cx="50%"
-          cy="50%"
-          innerRadius={60}
-          outerRadius={90}
-          paddingAngle={2}
-          dataKey="value"
-        >
-          {data.map((_, i) => (
-            <Cell key={i} fill={COLORS[i % COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip formatter={(val) => [`${typeof val === 'number' ? val : 0} presentes`, '']} />
-        <Legend />
-      </PieChart>
-    </ResponsiveContainer>
+    <div data-testid="donut-by-dept">
+      <ResponsiveContainer width="100%" height={220}>
+        <PieChart>
+          <Pie
+            data={data}
+            cx="50%"
+            cy="50%"
+            innerRadius={60}
+            outerRadius={90}
+            paddingAngle={2}
+            dataKey="value"
+          >
+            {data.map((_, i) => (
+              <Cell key={i} fill={COLORS[i % COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip formatter={(val) => [`${typeof val === 'number' ? val : 0} presentes`, '']} />
+          <Legend />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
   )
 }

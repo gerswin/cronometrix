@@ -42,6 +42,7 @@ function EventAvatar({ event }: { event: AttendanceEventSSEPayload }) {
   if (event.has_photo && src) {
     return (
       <img
+        data-testid="photo-img"
         src={src}
         alt={event.employee_name ?? 'evento'}
         className="w-10 h-10 rounded-full object-cover shrink-0"
@@ -49,7 +50,10 @@ function EventAvatar({ event }: { event: AttendanceEventSSEPayload }) {
     )
   }
   return (
-    <div className="w-10 h-10 rounded-full bg-slate-300 flex items-center justify-center text-xs font-semibold text-slate-700 shrink-0">
+    <div
+      data-testid="photo-fallback"
+      className="w-10 h-10 rounded-full bg-slate-300 flex items-center justify-center text-xs font-semibold text-slate-700 shrink-0"
+    >
       {initials}
     </div>
   )
@@ -76,12 +80,12 @@ export function ActivityFeed() {
         </Link>
       </div>
       <SSEReconnectBanner reconnecting={reconnecting} />
-      <ul className="space-y-2 overflow-y-auto flex-1">
+      <ul data-testid="ring-buffer" className="space-y-2 overflow-y-auto flex-1">
         {events.length === 0 && (
           <li className="text-xs text-slate-400 py-4 text-center">Sin actividad reciente</li>
         )}
         {events.map(event => (
-          <li key={event.id} className="flex items-center gap-3">
+          <li key={event.id} data-testid={`ring-row-${event.id}`} className="flex items-center gap-3">
             <EventAvatar event={event} />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-slate-800 truncate">

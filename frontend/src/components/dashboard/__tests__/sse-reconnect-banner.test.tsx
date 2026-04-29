@@ -3,9 +3,13 @@ import { render, screen } from '@testing-library/react'
 import { SSEReconnectBanner } from '../sse-reconnect-banner'
 
 describe('SSEReconnectBanner', () => {
-  it('renders nothing when reconnecting=false (connected state)', () => {
+  it('is present in DOM but hidden when reconnecting=false (connected state)', () => {
     const { container } = render(<SSEReconnectBanner reconnecting={false} />)
-    expect(container.firstChild).toBeNull()
+    // The banner stays in DOM for Playwright toBeAttached() — it uses the HTML
+    // `hidden` attribute to toggle visibility instead of conditional rendering.
+    const root = container.firstChild as HTMLElement
+    expect(root).not.toBeNull()
+    expect(root.hidden).toBe(true)
   })
 
   it('renders Spanish reconnect copy when reconnecting=true', () => {
