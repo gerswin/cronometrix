@@ -69,14 +69,42 @@ async fn main() -> anyhow::Result<()> {
     // if file missing, signature invalid, or fingerprint mismatched, the
     // flag stays false and only public_routes (including /setup/activate)
     // are reachable. The setup wizard step 0 is /setup/activate.
+    //
+    // Phase 9 D-13: evaluate_bypass runs FIRST. If CRONOMETRIX_LICENSE_BYPASS
+    // is set without CRONOMETRIX_E2E the binary aborts immediately with exit code 2.
+    // This prevents the test-only flag from leaking into a production deploy and
+    // silently disabling the hardware-bound license gate (LIC-05).
+    // The exit code 2 contract is locked by backend/tests/license_bypass_safety.rs.
     let license_valid = std::sync::Arc::new(
         std::sync::atomic::AtomicBool::new(false)
     );
-    if license::service::load_and_validate_license(&config.license_jwt_path).await {
-        license_valid.store(true, std::sync::atomic::Ordering::Relaxed);
-        tracing::info!("license valid — system fully operational");
-    } else {
-        tracing::warn!("license invalid or missing — system gated, /setup/activate available");
+    let e2e = std::env::var("CRONOMETRIX_E2E").as_deref() == Ok("true");
+    let bypass = std::env::var("CRONOMETRIX_LICENSE_BYPASS").as_deref() == Ok("true");
+    match license::service::evaluate_bypass(e2e, bypass) {
+        license::service::BypassDecision::AbortMisconfigured => {
+            tracing::error!(
+                "FATAL: CRONOMETRIX_LICENSE_BYPASS set without CRONOMETRIX_E2E. \
+                 Refusing to start — bypass flag is test-only and must not appear in production env."
+            );
+            eprintln!(
+                "FATAL: CRONOMETRIX_LICENSE_BYPASS set without CRONOMETRIX_E2E. Aborting."
+            );
+            std::process::exit(2);
+        }
+        license::service::BypassDecision::AllowBypass => {
+            license_valid.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                "license bypass active (CRONOMETRIX_E2E=true, CRONOMETRIX_LICENSE_BYPASS=true) — TEST/DEV ONLY"
+            );
+        }
+        license::service::BypassDecision::NormalPath => {
+            if license::service::load_and_validate_license(&config.license_jwt_path).await {
+                license_valid.store(true, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!("license valid — system fully operational");
+            } else {
+                tracing::warn!("license invalid or missing — system gated, /setup/activate available");
+            }
+        }
     }
 
     // Phase 7: purge and backfill worker channels.
