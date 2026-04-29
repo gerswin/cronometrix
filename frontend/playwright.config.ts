@@ -6,6 +6,7 @@ const DB_PATH = `${PATHS_ROOT}.db`
 
 export default defineConfig({
   testDir: './e2e',
+  globalTeardown: require.resolve('./e2e/global-teardown'),
   fullyParallel: false,        // D-12: shared DB requires serial execution
   workers: 1,                  // D-12 determinism
   retries: process.env.CI ? 1 : 0,
