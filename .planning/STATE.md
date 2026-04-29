@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 09-02-PLAN.md — D-13 license bypass safety contract locked
-last_updated: "2026-04-29T02:31:16.166Z"
+stopped_at: Completed 09-03-PLAN.md — seed_e2e + mock_hikvision + __test_reset locked
+last_updated: "2026-04-29T02:52:07.173Z"
 last_activity: 2026-04-29
 progress:
   total_phases: 9
   completed_phases: 8
   total_plans: 46
-  completed_plans: 35
-  percent: 76
+  completed_plans: 36
+  percent: 78
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 09 (e2e-playwright-test-suite) — EXECUTING
-Plan: 3 of 13
+Plan: 4 of 13
 Status: Ready to execute
 Last activity: 2026-04-29
 
-Progress: [████████░░] 76%
+Progress: [████████░░] 78%
 
 ## Performance Metrics
 
@@ -74,6 +74,7 @@ Progress: [████████░░] 76%
 | Phase 08 P06 | 25 | 1 tasks | 1 files |
 | Phase 09 P01 | 4 | 2 tasks | 6 files |
 | Phase 09 P02 | 51 | 3 tasks | 3 files |
+| Phase 09 P03 | 17 | 4 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -152,6 +153,9 @@ Recent decisions affecting current work:
 - Phase 9 D-13: exit code 2 for bypass-without-e2e is a locked contract — do not change without updating license_bypass_safety.rs integration test
 - Phase 9 D-13: TCP port polling is the correct readiness probe for subprocess integration tests — BufReader::read_line() blocks indefinitely on live child processes
 - Phase 9 D-13: DEVICE_CREDS_KEY in subprocess tests must be base64-encoded 32 bytes (QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=); TURSO_DATABASE_URL must be absent
+- D-09-03-A: Tuple params (not libsql::params![]) for inserts mixing &str and owned String — params! silently returns rows_affected=0 in that case
+- D-09-03-B: Device ports 4400/4401 to satisfy idx_devices_ip_port_active unique index; exit device contacts mock admin port
+- D-09-03-C: CARGO_BIN_EXE_cronometrix (not cronometrix-api) — explicit [[bin]] changes the env var name from package name to declared binary name
 
 ### Pending Todos
 
@@ -171,8 +175,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-29T02:31:16.160Z
-Stopped at: Completed 09-02-PLAN.md — D-13 license bypass safety contract locked
+Last session: 2026-04-29T02:52:07.170Z
+Stopped at: Completed 09-03-PLAN.md — seed_e2e + mock_hikvision + __test_reset locked
 Resume file: None
 
 **Planned Phase:** 9 (E2E Playwright test suite) — 13 plans — 2026-04-29T01:09:39.584Z
