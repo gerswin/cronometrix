@@ -259,3 +259,28 @@ async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(anyhow::anyhow!("rename: {}", e)))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod evaluate_bypass_tests {
+    use super::{evaluate_bypass, BypassDecision};
+
+    #[test]
+    fn both_flags_set_allows_bypass() {
+        assert_eq!(evaluate_bypass(true, true), BypassDecision::AllowBypass);
+    }
+
+    #[test]
+    fn bypass_without_e2e_aborts_misconfigured() {
+        assert_eq!(evaluate_bypass(false, true), BypassDecision::AbortMisconfigured);
+    }
+
+    #[test]
+    fn e2e_without_bypass_normal_path() {
+        assert_eq!(evaluate_bypass(true, false), BypassDecision::NormalPath);
+    }
+
+    #[test]
+    fn neither_flag_normal_path() {
+        assert_eq!(evaluate_bypass(false, false), BypassDecision::NormalPath);
+    }
+}
