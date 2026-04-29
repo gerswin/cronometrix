@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 09-09-PLAN.md — timesheet.spec.ts (8 tests) + employees.spec.ts (9 tests) + employee CRUD dialogs + data-testids
-last_updated: "2026-04-29T04:15:20.422Z"
+stopped_at: Completed 09-10-PLAN.md — devices.spec.ts (11 tests) + reports.spec.ts (9 tests) + data-testids on device components; PATH B B6 lock confirmed
+last_updated: "2026-04-29T04:29:47.330Z"
 last_activity: 2026-04-29
 progress:
   total_phases: 9
   completed_phases: 8
   total_plans: 46
-  completed_plans: 42
-  percent: 91
+  completed_plans: 43
+  percent: 93
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 09 (e2e-playwright-test-suite) — EXECUTING
-Plan: 10 of 13
+Plan: 11 of 13
 Status: Ready to execute
 Last activity: 2026-04-29
 
-Progress: [█████████░] 91%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -81,6 +81,7 @@ Progress: [█████████░] 91%
 | Phase 09 P07 | 2 | 1 tasks | 1 files |
 | Phase 09 P08 | 18 | 2 tasks | 7 files |
 | Phase 09 P09 | 11 | 3 tasks | 13 files |
+| Phase 09 P10 | 9 | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -177,6 +178,8 @@ Recent decisions affecting current work:
 - Employee.version added to frontend type — aligns with backend UpdateEmployeeRequest optimistic concurrency; hire_date corrected to string|null
 - Employee CRUD dialogs built inline in employees/page.tsx — create/edit/deactivate wired to backend REST; deactivate button only on active rows with onDeactivateClick prop
 - mutation->audit pattern: getAudit + expect.poll with 15s timeout — canonical pattern for Plan 10 devices+reports specs
+- PATH B (mock recv-log) chosen for devices.spec.ts door-open assertion: command_audit_log is separate from audit_log; getAudit() only queries audit_log; /admin/recv-log is the B6 contract
+- ExportButtons conditionally rendered in reports/page.tsx: only shown when reportQ.data exists; UI tests must click Emitir Reporte before asserting export buttons
 
 ### Pending Todos
 
@@ -196,8 +199,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-29T04:15:20.418Z
-Stopped at: Completed 09-09-PLAN.md — timesheet.spec.ts (8 tests) + employees.spec.ts (9 tests) + employee CRUD dialogs + data-testids
+Last session: 2026-04-29T04:29:47.327Z
+Stopped at: Completed 09-10-PLAN.md — devices.spec.ts (11 tests) + reports.spec.ts (9 tests) + data-testids on device components; PATH B B6 lock confirmed
 Resume file: None
 
 **Planned Phase:** 9 (E2E Playwright test suite) — 13 plans — 2026-04-29T01:09:39.584Z
