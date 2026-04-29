@@ -384,6 +384,180 @@ Phase 8 is NOT considered fully green until A, B, and C all pass on the live
 GitHub Actions runner with branch protection active. Anyone resuming this work
 should consult `08-05-SUMMARY.md` for the exact commands.
 
+## End-to-End Tests (Phase 9)
+
+Phase 9 added a Playwright-based end-to-end test suite that runs against the
+real Rust/Axum backend (boot via Playwright `webServer`, ephemeral SQLite,
+mock Hikvision device) and the real Next.js frontend. The suite is a hard-fail
+gate on every PR via the `E2E Tests` job in `.github/workflows/ci.yml`.
+
+### Install (one-time per developer)
+
+```bash
+cd frontend && npm ci
+npx playwright install --with-deps chromium
+
+# Build helper binaries (gated by Cargo features so prod Docker excludes them):
+cd backend
+cargo build --release --bin cronometrix
+cargo build --release --bin mock_hikvision --features mock-hikvision
+cargo build --release --bin seed_e2e --features seed-e2e
+```
+
+Or use the orchestrated path:
+```bash
+make e2e-install
+make e2e-build
+```
+
+### Local commands
+
+```bash
+make e2e            # Build backend binaries + run full Playwright suite
+make e2e-build      # Build only — no test execution
+make e2e-install    # Install npm deps + chromium browser
+cd frontend && npx playwright test --grep "<spec name>"  # Run a single spec
+```
+
+The same commands run in CI (`.github/workflows/ci.yml::e2e-tests`), so a
+green `make e2e` locally implies a green `E2E Tests` job on PRs.
+
+### Test-only env flags (DEV/TEST ONLY — must NEVER appear in prod env)
+
+| Flag | Purpose | Abort contract |
+|------|---------|----------------|
+| `CRONOMETRIX_E2E=true` | Gates the bypass flag, gates `__test_reset` route registration, gates `seed_e2e` + `mock_hikvision` binary execution | Must be `true` for any of the below to be honored |
+| `CRONOMETRIX_LICENSE_BYPASS=true` | Skip hardware-fingerprint license validation | If set WITHOUT `CRONOMETRIX_E2E=true`, the binary aborts with exit code 2 BEFORE entering the license check path. Locked by `backend/tests/license_bypass_safety.rs::bypass_without_e2e_aborts_with_code_2`. |
+
+The integration test means: a deploy script that sets `CRONOMETRIX_LICENSE_BYPASS`
+in production env will FAIL FAST instead of silently disabling the license gate
+(which would defeat LIC-05 anti-cloning). If you ever see `CRONOMETRIX_E2E` or
+`CRONOMETRIX_LICENSE_BYPASS` in a production .env, treat it as a misconfiguration
+and refuse to deploy.
+
+### File layout
+
+```
+frontend/
+├── playwright.config.ts                # webServer × 3, projects, TZ freeze
+├── e2e/
+│   ├── .auth/                          # gitignored — storageState files (regenerated per run)
+│   │   ├── admin.json
+│   │   ├── supervisor.json
+│   │   └── viewer.json
+│   ├── fixtures/
+│   │   ├── api.ts                      # API helpers (getAudit, resetMutableTables, pushHikvisionEvent)
+│   │   ├── selectors.ts                # data-testid catalog
+│   │   ├── time.ts                     # Caracas-anchored Date helpers
+│   │   └── hikvision-events/*.xml      # canned EventNotificationAlert fixtures
+│   ├── setup/
+│   │   ├── 00-build-and-seed.setup.ts  # health probe + seed_e2e + reset mutable tables
+│   │   └── 01-authenticate.setup.ts    # login as 3 roles → write storageState files
+│   ├── login.spec.ts                   # D-01 UAT (English copy on login screen — Addendum D-19)
+│   ├── dashboard.spec.ts               # D-02 UAT (KPIs, donut, ring buffer, photo, SSE)
+│   ├── timesheet.spec.ts               # D-03 marcaciones CRUD + audit
+│   ├── employees.spec.ts               # D-03 empleados CRUD + audit
+│   ├── devices.spec.ts                 # D-03 dispositivos CRUD + ISAPI dispatch via mock + audit
+│   ├── reports.spec.ts                 # D-03 reportes (XLSX + PDF content verification)
+│   ├── audit.spec.ts                   # D-04 auditoría screen UAT
+│   ├── rbac.spec.ts                    # cross-cut: viewer/supervisor/admin/anonymous
+│   └── global-teardown.ts              # rm /tmp/cronometrix-e2e-${RUN_ID}*
+
+backend/
+├── src/
+│   ├── audit/                          # NEW — paginated read endpoint (D-04 enabler)
+│   ├── bin/
+│   │   ├── seed_e2e.rs                 # Cargo feature: seed-e2e
+│   │   └── mock_hikvision.rs           # Cargo feature: mock-hikvision
+│   ├── license/service.rs              # extended with evaluate_bypass(e2e, bypass)
+│   ├── main.rs                         # license-gate flow + __test_reset gating
+│   └── test_reset/mod.rs               # POST /api/v1/__test_reset (gated by env)
+├── tests/
+│   ├── audit_handlers_test.rs          # 10 integration tests
+│   ├── license_bypass_safety.rs        # locks the abort-on-misconfig contract
+│   └── test_reset_gating.rs            # locks the 404-without-e2e contract
+└── Cargo.toml                          # [features] seed-e2e, mock-hikvision
+
+.github/workflows/ci.yml                # added "E2E Tests" job alongside Phase 8 jobs
+```
+
+### Default ports
+
+| Process | Port | Notes |
+|---------|------|-------|
+| Backend (test) | 4001 | webServer probe at `/api/v1/health` |
+| Frontend (test) | 3001 | next start (CI) or next dev (local) |
+| Mock Hikvision (public) | 4400 | impersonates Hikvision unit; serves `/ISAPI/*` |
+| Mock Hikvision (admin) | 4401 | test-only; specs push events into the alertStream queue |
+
+Override via env vars: `SERVER_PORT`, `MOCK_HIKVISION_PORT`, `MOCK_HIKVISION_ADMIN_PORT`.
+
+### Time-zone freeze (D-20)
+
+`TZ=America/Caracas` is set in THREE places — all required:
+1. Backend webServer process (via `webServer.env` in playwright.config.ts)
+2. Test runner Node process (via `e2e-tests` job-level `env:` and local shell)
+3. Browser context (`use: { timezoneId: 'America/Caracas' }` in playwright.config.ts)
+
+Setting only one is a known flake source. If a test asserts dates and fails
+intermittently, check all three places.
+
+### CI gate
+
+Workflow file: `.github/workflows/ci.yml`
+Job name: **E2E Tests** (matches required-status-check name; case-sensitive).
+
+Job steps:
+1. `actions/checkout@v4`
+2. `actions/setup-node@v4` (Node 20)
+3. Install stable Rust + `Swatinem/rust-cache@v2` (target/ + cargo registry)
+4. `npm ci`
+5. `npx playwright install --with-deps chromium`
+6. `cargo build --release` for the 3 binaries (cronometrix, mock_hikvision, seed_e2e)
+7. `npx playwright test`
+8. `actions/upload-artifact@v4` × 2 — `playwright-html-report` + `playwright-test-results`, both `if: always()`, retention 14 days
+
+Pinned actions: parity with Phase 8 T-08-15 (`actions/checkout@v4`,
+`actions/setup-node@v4`, `actions/upload-artifact@v4`, `Swatinem/rust-cache@v2`).
+`permissions: contents: read` at workflow scope (least privilege).
+
+### Reading a failing CI run
+
+1. Open the failing job's logs in the Actions tab.
+2. Download the `playwright-html-report` artifact (always uploaded).
+3. Open `index.html` locally — Playwright's HTML report shows traces, screenshots,
+   videos for each failure.
+4. Reproduce locally with `cd frontend && npx playwright test <spec>` against
+   a fresh DB (`make e2e` rebuilds the binary + reseeds).
+5. If the failure is in `setup/`: check that `backend/target/release/seed_e2e`
+   and `mock_hikvision` exist (run `make e2e-build`).
+
+### Pending live validation (Plan 12 deferred — Manual Follow-up)
+
+Plan 12 (CI gate) shipped the workflow file, but the live runtime validation
+was deferred per Phase 8 Plan 05 precedent. Three items remain:
+
+1. **Positive verification** — push the branch, confirm `E2E Tests` runs green
+   on GitHub Actions, confirm both artifacts are downloadable.
+2. **Negative regression PR** — open a deliberate red PR (break a spec assertion);
+   confirm `E2E Tests` FAILS and the artifacts include the failing trace.
+3. **Branch protection** — Settings → Branches → branch protection rule for `main`
+   → Require status checks → add `E2E Tests` to required list.
+
+Phase 9 is NOT considered fully green until items 1-3 all pass on the live
+GitHub Actions runner with branch protection active. See
+`.planning/phases/09-e2e-playwright-test-suite-login-dashboard-marcaciones-emplea/09-12-SUMMARY.md`
+for exact commands.
+
+### Note on private vs public repo
+
+Playwright HTML reports include screenshots + DOM snapshots that may
+contain seeded test names (Ana Pérez, Luis García, etc.). The repo is
+currently private, so artifacts are scoped to repo collaborators. If the
+repo ever goes public, revisit retention policy and consider scrubbing.
+Since seed_e2e uses synthetic test data only (no real PII), the disclosure
+risk is low — same disposition as Phase 8 coverage HTML.
+
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
