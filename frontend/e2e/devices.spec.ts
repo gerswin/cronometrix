@@ -19,11 +19,23 @@
  *
  * ISAPI command audit (PATH A not applicable here):
  *   table: command_audit_log, columns: device_id, command, outcome, actor_id
+ *   dispatched_at, completed_at, error_code, error_message
  *   The main audit_log (queried by getAudit) records device INSERT/UPDATE/DELETE
  *   via SQL triggers (006_devices_audit_triggers.sql) — NOT outbound commands.
+ *   command_audit_log is append-only by convention (no triggers write back to audit_log).
+ *
+ * RBAC enforcement (D-14):
+ *   - Admin:      can see Comando button, open command modal, dispatch commands
+ *   - Supervisor: cannot see Comando button (D-14 explicitly restricts to Admin)
+ *   - Viewer:     cannot see Comando button; can list devices (read access is open)
+ *
+ * Mock endpoints (Plan 03 Task 3 / B6 contract):
+ *   Public port 4400:  PUT /ISAPI/RemoteControl/door/0 → records call in recv_log
+ *   Admin port 4401:   GET /admin/recv-log → returns { commands: ReceivedCall[] }
+ *                      POST /admin/clear-recv-log → empties recv_log
  *
  * All tests use the pre-authenticated admin session except the RBAC test.
- * test.beforeEach resets mutable tables for determinism (D-12).
+ * test.beforeEach resets mutable tables + clears recv_log for determinism (D-12).
  */
 
 import { test, expect } from '@playwright/test'
@@ -199,6 +211,46 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
     // dev-actions-* (Comando button) is Admin-only — must not be visible for Viewer
     await expect(page.getByTestId('dev-actions-dev-entry')).toHaveCount(0)
     await expect(page.getByTestId('dev-actions-dev-exit')).toHaveCount(0)
+    // Devices are still listed — Viewer can see device names (list is not restricted)
+    await expect(page.getByText('Entrada Principal')).toBeVisible()
     await ctx.close()
+  })
+
+  // ── T-10: Device list shows both devices by direction label ──────────────
+  // The device table renders direction column as Spanish: 'Entrada' / 'Salida'.
+  // This verifies the i18n mapping in device-table.tsx:
+  //   direction === 'entry' → 'Entrada'
+  //   direction === 'exit'  → 'Salida'
+  test('device table renders direction labels in Spanish', async ({ page }) => {
+    await page.goto('/devices')
+    await expect(page.getByTestId('dev-row-dev-entry')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('dev-row-dev-exit')).toBeVisible()
+    // dev-entry has direction 'entry' → renders 'Entrada'
+    const entryRow = page.getByTestId('dev-row-dev-entry')
+    await expect(entryRow.getByText('Entrada')).toBeVisible()
+    // dev-exit has direction 'exit' → renders 'Salida'
+    const exitRow = page.getByTestId('dev-row-dev-exit')
+    await expect(exitRow.getByText('Salida')).toBeVisible()
+  })
+
+  // ── T-11: Command modal select lists all three ISAPI commands ─────────────
+  // Verifies the CommandModal exposes door_open / reboot / enrollment_mode options
+  // to Admin users. All three are wired to POST /devices/{id}/commands in the
+  // backend (dispatch_command handler) which validates the command string against
+  // the Command enum: { DoorOpen, Reboot, EnrollmentMode }.
+  test('command modal select contains door_open, reboot, enrollment_mode options', async ({ page }) => {
+    await page.goto('/devices')
+    await page.getByTestId('dev-actions-dev-entry').click()
+    await expect(page.getByTestId('command-modal')).toBeVisible({ timeout: 5_000 })
+    const select = page.getByTestId('command-modal-select')
+    await expect(select).toBeVisible()
+    // Assert all three option values are present
+    const options = await select.locator('option').all()
+    const values = await Promise.all(options.map(o => o.getAttribute('value')))
+    expect(values).toContain('door_open')
+    expect(values).toContain('reboot')
+    expect(values).toContain('enrollment_mode')
+    // Close the modal
+    await page.getByRole('button', { name: /Cancelar/i }).click()
   })
 })
