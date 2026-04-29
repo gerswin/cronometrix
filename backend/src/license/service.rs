@@ -55,6 +55,49 @@ pub fn verify_license_jwt(token: &str) -> Result<LicenseClaims, AppError> {
     Ok(data.claims)
 }
 
+// =============================================================================
+// Phase 9 D-13: bypass-flag safety — evaluate_bypass pure function
+//
+// D-13 LOCKED decision: CRONOMETRIX_LICENSE_BYPASS is a test-only flag that
+// MUST cause the binary to abort with exit code 2 if set without CRONOMETRIX_E2E.
+// This pure function encodes that logic — no side effects, no env reads, no panics.
+// Callers (main.rs) read the env vars and pass parsed booleans here.
+// Locked by `backend/tests/license_bypass_safety.rs` AND by the unit tests below.
+// =============================================================================
+
+/// Decision returned by `evaluate_bypass`.
+/// Callers (main.rs) branch on this enum BEFORE calling `load_and_validate_license`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BypassDecision {
+    /// Both `CRONOMETRIX_E2E=true` AND `CRONOMETRIX_LICENSE_BYPASS=true` are set:
+    /// skip fingerprint validation and mark the system as licensed. TEST/DEV only.
+    AllowBypass,
+    /// `CRONOMETRIX_LICENSE_BYPASS=true` without `CRONOMETRIX_E2E=true`:
+    /// misconfiguration — abort startup with exit code 2.
+    AbortMisconfigured,
+    /// Neither bypass is set, or only E2E is set: proceed to normal
+    /// `load_and_validate_license` path unchanged.
+    NormalPath,
+}
+
+/// Pure logic — no side effects, no env reads, no I/O, no panics.
+/// The caller (main.rs) passes the already-parsed boolean values.
+///
+/// Truth table (locked by `tests/license_bypass_safety.rs` and inline unit tests):
+/// | e2e   | bypass | result              |
+/// |-------|--------|---------------------|
+/// | true  | true   | AllowBypass         |
+/// | false | true   | AbortMisconfigured  |
+/// | true  | false  | NormalPath          |
+/// | false | false  | NormalPath          |
+pub fn evaluate_bypass(e2e: bool, bypass: bool) -> BypassDecision {
+    match (e2e, bypass) {
+        (true, true)  => BypassDecision::AllowBypass,
+        (false, true) => BypassDecision::AbortMisconfigured,
+        _             => BypassDecision::NormalPath,
+    }
+}
+
 /// Load the cached JWT, verify signature, then re-compute the local fingerprint
 /// and compare against the JWT claim. Returns true ONLY when all checks pass.
 /// Returns false (without panic) on any error so the system can boot to /setup
