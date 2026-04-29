@@ -19,6 +19,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 5: Reports & Payroll Export** - Period-based pre-payroll reports in Excel and PDF
 - [ ] **Phase 6: Licensing & Deployment** - Hardware-bound licensing, Docker Compose installer, Cloudflare tunnel
 - [ ] **Phase 7: Facial Enrollment & Sync** - Enrollment modal, multi-device profile sync
+- [ ] **Phase 10: v1.0 Documentation & Sign-off Hardening** - Post-hoc VERIFICATIONs (P1, P7), traceability refresh, /audit/actors username join, DEPL-03 decision record
+- [ ] **Phase 11: v1.0 Live Environment Validation** - Live CI green/red runs, branch protection toggle, fresh-VM installer smoke, LIC-05 cross-host clone, real Hikvision alertStream
 
 ## Phase Details
 
@@ -148,18 +150,21 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 1/5 | In Progress|  |
-| 2. Device Integration | 0/3 | Not started | - |
-| 3. Time Calculation Engine | 0/3 | Not started | - |
-| 4. Frontend UI | 0/4 | Not started | - |
-| 5. Reports & Payroll Export | 0/2 | Not started | - |
-| 6. Licensing & Deployment | 0/4 | Not started | - |
-| 7. Facial Enrollment & Sync | 0/2 | Not started | - |
+| 1. Foundation | 5/5 | Complete | 2026-04-15 |
+| 2. Device Integration | 3/3 | Complete | 2026-04-18 |
+| 3. Time Calculation Engine | 3/3 | Complete | 2026-04-20 |
+| 4. Frontend UI | 4/4 | Complete | 2026-04-22 |
+| 5. Reports & Payroll Export | 4/4 | Complete | 2026-04-24 |
+| 6. Licensing & Deployment | 4/4 | Complete | 2026-04-26 |
+| 7. Facial Enrollment & Sync | 2/2 | Complete | 2026-04-27 |
 | 8. Test Coverage & Quality Gate | 8/8 | Complete    | 2026-04-28 |
+| 9. E2E Playwright Suite | 13/13 | Complete | 2026-04-29 |
+| 10. v1.0 Documentation & Sign-off Hardening | 0/? | Not started | - |
+| 11. v1.0 Live Environment Validation | 0/? | Not started | - |
 
 ### Phase 8: Test Coverage & Quality Gate — Reach >=90% line coverage and >=85% branch coverage on backend (cargo-llvm-cov) and frontend (Vitest+v8); add CI thresholds; fix leave_tests cwd-dependent failure; document coverage commands in CLAUDE.md
 
@@ -197,3 +202,19 @@ Plans:
 - [ ] 09-11-PLAN.md — audit.spec.ts + rbac.spec.ts: 10+ tests; D-04 audit screen + cross-cut RBAC negative paths
 - [ ] 09-12-PLAN.md — CI gate: new 'E2E Tests' job in .github/workflows/ci.yml; pinned actions; artifact uploads always
 - [ ] 09-13-PLAN.md — CLAUDE.md docs: '## End-to-End Tests (Phase 9)' section + test-only env flag warnings + Manual Follow-up checklist
+
+### Phase 10: v1.0 Documentation & Sign-off Hardening
+
+**Goal:** Close all in-repo audit gaps from `v1.0-MILESTONE-AUDIT.md` so the milestone documentation is complete: post-hoc verification records for the two phases that shipped without them (Phase 1, Phase 7), refreshed REQUIREMENTS.md traceability column, the `/audit/actors` username-join endpoint that 09-05 deferred, and a recorded decision on DEPL-03's v1 deferral. Pure documentation + small-feature work — fully autonomous, no external infrastructure required.
+**Requirements**: SIGNOFF-01-VERIFY, SIGNOFF-07-VERIFY, SIGNOFF-TRACEABILITY, SIGNOFF-AUDIT-ACTORS, SIGNOFF-DEPL-03-DECISION
+**Depends on:** Phase 9
+**Plans:** TBD (run `/gsd-plan-phase 10`)
+**Gap Closure:** Closes documentation + traceability gaps from `v1.0-MILESTONE-AUDIT.md`
+
+### Phase 11: v1.0 Live Environment Validation
+
+**Goal:** Execute every audit-deferred item that requires real infrastructure and record the resulting evidence so the milestone can be archived with a clean human-verified verdict: live CI green run for `Backend Coverage` + `Frontend Coverage` + `E2E Tests` jobs (Phase 8 Plan 05 + Phase 9), deliberate red regression PRs for both gates, branch protection toggled to require all three jobs, fresh-VM installer smoke (Ubuntu 22.04 + Docker + real Cloudflare token + DO Functions URL) for DEPL-01/02, cross-host LIC-05 clone-rejection test on two physical machines, and (if hardware available) real Hikvision alertStream end-to-end test for EVT-01/02. Output: evidence files committed under `.planning/phases/11-*/evidence/` proving each item passed.
+**Requirements**: VALIDATE-CI-GREEN, VALIDATE-CI-RED, VALIDATE-BRANCH-PROTECTION, VALIDATE-INSTALLER-SMOKE, VALIDATE-LIC-05-CLONE, VALIDATE-HIKVISION-LIVE
+**Depends on:** Phase 10
+**Plans:** TBD (run `/gsd-plan-phase 11`)
+**Gap Closure:** Closes manual follow-up + live-environment gaps from `v1.0-MILESTONE-AUDIT.md`
