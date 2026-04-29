@@ -60,11 +60,12 @@ export function EmployeeTable({ data, total, pagination, onPaginationChange, onE
       id: 'actions',
       header: 'Acciones',
       cell: ({ row }) => (
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" data-testid={`emp-actions-${row.original.id}`}>
           {role === 'admin' && (
             <button
               className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700"
               aria-label="Editar empleado"
+              data-testid={`emp-action-edit-${row.original.id}`}
               // TODO Phase 7: open employee edit modal
               onClick={() => alert(`Editar: ${row.original.id}`)}
             >

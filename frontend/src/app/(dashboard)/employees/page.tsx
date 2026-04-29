@@ -84,7 +84,10 @@ export default function EmployeesPage() {
           )}
           {/* D-14: "Nuevo Empleado" visible only to Admin */}
           {role === 'admin' && (
-            <button className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+            <button
+              data-testid="new-employee-button"
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
+            >
               Nuevo Empleado
             </button>
           )}

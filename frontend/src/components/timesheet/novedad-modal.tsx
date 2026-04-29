@@ -80,7 +80,7 @@ export function NovedadModal({ open, record, onClose }: NovedadModalProps) {
         if (!o) handleClose()
       }}
     >
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" data-testid="novedad-modal">
         <DialogHeader>
           <DialogTitle>Registrar Novedad</DialogTitle>
         </DialogHeader>
@@ -178,6 +178,7 @@ export function NovedadModal({ open, record, onClose }: NovedadModalProps) {
             </Label>
             <textarea
               id="justification"
+              data-testid="novedad-justification"
               {...register('justification')}
               rows={3}
               className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm resize-none"
@@ -206,6 +207,7 @@ export function NovedadModal({ open, record, onClose }: NovedadModalProps) {
                 <input
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png"
+                  data-testid="novedad-evidence"
                   onChange={(e) =>
                     field.onChange(e.target.files?.[0] ?? undefined)
                   }
@@ -226,6 +228,7 @@ export function NovedadModal({ open, record, onClose }: NovedadModalProps) {
             </Button>
             <Button
               type="submit"
+              data-testid="novedad-submit"
               disabled={isSubmitting || mutation.isPending}
             >
               {mutation.isPending ? 'Registrando…' : 'Registrar Novedad'}

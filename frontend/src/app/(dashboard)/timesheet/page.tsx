@@ -55,6 +55,7 @@ export default function TimesheetPage() {
           <WeekNavigator currentDate={currentDate} onChange={setCurrentDate} />
           {role === 'admin' && (
             <button
+              data-testid="open-novedad-modal"
               onClick={() => {
                 setSelectedRecord(null)
                 setModalOpen(true)

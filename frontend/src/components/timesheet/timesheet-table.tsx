@@ -117,6 +117,7 @@ export function TimesheetTable({
             header: '',
             cell: ({ row }: { row: { original: DailyRecord } }) => (
               <button
+                data-testid="open-novedad-modal"
                 onClick={() => onEditClick(row.original)}
                 className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700"
                 aria-label="Registrar novedad"

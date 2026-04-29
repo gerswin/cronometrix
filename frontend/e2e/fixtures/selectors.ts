@@ -48,6 +48,21 @@ export const SEL = {
   editTimesheetBtn: 'edit-timesheet-btn',
   timesheetPeriodPicker: 'timesheet-period-picker',
 
+  // Novedad modal (Plan 09-09)
+  openNovedadModal: 'open-novedad-modal',
+  novedadModal: 'novedad-modal',
+  novedadJustification: 'novedad-justification',
+  novedadEvidence: 'novedad-evidence',
+  novedadSubmit: 'novedad-submit',
+
+  // Employee CRUD (Plan 09-09)
+  newEmpButton: 'new-employee-button',
+  newEmpForm: 'new-employee-form',
+  newEmpSubmit: 'new-employee-submit',
+  empActions: (id: string) => `emp-actions-${id}`,
+  empActionEdit: (id: string) => `emp-action-edit-${id}`,
+  empActionDeactivate: (id: string) => `emp-action-deactivate-${id}`,
+
   // Reports page
   reportsPage: 'reports-page',
   exportExcelBtn: 'export-excel-btn',
