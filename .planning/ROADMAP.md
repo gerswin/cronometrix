@@ -178,10 +178,22 @@ Plans:
 
 ### Phase 9: E2E Playwright test suite — login, dashboard, marcaciones, empleados, dispositivos, reportes; auth fixtures; CI integration; covers src/app/ (excluded from Vitest per D-10)
 
-**Goal:** [To be planned]
-**Requirements**: TBD
+**Goal:** Hard-fail E2E gate: ~50+ Playwright tests cover login + dashboard + 4 CRUD routes (marcaciones/empleados/dispositivos/reportes) + audit screen + RBAC cross-cut, running against the real Rust backend (ephemeral SQLite, mock Hikvision device, license bypass gated by CRONOMETRIX_E2E=true with abort-on-misconfiguration safety) on every PR; Phase 8 coverage gates remain untouched (additive phase).
+**Requirements**: E2E-TOOLING, E2E-FIXTURES, E2E-BACKEND, E2E-MOCK, E2E-LICENSE-BYPASS, E2E-TABLE-RESET, E2E-AUDIT-API, E2E-AUDIT-UI, E2E-LOGIN, E2E-DASHBOARD, E2E-CRUD-TS, E2E-CRUD-EMP, E2E-CRUD-DEV, E2E-CRUD-REP, E2E-AUDIT-SCREEN, E2E-RBAC, E2E-TZ-FREEZE, E2E-CI, E2E-DOCS, E2E-CHROMIUM-ONLY, E2E-SELECTORS
 **Depends on:** Phase 8
-**Plans:** 0 plans
+**Plans:** 13 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 9 to break down)
+- [ ] 09-01-PLAN.md — Playwright tooling install + playwright.config.ts skeleton (webServer × 3) + Makefile e2e targets + .gitignore exclusions
+- [ ] 09-02-PLAN.md — License-bypass safety (TDD): evaluate_bypass pure fn + main.rs wiring + integration test asserting exit code 2 (D-13)
+- [ ] 09-03-PLAN.md — Backend infrastructure: Cargo features (seed-e2e, mock-hikvision) + seed_e2e binary + mock_hikvision binary + __test_reset gated route + integration test
+- [ ] 09-04-PLAN.md — Audit endpoint (TDD): GET /api/v1/audit paginated read + RBAC + filters; 10 integration tests (Addendum D-04)
+- [ ] 09-05-PLAN.md — Audit UI: replace placeholder with TanStack Table + DiffCell + Filters + data-testids (Addendum D-04)
+- [ ] 09-06-PLAN.md — Setup project + shared fixtures + storageState generation + globalTeardown (Wave 0 enabler for all specs)
+- [ ] 09-07-PLAN.md — login.spec.ts: 8+ tests UAT depth, English copy per Addendum D-19
+- [ ] 09-08-PLAN.md — dashboard.spec.ts: 6+ tests; KPI/donut/ring buffer/photo/SSE; data-testids on dashboard components
+- [ ] 09-09-PLAN.md — timesheet.spec.ts + employees.spec.ts: 14+ tests; CRUD + audit assertions per mutation
+- [ ] 09-10-PLAN.md — devices.spec.ts + reports.spec.ts: 14+ tests; ISAPI dispatch via mock; XLSX + PDF content verification
+- [ ] 09-11-PLAN.md — audit.spec.ts + rbac.spec.ts: 10+ tests; D-04 audit screen + cross-cut RBAC negative paths
+- [ ] 09-12-PLAN.md — CI gate: new 'E2E Tests' job in .github/workflows/ci.yml; pinned actions; artifact uploads always
+- [ ] 09-13-PLAN.md — CLAUDE.md docs: '## End-to-End Tests (Phase 9)' section + test-only env flag warnings + Manual Follow-up checklist
