@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 09-05-PLAN.md — audit UI page: DiffCell + AuditTable + AuditFilters + 33 Vitest tests; replaces Próximamente placeholder"
-last_updated: "2026-04-29T03:44:01.195Z"
+stopped_at: Completed 09-06-PLAN.md — setup project (00-build-and-seed + 01-authenticate), shared fixtures (api/selectors/time), Hikvision XMLs, globalTeardown
+last_updated: "2026-04-29T03:49:52.189Z"
 last_activity: 2026-04-29
 progress:
   total_phases: 9
   completed_phases: 8
   total_plans: 46
-  completed_plans: 38
-  percent: 83
+  completed_plans: 39
+  percent: 85
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 09 (e2e-playwright-test-suite) — EXECUTING
-Plan: 6 of 13
+Plan: 7 of 13
 Status: Ready to execute
 Last activity: 2026-04-29
 
-Progress: [████████░░] 83%
+Progress: [█████████░] 85%
 
 ## Performance Metrics
 
@@ -77,6 +77,7 @@ Progress: [████████░░] 83%
 | Phase 09 P03 | 17 | 4 tasks | 8 files |
 | Phase 09 P04 | 39 | 3 tasks | 7 files |
 | Phase 09 P05 | 7 | 3 tasks | 7 files |
+| Phase 09 P06 | 3 | 4 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -162,6 +163,9 @@ Recent decisions affecting current work:
 - D-09-04-B: old_data/new_data TEXT columns parsed to Option<serde_json::Value> in service layer; parse failure returns None (defensive, never errors)
 - D-09-04-C: ORDER BY created_at DESC, id DESC — deterministic tie-break prevents non-deterministic pagination with same-second rows
 - W6 actor dropdown OPTION A: derive distinct actor IDs from current page data — /audit/actors endpoint deferred; Plan 11 must use actor_id values in selectOption()
+- storageState path uses path.resolve(__dirname) — avoids cwd-relative path bugs in setup project
+- 00-build-and-seed uses fs.existsSync pre-built binary check — fails fast on cargo build errors instead of swallowing them in try/catch
+- globalTeardown removes .db-wal and .db-shm sidecar files — libSQL WAL mode creates these alongside the main DB file
 
 ### Pending Todos
 
@@ -181,8 +185,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-29T03:44:01.192Z
-Stopped at: Completed 09-05-PLAN.md — audit UI page: DiffCell + AuditTable + AuditFilters + 33 Vitest tests; replaces Próximamente placeholder
+Last session: 2026-04-29T03:49:47.049Z
+Stopped at: Completed 09-06-PLAN.md — setup project (00-build-and-seed + 01-authenticate), shared fixtures (api/selectors/time), Hikvision XMLs, globalTeardown
 Resume file: None
 
 **Planned Phase:** 9 (E2E Playwright test suite) — 13 plans — 2026-04-29T01:09:39.584Z
