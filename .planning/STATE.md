@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 09-03-PLAN.md — seed_e2e + mock_hikvision + __test_reset locked
-last_updated: "2026-04-29T02:52:07.173Z"
+stopped_at: Completed 09-04-PLAN.md — read-only /api/v1/audit endpoint with RBAC, filters, pagination
+last_updated: "2026-04-29T03:33:23.797Z"
 last_activity: 2026-04-29
 progress:
   total_phases: 9
   completed_phases: 8
   total_plans: 46
-  completed_plans: 36
-  percent: 78
+  completed_plans: 37
+  percent: 80
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 09 (e2e-playwright-test-suite) — EXECUTING
-Plan: 4 of 13
+Plan: 5 of 13
 Status: Ready to execute
 Last activity: 2026-04-29
 
-Progress: [████████░░] 78%
+Progress: [████████░░] 80%
 
 ## Performance Metrics
 
@@ -75,6 +75,7 @@ Progress: [████████░░] 78%
 | Phase 09 P01 | 4 | 2 tasks | 6 files |
 | Phase 09 P02 | 51 | 3 tasks | 3 files |
 | Phase 09 P03 | 17 | 4 tasks | 8 files |
+| Phase 09 P04 | 39 | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -156,6 +157,9 @@ Recent decisions affecting current work:
 - D-09-03-A: Tuple params (not libsql::params![]) for inserts mixing &str and owned String — params! silently returns rows_affected=0 in that case
 - D-09-03-B: Device ports 4400/4401 to satisfy idx_devices_ip_port_active unique index; exit device contacts mock admin port
 - D-09-03-C: CARGO_BIN_EXE_cronometrix (not cronometrix-api) — explicit [[bin]] changes the env var name from package name to declared binary name
+- D-09-04-A: Audit endpoint registered exclusively in supervisor_read_routes — Admin+Supervisor 200, Viewer 403, Anonymous 401; locked by 2 integration tests
+- D-09-04-B: old_data/new_data TEXT columns parsed to Option<serde_json::Value> in service layer; parse failure returns None (defensive, never errors)
+- D-09-04-C: ORDER BY created_at DESC, id DESC — deterministic tie-break prevents non-deterministic pagination with same-second rows
 
 ### Pending Todos
 
@@ -175,8 +179,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-29T02:52:07.170Z
-Stopped at: Completed 09-03-PLAN.md — seed_e2e + mock_hikvision + __test_reset locked
+Last session: 2026-04-29T03:33:23.793Z
+Stopped at: Completed 09-04-PLAN.md — read-only /api/v1/audit endpoint with RBAC, filters, pagination
 Resume file: None
 
 **Planned Phase:** 9 (E2E Playwright test suite) — 13 plans — 2026-04-29T01:09:39.584Z
