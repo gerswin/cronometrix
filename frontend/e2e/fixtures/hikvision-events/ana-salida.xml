@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EventNotificationAlert>
+  <ipAddress>127.0.0.1</ipAddress>
+  <portNo>4400</portNo>
+  <protocolType>HTTP</protocolType>
+  <macAddress>00:11:22:33:44:55</macAddress>
+  <channelID>1</channelID>
+  <dateTime>2026-04-15T17:05:00-04:00</dateTime>
+  <activePostCount>1</activePostCount>
+  <eventType>AccessControllerEvent</eventType>
+  <eventState>active</eventState>
+  <eventDescription>Access Controller Event</eventDescription>
+  <AccessControllerEvent>
+    <subEventType>75</subEventType>
+    <employeeNoString>EMP001</employeeNoString>
+    <name>Ana Pérez</name>
+  </AccessControllerEvent>
+</EventNotificationAlert>
