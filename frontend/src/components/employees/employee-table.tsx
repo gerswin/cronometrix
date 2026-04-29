@@ -4,7 +4,7 @@ import {
   type ColumnDef, type PaginationState,
 } from '@tanstack/react-table'
 import { format } from 'date-fns'
-import { Pencil, ChevronRight, UserPlus } from 'lucide-react'
+import { Pencil, ChevronRight, UserPlus, UserX } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import type { Employee } from '@/types/api'
 
@@ -28,11 +28,21 @@ interface EmployeeTableProps {
   pagination: PaginationState
   onPaginationChange: (p: PaginationState) => void
   onEnrollClick?: (employee: Employee) => void
+  onEditClick?: (employee: Employee) => void
+  onDeactivateClick?: (employee: Employee) => void
 }
 
 const PAGE_SIZE = 10
 
-export function EmployeeTable({ data, total, pagination, onPaginationChange, onEnrollClick }: EmployeeTableProps) {
+export function EmployeeTable({
+  data,
+  total,
+  pagination,
+  onPaginationChange,
+  onEnrollClick,
+  onEditClick,
+  onDeactivateClick,
+}: EmployeeTableProps) {
   const { role } = useAuth()
 
   const columns: ColumnDef<Employee>[] = [
@@ -66,10 +76,19 @@ export function EmployeeTable({ data, total, pagination, onPaginationChange, onE
               className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700"
               aria-label="Editar empleado"
               data-testid={`emp-action-edit-${row.original.id}`}
-              // TODO Phase 7: open employee edit modal
-              onClick={() => alert(`Editar: ${row.original.id}`)}
+              onClick={() => onEditClick ? onEditClick(row.original) : alert(`Editar: ${row.original.id}`)}
             >
               <Pencil size={14} />
+            </button>
+          )}
+          {role === 'admin' && row.original.status === 'active' && onDeactivateClick && (
+            <button
+              className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-red-600"
+              aria-label="Desactivar empleado"
+              data-testid={`emp-action-deactivate-${row.original.id}`}
+              onClick={() => onDeactivateClick(row.original)}
+            >
+              <UserX size={14} />
             </button>
           )}
           {role === 'admin' && onEnrollClick && (

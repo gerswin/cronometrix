@@ -40,8 +40,9 @@ export interface Employee {
   department_id: string
   department_name?: string
   position: string
-  hire_date: string
+  hire_date: string | null
   status: 'active' | 'inactive' | 'pending'
+  version: number
   created_at: string
   updated_at: string
 }
