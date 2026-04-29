@@ -23,3 +23,8 @@ node_modules/
 
 # Generated design exports
 images/
+
+# Phase 9: Playwright E2E artifacts (regenerated per run; never commit)
+frontend/e2e/.auth/
+frontend/playwright-report/
+frontend/test-results/
