@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 09-11-PLAN.md — audit.spec.ts (5 tests, 0 waitForTimeout) + rbac.spec.ts (11 tests, 6 HTTP 403 assertions, reconciled against main.rs); 72 total tests across all 8 specs
-last_updated: "2026-04-29T04:36:17.401Z"
+stopped_at: Completed 09-12-PLAN.md — E2E Tests job added to ci.yml; 1 task, 1 file; all 3 job names verified; pinned-action whitelist enforced (T-08-15); branch protection documented as Manual Follow-up
+last_updated: "2026-04-29T04:38:58.713Z"
 last_activity: 2026-04-29
 progress:
   total_phases: 9
   completed_phases: 8
   total_plans: 46
-  completed_plans: 44
-  percent: 96
+  completed_plans: 45
+  percent: 98
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 09 (e2e-playwright-test-suite) — EXECUTING
-Plan: 12 of 13
+Plan: 13 of 13
 Status: Ready to execute
 Last activity: 2026-04-29
 
-Progress: [██████████] 96%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -83,6 +83,7 @@ Progress: [██████████] 96%
 | Phase 09 P09 | 11 | 3 tasks | 13 files |
 | Phase 09 P10 | 9 | 3 tasks | 5 files |
 | Phase 09 P11 | 4 | 2 tasks | 2 files |
+| Phase 09 P12 | 1 | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -183,6 +184,7 @@ Recent decisions affecting current work:
 - ExportButtons conditionally rendered in reports/page.tsx: only shown when reportQ.data exists; UI tests must click Emitir Reporte before asserting export buttons
 - W4 RBAC reconciliation: POST /devices/{id}/commands and POST /leaves are admin_routes (admin only), not supervisor_routes — supervisor gets 403 on both; locked by rbac.spec.ts T-03/T-04/T-08
 - W6 OPTION A confirmed: audit actor dropdown uses actor_id string as option value; selectOption('e2e-admin-id') is correct; no /audit/actors endpoint needed
+- E2E Tests CI job: Rust toolchain via inline rustup shell step (no third-party action), TZ=America/Caracas at job+step level (W5), branch protection is Manual Follow-up (mirrors Phase 8 Plan 05 pattern)
 
 ### Pending Todos
 
@@ -202,8 +204,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-29T04:36:17.397Z
-Stopped at: Completed 09-11-PLAN.md — audit.spec.ts (5 tests, 0 waitForTimeout) + rbac.spec.ts (11 tests, 6 HTTP 403 assertions, reconciled against main.rs); 72 total tests across all 8 specs
+Last session: 2026-04-29T04:38:58.708Z
+Stopped at: Completed 09-12-PLAN.md — E2E Tests job added to ci.yml; 1 task, 1 file; all 3 job names verified; pinned-action whitelist enforced (T-08-15); branch protection documented as Manual Follow-up
 Resume file: None
 
 **Planned Phase:** 9 (E2E Playwright test suite) — 13 plans — 2026-04-29T01:09:39.584Z
