@@ -16,6 +16,18 @@ pub struct AuditEntry {
     pub created_at: i64,                 // epoch seconds
 }
 
+/// A distinct actor that appears in the audit_log, joined with users for display.
+///
+/// LEFT JOIN preserves rows where actor_id is NULL (system triggers) or references
+/// a deleted user (LEFT JOIN miss). All fields are Option<String> for that reason.
+/// This struct is response-only — no Deserialize needed.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditActor {
+    pub actor_id: Option<String>, // NULL when audit_log.actor_id IS NULL
+    pub username: Option<String>, // NULL when user was deleted (LEFT JOIN miss)
+    pub role: Option<String>,     // NULL same
+}
+
 /// Query parameters for `GET /api/v1/audit`.
 /// All fields are optional — omitting a filter returns all rows.
 #[derive(Debug, Deserialize)]

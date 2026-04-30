@@ -12,7 +12,7 @@ use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
 
-use super::models::{AuditEntry, AuditListQuery};
+use super::models::{AuditActor, AuditEntry, AuditListQuery};
 use super::service;
 
 /// `GET /api/v1/audit` — read paginated audit_log entries.
@@ -28,5 +28,21 @@ pub async fn list_audit(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
     let result = service::list_audit(&conn, query).await?;
+    Ok(Json(result))
+}
+
+/// `GET /api/v1/audit/actors` — distinct audit actors with username/role join.
+///
+/// RBAC: Admin + Supervisor (via require_supervisor_or_above middleware applied at the
+/// supervisor_read_routes group level). Viewer → 403. Anonymous → 401.
+/// No query params, no pagination — cardinality is bounded by user count.
+pub async fn list_actors(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AuditActor>>, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let result = service::list_actors(&conn).await?;
     Ok(Json(result))
 }

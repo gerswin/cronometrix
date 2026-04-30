@@ -445,6 +445,7 @@ async fn audit_json_data_fields_deserialize_to_objects() {
 // Test 10 — limit clamping (500 → 200, 0 → 1)
 // =============================================================================
 
+
 #[tokio::test]
 async fn audit_limit_clamped_to_200_and_1() {
     let db = common::test_db().await;
@@ -483,4 +484,118 @@ async fn audit_limit_clamped_to_200_and_1() {
         body2["limit"], 1,
         "limit=0 must be clamped to min 1"
     );
+}
+
+// =============================================================================
+// Helpers for /audit/actors tests
+// =============================================================================
+
+fn build_actors_test_app(state: AppState) -> Router {
+    let routes = Router::new()
+        .route("/audit/actors", get(audit::handlers::list_actors))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::rbac::require_supervisor_or_above,
+        ));
+    Router::new().nest("/api/v1", routes).with_state(state)
+}
+
+/// Insert a single user row directly into the DB for actors test seeding.
+/// Includes all NOT NULL columns: created_at and updated_at use a fixed epoch.
+async fn seed_user_row(db: &libsql::Database, id: &str, username: &str, role: &str) {
+    let conn = db.connect().expect("connect");
+    conn.execute(
+        &format!(
+            "INSERT INTO users (id, username, full_name, password_hash, role, status, created_at, updated_at) \
+             VALUES ('{}', '{}', '{} fullname', 'hash', '{}', 'active', {}, {})",
+            id, username, username, role, BASE_TS, BASE_TS
+        ),
+        (),
+    )
+    .await
+    .expect("seed user row");
+}
+
+// =============================================================================
+// Test 11 — audit_actors_returns_200_for_admin (happy path)
+// =============================================================================
+
+#[tokio::test]
+async fn audit_actors_returns_200_for_admin() {
+    let db = common::test_db().await;
+    seed_user_row(&db, "admin-user-1", "admin", "admin").await;
+    seed_audit_rows(&db, 1, Some("admin-user-1"), "employees", "INSERT", None, None, BASE_TS).await;
+    let (state, _tmp) = make_state(db);
+    let app = build_actors_test_app(state);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/audit/actors")
+        .header(header::AUTHORIZATION, format!("Bearer {}", admin_token()))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp.into_body()).await;
+    let arr = body.as_array().expect("response must be a JSON array");
+    // Filter to the non-null actor (audit triggers on users INSERT produce a NULL actor_id row)
+    let non_null: Vec<_> = arr
+        .iter()
+        .filter(|a| !a["actor_id"].is_null())
+        .collect();
+    assert_eq!(non_null.len(), 1, "must return exactly 1 non-null actor");
+    assert_eq!(non_null[0]["actor_id"], "admin-user-1");
+    assert_eq!(non_null[0]["username"], "admin");
+    assert_eq!(non_null[0]["role"], "admin");
+}
+
+// =============================================================================
+// Test 12 — audit_actors_viewer_returns_403 (RBAC gate)
+// =============================================================================
+
+#[tokio::test]
+async fn audit_actors_viewer_returns_403() {
+    let db = common::test_db().await;
+    let (state, _tmp) = make_state(db);
+    let app = build_actors_test_app(state);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/audit/actors")
+        .header(header::AUTHORIZATION, format!("Bearer {}", viewer_token()))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Viewer must be rejected by require_supervisor_or_above"
+    );
+}
+
+// =============================================================================
+// Test 13 — audit_actors_returns_empty_when_no_log
+// =============================================================================
+
+#[tokio::test]
+async fn audit_actors_returns_empty_when_no_log() {
+    let db = common::test_db().await;
+    // No audit_log rows seeded — result must be empty array
+    let (state, _tmp) = make_state(db);
+    let app = build_actors_test_app(state);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/audit/actors")
+        .header(header::AUTHORIZATION, format!("Bearer {}", admin_token()))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp.into_body()).await;
+    let arr = body.as_array().expect("response must be a JSON array");
+    assert_eq!(arr.len(), 0, "empty audit_log must return [] not null");
 }

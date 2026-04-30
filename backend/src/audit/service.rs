@@ -3,7 +3,7 @@ use libsql::Connection;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 
-use super::models::{AuditEntry, AuditListQuery};
+use super::models::{AuditActor, AuditEntry, AuditListQuery};
 
 /// List audit_log entries with optional filters and pagination.
 ///
@@ -138,4 +138,26 @@ pub async fn list_audit(
         limit,
         offset,
     })
+}
+
+/// List distinct actors that appear in audit_log, joined with users for username/role display.
+///
+/// LEFT JOIN preserves rows where actor_id is NULL (system triggers) or references a deleted
+/// user. No pagination — actor cardinality is bounded by the admin/supervisor user count.
+pub async fn list_actors(conn: &Connection) -> Result<Vec<AuditActor>, AppError> {
+    let sql = "SELECT DISTINCT al.actor_id, u.username, u.role \
+               FROM audit_log al LEFT JOIN users u ON al.actor_id = u.id";
+    let mut rows = conn
+        .query(sql, ())
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut data: Vec<AuditActor> = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+        data.push(AuditActor {
+            actor_id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+            username: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+            role: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
+        });
+    }
+    Ok(data)
 }

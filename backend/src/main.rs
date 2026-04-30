@@ -235,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
     let supervisor_read_routes = Router::new()
         .route("/anomalies", get(anomalies::handlers::list_anomalies))
         .route("/audit", get(audit::handlers::list_audit))   // NEW Plan 09-04
+        .route("/audit/actors", get(audit::handlers::list_actors))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
