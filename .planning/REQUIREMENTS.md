@@ -224,6 +224,14 @@ These meta-requirements track the test-infrastructure and quality-gate investmen
 | QUALITY-GATE | Phase 8 | Complete |
 | E2E-TOOLING..E2E-SELECTORS (21 IDs) | Phase 9 | Complete |
 
+## v1.1 Backlog
+
+These items were explicitly deferred from v1.0 with documented design rationale. They are not bugs; they are scope boundaries we accepted to ship v1.0. v1.1 planning will revisit each item with up-to-date trade-off analysis.
+
+| ID | Description | Notes |
+|----|-------------|-------|
+| DEPL-03-AUTO | Installer auto-registers a Cloudflare tunnel by calling the Cloudflare API with a CF API token (not just a tunnel TOKEN), creating the tunnel + DNS route + cloudflared service config in one step. | v1.1 should evaluate whether `cloudflared tunnel create` CLI invocation suffices vs full Go SDK call. Source: deferred from Phase 6 D-13 (token-based connector flow accepted as v1 ship); cross-referenced from `.planning/phases/06-licensing-deployment/06-VERIFICATION.md` deferred-items table row 1. |
+
 **Coverage:**
 - v1 requirements: 48 total
 - Mapped to phases: 48

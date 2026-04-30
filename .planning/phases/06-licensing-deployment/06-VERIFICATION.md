@@ -26,7 +26,7 @@ human_verification:
 gaps: []
 deferred:
   - truth: "Auto-registers a Cloudflare tunnel via the Cloudflare API on installer run (DEPL-03 strict reading)"
-    addressed_in: "Phase 7 / future v2 release"
+    addressed_in: "v1.1 Backlog — DEPL-03-AUTO (see REQUIREMENTS.md §v1.1 Backlog)"
     evidence: "Operator README + install.sh both prompt for a pre-existing tunnel TOKEN sourced from CF Zero Trust dashboard. The compose file consumes the token and runs `tunnel run` against an already-registered tunnel. No CF API call is made by the installer to create a new tunnel. This is a documented design choice (D-13) accepted in 06-CONTEXT.md and called out in 06-03-SUMMARY: 'cloudflared service uses TUNNEL_TOKEN env var with required-marker syntax'. Strict 'auto-register' interpretation of DEPL-03 is deferred; current implementation provides the deployment-time mechanism for a tunnel-bound `{slug}.cronometrix.com` route via operator-driven CF Zero Trust setup. Reclassified by REVIEW as accepted because the architecture flows the slug into .env for future automation."
 ---
 
@@ -56,7 +56,7 @@ deferred:
 
 | # | Item | Addressed In | Evidence |
 |---|------|-------------|----------|
-| 1 | Auto-registers a Cloudflare tunnel via CF API (strict reading of DEPL-03) | Phase 7 / future v2 release | Current architecture: token-based connector to a pre-registered CF Zero Trust tunnel. Slug flows to .env (`CLIENT_SLUG=${CLIENT_SLUG}`) for future automation but no `cloudflare/cloudflare-go` API call exists. Documented as design choice D-13 in 06-CONTEXT.md and 06-03-SUMMARY. |
+| 1 | Auto-registers a Cloudflare tunnel via CF API (strict reading of DEPL-03) | v1.1 Backlog — DEPL-03-AUTO (see REQUIREMENTS.md §v1.1 Backlog) | Current architecture: token-based connector to a pre-registered CF Zero Trust tunnel. Slug flows to .env (`CLIENT_SLUG=${CLIENT_SLUG}`) for future automation but no `cloudflare/cloudflare-go` API call exists. Documented as design choice D-13 in 06-CONTEXT.md and 06-03-SUMMARY. |
 
 ### Required Artifacts
 
