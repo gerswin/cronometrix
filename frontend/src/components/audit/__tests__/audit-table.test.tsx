@@ -393,4 +393,26 @@ describe('AuditFilters', () => {
     const call = onChange.mock.calls[0][0]
     expect(call.record_id).toBeUndefined()
   })
+
+  it('renders actors with username (role) display format', () => {
+    const enrichedActors = [
+      { id: 'user-1', username: 'admin (admin)' },
+      { id: 'user-2', username: 'jsmith (supervisor)' },
+    ]
+    render(
+      <AuditFilters
+        value={{}}
+        onChange={() => {}}
+        actors={enrichedActors}
+        tables={[]}
+      />
+    )
+    expect(screen.getByText('admin (admin)')).toBeTruthy()
+    expect(screen.getByText('jsmith (supervisor)')).toBeTruthy()
+    const select = document.querySelector(
+      '[data-testid="audit-filter-actor"]'
+    ) as HTMLSelectElement
+    const opt = Array.from(select.options).find(o => o.value === 'user-1')
+    expect(opt?.text).toBe('admin (admin)')
+  })
 })

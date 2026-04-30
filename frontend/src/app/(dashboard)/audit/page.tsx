@@ -14,15 +14,10 @@ import type { PaginationState } from '@tanstack/react-table'
 const PAGE_SIZE = 20
 
 /**
- * W6 actor dropdown — OPTION A implementation:
- * Actor IDs are derived from the distinct actor_id values in the current page data.
- * Reason: Plan 09-04 explicitly deferred GET /audit/actors to this plan or later.
- * The actors dropdown is populated from the currently-visible audit entries so that
- * Plan 11 (audit.spec.ts) can still use selectOption('e2e-admin-id') — the actor_id
- * value appears in the loaded rows.
- *
- * Note: actor_id in audit_log is users.id, NOT employees.id. This is correctly typed
- * in AuditEntry.actor_id: string | null.
+ * W6 actor dropdown — OPTION B implementation (Plan 10-04):
+ * Replaces the OPTION A "raw actor_id from current page data" workaround.
+ * Actor names are fetched from GET /audit/actors with username+role join.
+ * value={a.id} stays as actor_id so audit.spec.ts T-03 selectOption('e2e-admin-id') is unaffected.
  */
 
 /**
@@ -69,23 +64,31 @@ export default function AuditPage() {
     enabled: role === 'admin' || role === 'supervisor',
   })
 
+  const { data: actorsData } = useQuery<
+    Array<{ actor_id: string | null; username: string | null; role: string | null }>
+  >({
+    queryKey: ['audit-actors'],
+    queryFn: () => api.get('/audit/actors').then(r => r.data),
+    staleTime: 5 * 60 * 1000,
+    enabled: role === 'admin' || role === 'supervisor',
+  })
+
   /**
-   * OPTION A: Derive distinct actor options from the current page's data.
-   * actor_id is users.id (not employees.id — they are different tables).
-   * The username is the actor_id itself (we don't have a username join from
-   * this endpoint). Plan 11 audit.spec.ts selects by actor_id value, e.g.
-   * selectOption('e2e-admin-id') — this works because <option value=actor_id>.
+   * OPTION B (Plan 10-04): Derive actors from /audit/actors endpoint with username+role join.
+   * Replaces the OPTION A "raw actor_id from current page data" workaround that 09-05 deferred.
+   * value={a.id} stays as actor_id (E2E spec selectOption('e2e-admin-id') unaffected).
+   * Display text becomes "{username} ({role})", falling back to actor_id when LEFT JOIN missed
+   * (e.g., user was deleted).
    */
   const actors = useMemo(() => {
-    if (!data?.data) return []
-    const seen = new Map<string, string>()
-    for (const entry of data.data) {
-      if (entry.actor_id && !seen.has(entry.actor_id)) {
-        seen.set(entry.actor_id, entry.actor_id)
-      }
-    }
-    return Array.from(seen.entries()).map(([id, username]) => ({ id, username }))
-  }, [data?.data])
+    if (!actorsData) return []
+    return actorsData
+      .filter(a => a.actor_id != null)
+      .map(a => ({
+        id: a.actor_id!,
+        username: a.username ? `${a.username} (${a.role})` : a.actor_id!,
+      }))
+  }, [actorsData])
 
   // T-09-03: Frontend role gate (defense in depth).
   // Backend /api/v1/audit rejects Viewer with 403 — authoritative.
