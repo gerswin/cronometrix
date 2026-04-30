@@ -1,0 +1,5 @@
+# HTML reports committed under .planning/phases/11-*/evidence/ are downloaded
+# CI artifacts (Playwright + cargo-llvm-cov + Vitest reports). Mark them as
+# linguist-generated so GitHub web UI excludes them from per-language stats
+# (per Phase 11 D-04).
+*.html linguist-generated=true
