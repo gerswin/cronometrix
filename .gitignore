@@ -28,3 +28,10 @@ images/
 frontend/e2e/.auth/
 frontend/playwright-report/
 frontend/test-results/
+
+# Backend runtime artifacts (local SQLite, libSQL replica WAL, llvm-cov profraw, dev data)
+backend/data/
+backend/cronometrix.db
+backend/cronometrix.db-*
+backend/*.profraw
+backend/default_*.profraw

@@ -1023,34 +1023,45 @@ Phase 8 is a tooling/CI phase. The only security-relevant surface is supply chai
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> All six questions below were resolved by the locked CONTEXT.md decisions and
+> the current plan set (Plans 01-06). Each question carries a **RESOLVED:** line
+> naming the chosen path and the plan that implements it. Kept in this file for
+> historical traceability — no further planning input required.
 
 1. **Path A (nightly) vs Path B (regions substitute) for backend branch coverage?**
+   - **RESOLVED:** Path A — pin nightly to a specific date via repo-root `rust-toolchain.toml`. Plan 03 Task 1 creates the file with `channel = "nightly-2026-04-01"` + `llvm-tools-preview`. Plan 05 CI mirrors this by `rustup toolchain install nightly --component llvm-tools-preview` (rustup honors the pin automatically).
    - What we know: cargo-llvm-cov 0.8.5 + rustc 1.93.0 stable cannot do `--branch`.
    - What's unclear: the project's appetite for a CI nightly-toolchain dependency vs accepting a weaker (region-based) branch proxy.
    - Recommendation: Path A. Pin nightly to a fixed date in the workflow. Document in CLAUDE.md.
 
 2. **Should `enrollments_root`'s env var be renamed to `CRONOMETRIX_ENROLLMENTS_ROOT` for consistency?**
+   - **RESOLVED:** Keep as `ENROLLMENTS_DIR` (NO rename). Plan 01 Task 1 preserves the env var name verbatim per D-21 (production backwards compatibility). Naming consistency is captured in CONTEXT § Deferred Ideas as a future cleanup, not in scope for Phase 8.
    - What we know: today it's `ENROLLMENTS_DIR` (different convention from `CRONOMETRIX_LEAVES_ROOT` / `CRONOMETRIX_EVENTS_ROOT`).
    - What's unclear: whether prod deployments reference `ENROLLMENTS_DIR` and need backwards compat.
    - Recommendation: Defer. The phase fixes the cwd-bug, doesn't normalize naming. Capture as a deferred improvement.
 
 3. **Should `captures_tmp_root` be injected or stay hardcoded?**
+   - **RESOLVED:** Inject. Plan 01 Task 1 includes `captures_tmp_root: PathBuf` in the `Paths` substruct, populated from new env var `CRONOMETRIX_CAPTURES_TMP` (default `/tmp/enrollments-captures` — preserves existing on-disk behavior). Plan 01 Task 2 Step 4 rewrites both call sites in `backend/src/enrollments/handlers.rs` (line 266 and line 381) plus the consumer in `enrollments/service.rs:265` to read from `state.paths.captures_tmp_root` / `state.paths.enrollments_root`.
    - What we know: it's `/tmp/enrollments-captures` today, no env override.
    - What's unclear: whether parallel CI runs might collide on `/tmp`.
    - Recommendation: Inject for symmetry. Tests can pass `tmp.path().join("captures-tmp")`.
 
 4. **Does the planner need to create tests on the spot, or measure coverage first?**
+   - **RESOLVED:** Measure first. Plan 03 Task 2 Step 3 produces `.planning/phases/08-.../08-03-COVERAGE-BASELINE.md` (a working artifact enumerating every file below 70/60 with current %). Plan 04 reads that baseline as authoritative input — Plan 04 does NOT speculate which tests to add. The wave structure (03 → 04) enforces the sequence.
    - What we know: D-12 says planner "identifies coverage delta and proposes targeted tests."
    - What's unclear: whether the plan should commit to specific test additions before running cargo-llvm-cov for real numbers.
    - Recommendation: Sequence as: (1) AppState fix, (2) first coverage measurement, (3) gap identification from real HTML, (4) test additions, (5) gate enablement. Don't lock test list at planning time — measure first.
 
 5. **Per-file `100` shortcut for trivial files like `lib.rs` (re-exports only)?**
+   - **RESOLVED:** Skip the shortcut. Plan 03 Task 1 sets only project-wide + glob-based per-file thresholds in `frontend/vitest.config.ts`; no per-file `{ 100: true }` overrides. Rust `mod.rs` files with no executable code register as 100% naturally under cargo-llvm-cov, so no override is needed.
    - What we know: Vitest supports `'**/lib.rs': { 100: true }`-style overrides.
    - What's unclear: whether re-export-only files in this repo (e.g. `mod.rs` files) should hit 100% or be excluded.
    - Recommendation: Skip the shortcut; `mod.rs` files in Rust have no executable code so cargo-llvm-cov gives them 100% naturally.
 
 6. **CI failure attribution: which failed first, project-wide or per-file?**
+   - **RESOLVED:** Two sequential steps. Plan 05's CI workflow keeps `cargo llvm-cov --fail-under-lines 90` and `bash ../scripts/enforce-coverage-floor.sh lcov.info 85 70 60` as separate steps. The first failure short-circuits the job; the post-processor's `FAIL: <file> ...` output makes attribution obvious without combining the gates.
    - What we know: with two enforcement steps, the first failure short-circuits.
    - What's unclear: dev experience — is one combined report better than two sequential failures?
    - Recommendation: Two steps as shown. The post-process script's per-file FAIL output makes the source of failure obvious. Combining gives no UX win.
