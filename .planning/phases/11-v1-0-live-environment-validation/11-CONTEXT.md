@@ -31,22 +31,23 @@ Mostly evidence-gathering and process work — minimal new code, no new features
   - **Command run / action:** `{exact command or UI step}`
   - **Expected:** {what should happen}
   - **Actual:** {what did happen}
-  - **Verdict:** PASS | FAIL
+  - **Verdict:** PASS | FAIL | DEFERRED
   - **Artifacts:** [list of files in this dir]
   - **External refs (if any):** {GH Actions run URL, PR number}
   ```
+  Note: A `DEFERRED` verdict is reserved for items intentionally not run in this phase (e.g. LIC-05 cross-host, real Hikvision live test) and MUST be accompanied by a risk-acceptance README per D-13.
 - **D-03:** Repo bloat acknowledged. Playwright HTML reports can be 5–20 MB each; total Phase 11 evidence dir size budget = **150 MB** (decision-record cost we accept for offline-auditable proof). If a single item's HTML report exceeds 50 MB, compress with `tar.gz` before committing rather than referencing externally.
 - **D-04:** No `.gitignore` exclusion for `evidence/` — the whole directory is intentionally tracked. Add to `.gitattributes` with `*.html linguist-generated=true` so GitHub web UI doesn't pollute language stats with HTML report blobs.
 - **D-05:** Evidence README links to artifact files using relative paths (e.g., `[Playwright HTML report](./playwright-report.tar.gz)`) so the docs work both on disk and on GitHub web UI.
 
 ### LIC-05 cross-host clone-rejection test
 - **D-06:** Defer LIC-05 cross-host clone test to first production install. Phase 11 evidence for LIC-05 captures: (a) the abort-mismatch code path is exercised by existing unit/integration tests in `backend/tests/license_*` (in-process synthetic mismatch), and (b) a documented risk-acceptance note that real-hardware verification will happen at first paying-customer deploy.
-- **D-07:** Phase 11 evidence directory MUST include `evidence/05-lic-05-deferral/README.md` capturing the deferral rationale + risk acknowledgement (highest risk of all deferrals: a license-binding failure at customer deploy is highly visible). Include the exact pre-flight checklist a deploy engineer should run on first install: spawn install on machine A → activate → snapshot fingerprint → relocate license JWT to machine B → confirm activation rejected.
+- **D-07:** Phase 11 evidence directory MUST include `evidence/06-lic-05-deferral/README.md` capturing the deferral rationale + risk acknowledgement (highest risk of all deferrals: a license-binding failure at customer deploy is highly visible). Include the exact pre-flight checklist a deploy engineer should run on first install: spawn install on machine A → activate → snapshot fingerprint → relocate license JWT to machine B → confirm activation rejected.
 - **D-08:** Update `06-VERIFICATION.md` deferred-items table to cross-reference this Phase 11 evidence file as the authoritative deferral record (keeps audit traceability).
 - **D-09:** Add `LIC-05-CROSS-HOST` to the `## v1.1 Backlog` section in REQUIREMENTS.md (alongside DEPL-03-AUTO from Phase 10's traceability refresh) with the entry: "Real-hardware cross-host clone test on 2 distinct machines or 2 cloud VMs. Currently deferred to first production deployment evidence."
 
 ### Real Hikvision live test
-- **D-10:** Out of Phase 11 scope. The integration is sufficiently exercised by `mock_hikvision.rs` (Phase 9) for digest-auth + alertStream protocol. Real-hardware test happens at first install where real device is connected — same risk-accept pattern as D-06. Note in `evidence/06-hikvision-deferral/README.md` (or fold into D-07's risk doc).
+- **D-10:** Out of Phase 11 scope. The integration is sufficiently exercised by `mock_hikvision.rs` (Phase 9) for digest-auth + alertStream protocol. Real-hardware test happens at first install where real device is connected — same risk-accept pattern as D-06. Note in `evidence/07-hikvision-deferral/README.md` (or fold into D-07's risk doc).
 
 ### Sequencing & completion criteria
 - **D-11:** Block-until-complete execution. Phase 11 does NOT start until prerequisites are confirmed in one place:
@@ -61,7 +62,7 @@ Mostly evidence-gathering and process work — minimal new code, no new features
 
 ### Cross-cutting: change minimization
 - **D-15:** Phase 11 SHOULD NOT modify `backend/`, `frontend/`, or `.github/workflows/` source code unless an evidence run reveals a regression. The expected production code change is **zero**. The expected planning/docs change is small (the evidence dir, plus a STATE/ROADMAP closeout commit).
-- **D-16:** Branch protection toggle is a GitHub UI action — not a file edit. Capture screenshot of `Settings → Branches → main → Require status checks` showing the 3 required checks enabled. Save as `evidence/03-branch-protection/screenshot.png`.
+- **D-16:** Branch protection toggle is a GitHub UI action — not a file edit. Capture screenshot of `Settings → Branches → main → Require status checks` showing the 3 required checks enabled. Save as `evidence/04-branch-protection/branch-protection-settings.png`.
 - **D-17:** If the live red regression PR reveals an unexpected gate failure (false negative — gate doesn't fail when it should), STOP and treat as P0 bug → reroute through `/gsd-debug`. Phase 11's job is verification, not bug-fixing.
 
 ### Claude's Discretion
