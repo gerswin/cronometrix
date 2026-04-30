@@ -1,0 +1,20 @@
+meta {
+  name: list audit
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/audit?limit=20&offset=0
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 20
+  offset: 0
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
