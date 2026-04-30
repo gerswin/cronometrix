@@ -1,0 +1,27 @@
+meta {
+  name: create override (multipart, admin only)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/daily-records/{{sample_daily_record_id}}/overrides
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  justification: Corrección por marcación olvidada en biométrico
+  override_entry_at: 2026-04-22T08:00:00-04:00
+  override_exit_at: 2026-04-22T17:00:00-04:00
+  ~evidence: @file()
+}
+
+docs {
+  Phase 4 endpoint. Magic-byte verification on evidence (PDF/JPG/PNG).
+  All overrides write an audit_log entry via SQLite trigger (TS-05).
+}

@@ -1,0 +1,25 @@
+meta {
+  name: send ISAPI command
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/devices/{{sample_device_id}}/commands
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "command": "door_open"
+  }
+}
+
+docs {
+  Available commands: door_open, reboot, sync_profiles. Admin only (T-4-03 / D-14).
+}

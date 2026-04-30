@@ -1,0 +1,24 @@
+meta {
+  name: setup init (first admin)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/setup/init
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "username": "{{username}}",
+    "full_name": "Gerswin Admin",
+    "email": "g3rswin@gmail.com",
+    "password": "{{password}}"
+  }
+}
+
+docs {
+  Returns 409 once any admin already exists. Use only on a fresh DB.
+}

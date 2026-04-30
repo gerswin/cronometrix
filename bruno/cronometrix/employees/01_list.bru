@@ -1,0 +1,26 @@
+meta {
+  name: list employees
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/employees?limit=20&offset=0
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 20
+  offset: 0
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+script:post-response {
+  if (res.body && res.body.data && res.body.data.length > 0) {
+    bru.setEnvVar("sample_employee_id", res.body.data[0].id);
+  }
+}

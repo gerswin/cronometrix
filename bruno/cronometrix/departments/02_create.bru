@@ -1,0 +1,35 @@
+meta {
+  name: create department
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/departments
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "name": "Producción",
+    "base_salary": 130.00,
+    "shift_start": "08:00",
+    "shift_end": "17:00",
+    "lunch_mode": "fixed",
+    "lunch_minutes": 60,
+    "overtime_threshold_minutes": 540,
+    "is_overnight": false,
+    "shift_type": "diurnal"
+  }
+}
+
+script:post-response {
+  if (res.status === 201 && res.body.id) {
+    bru.setEnvVar("sample_department_id", res.body.id);
+  }
+}

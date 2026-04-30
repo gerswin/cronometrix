@@ -1,0 +1,31 @@
+meta {
+  name: create employee
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/employees
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:json {
+  {
+    "cedula": "V-12345678",
+    "name": "Juan Pérez",
+    "department_id": "{{sample_department_id}}",
+    "position": "Operario",
+    "hire_date": "2026-01-15"
+  }
+}
+
+script:post-response {
+  if (res.status === 201 && res.body.id) {
+    bru.setEnvVar("sample_employee_id", res.body.id);
+  }
+}

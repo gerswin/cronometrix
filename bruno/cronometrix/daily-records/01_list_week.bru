@@ -1,0 +1,26 @@
+meta {
+  name: list daily records (week range)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/daily-records?from=2026-04-20&to=2026-04-26
+  body: none
+  auth: bearer
+}
+
+params:query {
+  from: 2026-04-20
+  to: 2026-04-26
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+script:post-response {
+  if (res.body && res.body.data && res.body.data.length > 0) {
+    bru.setEnvVar("sample_daily_record_id", res.body.data[0].id);
+  }
+}

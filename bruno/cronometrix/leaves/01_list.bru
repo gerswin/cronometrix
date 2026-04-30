@@ -1,0 +1,15 @@
+meta {
+  name: list leaves
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/leaves
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}

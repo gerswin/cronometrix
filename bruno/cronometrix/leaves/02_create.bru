@@ -1,0 +1,30 @@
+meta {
+  name: create leave (multipart)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/leaves
+  body: multipartForm
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+body:multipart-form {
+  employee_id: {{sample_employee_id}}
+  department_id: {{sample_department_id}}
+  from_date: 2026-04-28
+  to_date: 2026-04-30
+  leave_type: vacation
+  justification: Vacaciones programadas Q2
+  ~evidence: @file()
+}
+
+docs {
+  IDs MUST be UUIDs. Use list endpoints first to populate sample_employee_id and sample_department_id.
+  Tilde-prefix `~evidence` keeps the field disabled until you attach a file in the Bruno UI.
+}

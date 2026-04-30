@@ -1,0 +1,21 @@
+meta {
+  name: list devices
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/devices
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+script:post-response {
+  if (res.body && res.body.data && res.body.data.length > 0) {
+    bru.setEnvVar("sample_device_id", res.body.data[0].id);
+  }
+}

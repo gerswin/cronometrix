@@ -1,0 +1,26 @@
+meta {
+  name: SSE attendance stream
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/events/stream?token={{access_token}}
+  body: none
+  auth: none
+}
+
+params:query {
+  token: {{access_token}}
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+docs {
+  EventSource cannot send Authorization headers, so JWT is in the query string.
+  Bruno's HTTP runner does not natively render text/event-stream — use this
+  request to confirm the endpoint returns 200 + content-type: text/event-stream.
+  For a live stream test, use the curl in the readme.
+}
