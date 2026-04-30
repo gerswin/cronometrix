@@ -333,6 +333,8 @@ fn build_test_state(
         license_jwt_path: String::new(),
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
     });
     common::test_state_with_tmpdir(Arc::new(db), config)
 }

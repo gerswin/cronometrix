@@ -73,7 +73,7 @@ pub async fn login(
     // Lax allows navigation from email/portal links while still blocking CSRF POST attacks
     let cookie = Cookie::build(("refresh_token", refresh_token))
         .http_only(true)
-        .secure(true)
+        .secure(state.config.cookie_secure)
         .same_site(SameSite::Lax)
         .path("/api/v1/auth")
         .max_age(TimeDuration::days(7))
@@ -153,7 +153,7 @@ pub async fn refresh(
 
     let cookie = Cookie::build(("refresh_token", new_refresh_token))
         .http_only(true)
-        .secure(true)
+        .secure(state.config.cookie_secure)
         .same_site(SameSite::Lax)
         .path("/api/v1/auth")
         .max_age(TimeDuration::days(7))
@@ -203,7 +203,7 @@ pub async fn logout(
     // Expire the cookie
     let expired_cookie = Cookie::build(("refresh_token", ""))
         .http_only(true)
-        .secure(true)
+        .secure(state.config.cookie_secure)
         .same_site(SameSite::Lax)
         .path("/api/v1/auth")
         .max_age(TimeDuration::ZERO)

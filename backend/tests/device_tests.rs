@@ -44,6 +44,8 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         license_jwt_path: String::new(),
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
@@ -425,6 +427,8 @@ async fn dispatch_door_open_writes_audit() {
         license_jwt_path: String::new(),
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
     });
     let db_arc = Arc::new(db);
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
@@ -532,6 +536,8 @@ async fn dispatch_timeout_returns_504() {
         license_jwt_path: String::new(),
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
     });
     let db_arc = Arc::new(db);
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
@@ -613,6 +619,8 @@ async fn dispatch_bad_gateway_on_500() {
         license_jwt_path: String::new(),
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
     });
     let db_arc = Arc::new(db);
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
@@ -763,6 +771,8 @@ async fn patch_updates_password_and_reencrypts() {
         license_jwt_path: String::new(),
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
     });
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
     let _tmp = tempfile::TempDir::new().expect("tempdir");

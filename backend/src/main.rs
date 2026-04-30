@@ -7,7 +7,10 @@ use axum::{
 };
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 use cronometrix_api::anomalies;
 use cronometrix_api::audit;
@@ -265,7 +268,10 @@ async fn main() -> anyhow::Result<()> {
     let report_routes = Router::new()
         .route("/reports/json", post(reports::handlers::generate_json))
         .route("/reports/excel", post(reports::handlers::generate_excel))
-        .route_layer(tower_http::timeout::TimeoutLayer::new(std::time::Duration::from_secs(60)))
+        .route_layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(60),
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
@@ -359,11 +365,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let cors = build_cors_layer(&config.cors_allowed_origins);
+
     let app = Router::new()
         .nest("/api/v1", api_v1)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
+        .layer(cors);
 
     let addr = format!("{}:{}", config.server_host, config.server_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -393,6 +401,48 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("shutdown complete");
 
     Ok(())
+}
+
+/// Build the CORS layer. Frontend uses an httpOnly refresh cookie, so axios
+/// sends `withCredentials: true`; browsers refuse `Access-Control-Allow-Origin: *`
+/// in that combo. We must echo a specific allow-listed origin AND set
+/// `Access-Control-Allow-Credentials: true`.
+///
+/// Origins come from `CORS_ALLOWED_ORIGINS` env var (comma-separated). If the
+/// list is empty, no cross-origin requests are accepted (locked-down default).
+fn build_cors_layer(origins: &[String]) -> CorsLayer {
+    use axum::http::{
+        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+        HeaderValue, Method,
+    };
+
+    let parsed: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| o.parse::<HeaderValue>().ok())
+        .collect();
+
+    if parsed.is_empty() {
+        tracing::warn!("CORS_ALLOWED_ORIGINS is empty — no cross-origin requests will be accepted");
+    } else {
+        tracing::info!(
+            "CORS allow-list ({} origin(s)): {:?}",
+            parsed.len(),
+            origins
+        );
+    }
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(parsed))
+        .allow_credentials(true)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([AUTHORIZATION, CONTENT_TYPE, ACCEPT])
 }
 
 /// Health check endpoint. Performs a SELECT 1 database connectivity check

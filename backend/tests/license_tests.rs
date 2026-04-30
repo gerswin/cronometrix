@@ -349,6 +349,8 @@ mod gate_behavior_tests {
             ),
             do_functions_activate_url: do_url,
             do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
         });
 
         let tmp = tempfile::TempDir::new().expect("tempdir");

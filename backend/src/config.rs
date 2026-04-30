@@ -30,6 +30,15 @@ pub struct Config {
     /// DO Functions URL for license renewal (POST). Empty string means
     /// renewal is disabled (offline-only deployment).
     pub do_functions_renew_url: String,
+    /// Origins allowed by CORS. Parsed from `CORS_ALLOWED_ORIGINS` env var
+    /// (comma-separated). Used with `allow_credentials(true)` so the value
+    /// MUST be an explicit list — `*` is rejected by browsers when cookies
+    /// are involved (httpOnly refresh cookie auth flow).
+    pub cors_allowed_origins: Vec<String>,
+    /// Sets the `Secure` flag on the refresh cookie. Default true (production
+    /// HTTPS). Set `COOKIE_SECURE=false` in dev `.env` so the cookie is
+    /// accepted on `http://localhost`. Production deploys MUST keep this true.
+    pub cookie_secure: bool,
 }
 
 impl fmt::Debug for Config {
@@ -49,6 +58,8 @@ impl fmt::Debug for Config {
             .field("license_jwt_path", &self.license_jwt_path)
             .field("do_functions_activate_url", &self.do_functions_activate_url)
             .field("do_functions_renew_url", &self.do_functions_renew_url)
+            .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("cookie_secure", &self.cookie_secure)
             .finish()
     }
 }
@@ -93,6 +104,18 @@ impl Config {
         let do_functions_renew_url = std::env::var("DO_FUNCTIONS_RENEW_URL")
             .unwrap_or_default();
 
+        let cors_allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+
+        let cookie_secure = std::env::var("COOKIE_SECURE")
+            .ok()
+            .map(|v| v.trim().eq_ignore_ascii_case("true"))
+            .unwrap_or(true);
+
         // Phase 3: timezone used by the attendance engine + nightly reconcile
         // cron. Target market Venezuela does not observe DST since May 2016, so
         // `America/Caracas` gives unambiguous local-date arithmetic. Any future
@@ -115,6 +138,8 @@ impl Config {
             license_jwt_path,
             do_functions_activate_url,
             do_functions_renew_url,
+            cors_allowed_origins,
+            cookie_secure,
         })
     }
 

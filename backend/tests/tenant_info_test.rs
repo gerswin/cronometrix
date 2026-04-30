@@ -29,6 +29,8 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         license_jwt_path: String::new(),
         do_functions_activate_url: String::new(),
         do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);

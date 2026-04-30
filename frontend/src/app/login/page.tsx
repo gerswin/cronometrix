@@ -34,11 +34,13 @@ type ServerError = { message: string } | null
  * that does not begin with a single `/`.
  */
 function safeRedirect(raw: string | null): string {
-  if (!raw) return "/"
-  if (!raw.startsWith("/")) return "/"
-  if (raw.startsWith("//")) return "/"
+  // `/` is a dev stub that redirects back to /login (see app/page.tsx),
+  // so authenticated users must land on /dashboard, not /.
+  if (!raw) return "/dashboard"
+  if (!raw.startsWith("/")) return "/dashboard"
+  if (raw.startsWith("//")) return "/dashboard"
   // Defensive: collapse backslash variants that some clients normalize to `/`
-  if (raw.startsWith("/\\") || raw.startsWith("\\")) return "/"
+  if (raw.startsWith("/\\") || raw.startsWith("\\")) return "/dashboard"
   return raw
 }
 
