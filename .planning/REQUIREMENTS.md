@@ -170,14 +170,14 @@
 | RULE-01 | Phase 1 | Complete |
 | RULE-02 | Phase 1 | Complete |
 | RULE-03 | Phase 1 | Complete |
-| DEV-01 | Phase 2 | Pending |
-| DEV-02 | Phase 2 | Pending |
-| DEV-03 | Phase 2 | Pending |
-| DEV-04 | Phase 2 | Pending |
-| EVT-01 | Phase 2 | Pending |
-| EVT-02 | Phase 2 | Pending |
-| EVT-03 | Phase 2 | Pending |
-| EVT-04 | Phase 2 | Pending |
+| DEV-01 | Phase 2 | Complete |
+| DEV-02 | Phase 2 | Complete |
+| DEV-03 | Phase 2 | Complete |
+| DEV-04 | Phase 2 | Complete |
+| EVT-01 | Phase 2 | Complete |
+| EVT-02 | Phase 2 | Complete |
+| EVT-03 | Phase 2 | Complete |
+| EVT-04 | Phase 2 | Complete |
 | CALC-01 | Phase 3 | Complete |
 | CALC-02 | Phase 3 | Complete |
 | CALC-03 | Phase 3 | Complete |
@@ -188,38 +188,48 @@
 | LEAVE-02 | Phase 3 | Complete |
 | LEAVE-03 | Phase 3 | Complete |
 | LEAVE-04 | Phase 3 | Complete |
-| DASH-01 | Phase 4 | Pending |
-| DASH-02 | Phase 4 | Pending |
-| DASH-03 | Phase 4 | Pending |
-| TS-01 | Phase 4 | Pending |
-| TS-02 | Phase 4 | Pending |
-| TS-03 | Phase 4 | Pending |
-| TS-04 | Phase 4 | Pending |
-| TS-05 | Phase 4 | Pending |
-| PAY-01 | Phase 5 | Pending |
-| PAY-02 | Phase 5 | Pending |
-| PAY-03 | Phase 5 | Pending |
-| PAY-04 | Phase 5 | Pending |
-| LIC-01 | Phase 6 | Pending |
-| LIC-02 | Phase 6 | Pending |
-| LIC-03 | Phase 6 | Pending |
-| LIC-04 | Phase 6 | Pending |
-| LIC-05 | Phase 6 | Pending |
-| DEPL-01 | Phase 6 | Pending |
-| DEPL-02 | Phase 6 | Pending |
-| DEPL-03 | Phase 6 | Pending |
-| DEPL-04 | Phase 6 | Pending |
-| ENRL-01 | Phase 7 | Pending |
-| ENRL-02 | Phase 7 | Pending |
-| ENRL-03 | Phase 7 | Pending |
-| ENRL-04 | Phase 7 | Pending |
-| ENRL-05 | Phase 7 | Pending |
+| DASH-01 | Phase 4 | Complete |
+| DASH-02 | Phase 4 | Complete |
+| DASH-03 | Phase 4 | Complete |
+| TS-01 | Phase 4 | Complete |
+| TS-02 | Phase 4 | Complete |
+| TS-03 | Phase 4 | Complete |
+| TS-04 | Phase 4 | Complete |
+| TS-05 | Phase 4 | Complete |
+| PAY-01 | Phase 5 | Complete |
+| PAY-02 | Phase 5 | Complete |
+| PAY-03 | Phase 5 | Complete |
+| PAY-04 | Phase 5 | Complete |
+| LIC-01 | Phase 6 | Complete |
+| LIC-02 | Phase 6 | Complete |
+| LIC-03 | Phase 6 | Complete |
+| LIC-04 | Phase 6 | Complete |
+| LIC-05 | Phase 6 | Complete |
+| DEPL-01 | Phase 6 | Complete |
+| DEPL-02 | Phase 6 | Complete |
+| DEPL-03 | Phase 6 | Partial — accepted v1 ship (D-13 in 06-CONTEXT.md); auto-register strict reading deferred to v1.1 backlog as DEPL-03-AUTO |
+| DEPL-04 | Phase 6 | Complete |
+| ENRL-01 | Phase 7 | Complete |
+| ENRL-02 | Phase 7 | Complete |
+| ENRL-03 | Phase 7 | Complete |
+| ENRL-04 | Phase 7 | Complete |
+| ENRL-05 | Phase 7 | Complete |
+
+## v1 Cross-Cutting Meta-Requirements (Phases 8+)
+
+These meta-requirements track the test-infrastructure and quality-gate investment delivered after the v1 feature freeze. They are tracked separately from the v1 product requirements above so that the v1 Coverage block stays bounded by feature scope.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| QUALITY-GATE | Phase 8 | Complete |
+| E2E-TOOLING..E2E-SELECTORS (21 IDs) | Phase 9 | Complete |
 
 **Coverage:**
 - v1 requirements: 48 total
 - Mapped to phases: 48
+- v1 Cross-Cutting Meta-Requirements: QUALITY-GATE (Phase 8) + 21 E2E-* (Phase 9) = 22 additional
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-11*
-*Last updated: 2026-04-11 — traceability table populated after roadmap creation*
+*Last updated: 2026-04-29 — traceability refreshed for milestone v1.0 sign-off (Phase 10-03)*
