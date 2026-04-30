@@ -221,8 +221,15 @@ Plans:
 
 ### Phase 11: v1.0 Live Environment Validation
 
-**Goal:** Execute every audit-deferred item that requires real infrastructure and record the resulting evidence so the milestone can be archived with a clean human-verified verdict: live CI green run for `Backend Coverage` + `Frontend Coverage` + `E2E Tests` jobs (Phase 8 Plan 05 + Phase 9), deliberate red regression PRs for both gates, branch protection toggled to require all three jobs, fresh-VM installer smoke (Ubuntu 22.04 + Docker + real Cloudflare token + DO Functions URL) for DEPL-01/02, cross-host LIC-05 clone-rejection test on two physical machines, and (if hardware available) real Hikvision alertStream end-to-end test for EVT-01/02. Output: evidence files committed under `.planning/phases/11-*/evidence/` proving each item passed.
+**Goal:** Execute every audit-deferred item that requires real infrastructure and record the resulting evidence so the milestone can be archived with a clean human-verified verdict: live CI green run for `Backend Coverage` + `Frontend Coverage` + `E2E Tests` jobs (Phase 8 Plan 05 + Phase 9), deliberate red regression PRs for both gates, branch protection toggled to require all three jobs, fresh-VM installer smoke (Ubuntu 22.04 + Docker + real Cloudflare token + DO Functions URL) for DEPL-01/02, cross-host LIC-05 clone-rejection test (deferred to first prod install per D-06), and (out of scope per D-10) real Hikvision alertStream — captured as risk-accept evidence. Output: evidence files committed under `.planning/phases/11-*/evidence/` proving each item PASS or DEFERRED.
 **Requirements**: VALIDATE-CI-GREEN, VALIDATE-CI-RED, VALIDATE-BRANCH-PROTECTION, VALIDATE-INSTALLER-SMOKE, VALIDATE-LIC-05-CLONE, VALIDATE-HIKVISION-LIVE
 **Depends on:** Phase 10
-**Plans:** TBD (run `/gsd-plan-phase 11`)
+**Plans:** 5 plans
+
+Plans:
+- [ ] 11-01-PLAN.md — Repo prep (.gitattributes + evidence dir scaffold) + live CI green run + local make e2e — VALIDATE-CI-GREEN — Wave 1, non-autonomous
+- [ ] 11-03-PLAN.md — LIC-05 + Hikvision deferral evidence + REQUIREMENTS.md v1.1 Backlog row + 06-VERIFICATION.md cross-reference — VALIDATE-LIC-05-CLONE, VALIDATE-HIKVISION-LIVE — Wave 2, AUTONOMOUS, deps:[11-01]
+- [ ] 11-02-PLAN.md — Live CI red regression PR (3-prong deliberate breakage, all 3 gates fail, PR closed not merged) — VALIDATE-CI-RED — Wave 3, non-autonomous, deps:[11-01, 11-03]
+- [ ] 11-05-PLAN.md — Fresh-VM installer smoke (Ubuntu 22.04 + Docker + real CF tunnel + DO Functions) — VALIDATE-INSTALLER-SMOKE — Wave 4, non-autonomous, deps:[11-01, 11-03, 11-02]
+- [ ] 11-04-PLAN.md — GitHub branch protection toggle (3 status checks required on main) + screenshot + gh api JSON — VALIDATE-BRANCH-PROTECTION — Wave 5, non-autonomous, deps:[11-01, 11-02, 11-05]
 **Gap Closure:** Closes manual follow-up + live-environment gaps from `v1.0-MILESTONE-AUDIT.md`
