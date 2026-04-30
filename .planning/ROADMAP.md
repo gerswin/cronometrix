@@ -208,7 +208,15 @@ Plans:
 **Goal:** Close all in-repo audit gaps from `v1.0-MILESTONE-AUDIT.md` so the milestone documentation is complete: post-hoc verification records for the two phases that shipped without them (Phase 1, Phase 7), refreshed REQUIREMENTS.md traceability column, the `/audit/actors` username-join endpoint that 09-05 deferred, and a recorded decision on DEPL-03's v1 deferral. Pure documentation + small-feature work — fully autonomous, no external infrastructure required.
 **Requirements**: SIGNOFF-01-VERIFY, SIGNOFF-07-VERIFY, SIGNOFF-TRACEABILITY, SIGNOFF-AUDIT-ACTORS, SIGNOFF-DEPL-03-DECISION
 **Depends on:** Phase 9
-**Plans:** TBD (run `/gsd-plan-phase 10`)
+**Plans:** 5 plans
+
+Plans:
+- [ ] 10-01-PLAN.md — Post-hoc 01-VERIFICATION.md (Phase 1: 19 REQs across DATA/AUTH/EMP/DEPT/RULE) — gsd-verifier spawn (Wave 1)
+- [ ] 10-02-PLAN.md — Post-hoc 07-VERIFICATION.md (Phase 7: ENRL-01..05 + ISAPI integration; status: human_needed for live Hikvision smoke) — gsd-verifier spawn (Wave 1)
+- [ ] 10-03-PLAN.md — REQUIREMENTS.md traceability refresh (Pending→Complete for phases 2/4/5/6/7, ENRL checkbox sync, DEPL-03 partial note, Meta-Requirements section, Coverage update) — Wave 2
+- [ ] 10-04-PLAN.md — GET /api/v1/audit/actors backend endpoint + frontend dropdown wiring + Bruno collection + 3 integration tests + 1 vitest test — Wave 1
+- [ ] 10-05-PLAN.md — DEPL-03 deferral decision: v1.1 Backlog section in REQUIREMENTS.md + 06-VERIFICATION.md deferred-items cross-reference — Wave 3
+
 **Gap Closure:** Closes documentation + traceability gaps from `v1.0-MILESTONE-AUDIT.md`
 
 ### Phase 11: v1.0 Live Environment Validation
