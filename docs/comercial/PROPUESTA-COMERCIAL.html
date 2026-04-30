@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Propuesta Comercial — Cronometrix</title>
+<style>
+  :root {
+    --navy: #0a1f3d;
+    --navy-deep: #061528;
+    --cyan: #2ee8ff;
+    --cyan-soft: #5fb7d6;
+    --ink: #1a2434;
+    --ink-soft: #4a5568;
+    --rule: #e2e8f0;
+    --bg-soft: #f7fafc;
+    --accent-bg: #eef9fc;
+    --ok: #1f8a3f;
+    --warn: #b45309;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 11.5pt;
+    line-height: 1.55;
+    background: #fff;
+  }
+
+  .page {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 32px 48px 56px;
+  }
+
+  /* ---------- Cover ---------- */
+  .cover {
+    background:
+      radial-gradient(900px 600px at 50% 28%, rgba(46, 232, 255, 0.10), transparent 70%),
+      #0a1f3d;
+    color: #fff;
+    padding: 60px 56px 48px;
+    margin: -32px -48px 48px;
+    page-break-after: always;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    min-height: 9.4in;
+  }
+
+  .cover .eyebrow {
+    color: var(--cyan);
+    text-transform: uppercase;
+    letter-spacing: 5px;
+    font-size: 10pt;
+    font-weight: 600;
+    margin: 8px 0 28px;
+  }
+
+  .cover .brand {
+    display: flex;
+    justify-content: center;
+    margin: 0 0 28px;
+  }
+
+  .cover .brand img {
+    height: 320px;
+    width: auto;
+    mix-blend-mode: lighten;
+  }
+
+  .cover h1 {
+    font-size: 24pt;
+    line-height: 1.28;
+    margin: 0 0 18px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+    max-width: 620px;
+    color: #fff;
+  }
+
+  .cover .lead {
+    font-size: 12pt;
+    color: rgba(255, 255, 255, 0.78);
+    max-width: 560px;
+    margin: 0 auto 0;
+    line-height: 1.55;
+  }
+
+  .cover .meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px 28px;
+    margin: auto 0 0;
+    padding-top: 28px;
+    border-top: 1px solid rgba(255, 255, 255, 0.16);
+    width: 100%;
+    max-width: 720px;
+    text-align: left;
+  }
+
+  .cover .meta .k {
+    color: var(--cyan);
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+    font-weight: 600;
+  }
+
+  .cover .meta .v {
+    color: #fff;
+    font-size: 10.5pt;
+    margin-top: 4px;
+  }
+
+  .cover .footer-cover {
+    margin-top: 26px;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 9pt;
+    letter-spacing: 0.6px;
+  }
+
+  /* ---------- Content ---------- */
+  h2 {
+    font-size: 18pt;
+    color: var(--navy);
+    margin: 36px 0 14px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--cyan);
+    letter-spacing: -0.2px;
+  }
+
+  h3 {
+    font-size: 13pt;
+    color: var(--navy);
+    margin: 22px 0 10px;
+  }
+
+  h4 {
+    font-size: 11.5pt;
+    color: var(--ink);
+    margin: 18px 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+
+  p { margin: 0 0 12px; }
+
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin: 4px 0; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 22px;
+    font-size: 10.5pt;
+    page-break-inside: avoid;
+  }
+
+  th {
+    background: var(--navy);
+    color: #fff;
+    text-align: left;
+    padding: 10px 12px;
+    font-weight: 600;
+    font-size: 10pt;
+  }
+
+  td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+
+  tr:nth-child(even) td { background: var(--bg-soft); }
+
+  /* Highlight callout */
+  .callout {
+    background: var(--accent-bg);
+    border-left: 4px solid var(--cyan);
+    padding: 14px 18px;
+    margin: 16px 0 22px;
+    border-radius: 0 8px 8px 0;
+    font-size: 10.5pt;
+  }
+
+  .callout.warn {
+    background: #fff7ed;
+    border-left-color: var(--warn);
+  }
+
+  /* Pricing card */
+  .pricing {
+    background: linear-gradient(135deg, var(--navy), #142f5c);
+    color: #fff;
+    padding: 28px 32px;
+    border-radius: 12px;
+    margin: 18px 0 26px;
+    page-break-inside: avoid;
+  }
+
+  .pricing .label {
+    color: var(--cyan);
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+    font-size: 9.5pt;
+    font-weight: 600;
+  }
+
+  .pricing .price {
+    font-size: 36pt;
+    font-weight: 700;
+    margin: 6px 0 4px;
+    letter-spacing: -1px;
+  }
+
+  .pricing .sub {
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 10.5pt;
+  }
+
+  /* Feature lists */
+  .features {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .features li {
+    padding: 6px 0 6px 26px;
+    position: relative;
+    font-size: 10.5pt;
+  }
+
+  .features li::before {
+    content: "✓";
+    position: absolute;
+    left: 0;
+    top: 6px;
+    color: var(--ok);
+    font-weight: 700;
+  }
+
+  .features.roadmap li::before {
+    content: "●";
+    color: var(--cyan-soft);
+  }
+
+  /* Two col */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+
+  /* Footer */
+  .doc-footer {
+    margin-top: 48px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    font-size: 9.5pt;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+
+  /* ---------- Print ---------- */
+  @page {
+    size: Letter;
+    margin: 14mm 14mm 16mm;
+  }
+
+  @page :first {
+    margin: 0;
+  }
+
+  @media print {
+    body { background: #fff; }
+    .page { padding: 0; max-width: none; }
+    .cover {
+      margin: 0;
+      padding: 32mm 18mm 16mm;
+      min-height: 11in;
+      width: 8.5in;
+    }
+    h2 { page-break-after: avoid; }
+    table, .pricing, .callout { page-break-inside: avoid; }
+    .no-print { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- =========================== COVER =========================== -->
+  <section class="cover">
+    <div class="eyebrow">Propuesta comercial</div>
+
+    <div class="brand">
+      <img src="assets/logo.png" alt="Cronometrix · Asistencia y biometría" />
+    </div>
+
+    <h1>Sistema biométrico de control<br/>de tiempo y asistencia</h1>
+    <p class="lead">
+      Convierte los marcajes de sus dispositivos Hikvision en datos listos para
+      nómina, con trazabilidad legal y cero cálculo manual.
+    </p>
+
+    <div class="meta">
+      <div>
+        <div class="k">Inversión total</div>
+        <div class="v">USD 1.500</div>
+      </div>
+      <div>
+        <div class="k">Forma de pago</div>
+        <div class="v">50% inicio · 50% go-live · Efectivo USD</div>
+      </div>
+      <div>
+        <div class="k">Capacidad</div>
+        <div class="v">Hasta 200 empleados · 4 dispositivos · 1 sede</div>
+      </div>
+      <div>
+        <div class="k">Soporte año 1</div>
+        <div class="v">12 meses · horario de oficina · tickets</div>
+      </div>
+      <div>
+        <div class="k">Garantía</div>
+        <div class="v">30 días post go-live</div>
+      </div>
+      <div>
+        <div class="k">Vigencia</div>
+        <div class="v">30 días desde emisión</div>
+      </div>
+    </div>
+
+    <div class="footer-cover">
+      Asistencia y biometría · Despliegue on-premise con sincronización en la nube
+    </div>
+  </section>
+
+  <!-- =========================== 1. Resumen =========================== -->
+  <h2>1. Resumen ejecutivo</h2>
+  <p>
+    Cronometrix es un sistema de control de tiempo y asistencia que convierte los
+    eventos biométricos de sus dispositivos Hikvision en datos listos para nómina,
+    con trazabilidad legal completa y sin cálculos manuales.
+  </p>
+  <p>
+    Se instala <strong>on-premise en su sede</strong> (los datos viven en su
+    servidor), con sincronización cifrada a la nube para acceso remoto y respaldo.
+    Cada instalación es independiente y queda bajo el control directo del cliente.
+  </p>
+
+  <div class="pricing">
+    <div class="label">Inversión total — paquete completo</div>
+    <div class="price">USD 1.500</div>
+    <div class="sub">
+      Incluye instalación, configuración, capacitación remota de 8 horas y soporte año 1.
+    </div>
+  </div>
+
+  <!-- =========================== 2. Qué es =========================== -->
+  <h2>2. ¿Qué es Cronometrix?</h2>
+  <p>Cronometrix es una plataforma web instalada en su servidor que:</p>
+  <ol>
+    <li><strong>Recibe en tiempo real</strong> los eventos de marcaje de sus lectores faciales Hikvision (entrada, salida, almuerzo).</li>
+    <li><strong>Calcula automáticamente</strong> la jornada trabajada, horas extras, llegadas tarde y ausencias aplicando las tolerancias y reglas que usted defina.</li>
+    <li><strong>Genera reportes pre-nómina</strong> exportables a Excel y PDF, listos para entregar a contabilidad.</li>
+    <li><strong>Mantiene un registro auditable</strong> de cada modificación manual sobre las marcaciones, con justificación obligatoria del supervisor.</li>
+    <li><strong>Sincroniza con la nube</strong> (cifrada) para acceso remoto vía <code>{su-empresa}.cronometrix.com</code> desde cualquier lugar.</li>
+  </ol>
+
+  <h3>Arquitectura local-first</h3>
+  <ul>
+    <li>Su servidor es la fuente de verdad: si Internet cae, el sistema sigue capturando marcaciones.</li>
+    <li>Cuando vuelve la conexión, los datos se sincronizan automáticamente.</li>
+    <li>Cada cliente tiene su propia instalación aislada — sus datos no se mezclan con los de nadie más.</li>
+  </ul>
+
+  <!-- =========================== 3. Funcionalidades =========================== -->
+  <h2>3. Funcionalidades incluidas</h2>
+
+  <div class="two-col">
+    <div>
+      <h4>Captura y procesamiento</h4>
+      <ul class="features">
+        <li>Conexión simultánea con hasta 4 lectores Hikvision en la sede</li>
+        <li>Recepción de eventos en tiempo real vía protocolo ISAPI</li>
+        <li>Captura de foto del rostro en cada marcaje (evidencia)</li>
+        <li>Detección automática de duplicados y marcajes inválidos</li>
+      </ul>
+
+      <h4>Cálculo de jornadas</h4>
+      <ul class="features">
+        <li>Configuración de turnos (diurno, nocturno, mixto)</li>
+        <li>Tolerancia configurable de entrada/salida</li>
+        <li>Descuento automático del tiempo de almuerzo</li>
+        <li>Cálculo de horas extras diurnas y nocturnas</li>
+        <li>Manejo de feriados nacionales y particulares</li>
+      </ul>
+
+      <h4>Gestión de personal</h4>
+      <ul class="features">
+        <li>Alta, baja y edición de empleados</li>
+        <li>Asignación de turnos por empleado o grupo</li>
+        <li>Enrolamiento de rostro desde la plataforma</li>
+        <li>Bloqueo automático de empleados desactivados</li>
+      </ul>
+    </div>
+
+    <div>
+      <h4>Reportes y exportación</h4>
+      <ul class="features">
+        <li>Reporte diario, semanal, quincenal y mensual</li>
+        <li>Reporte pre-nómina con totales por empleado</li>
+        <li>Exportación a Excel (.xlsx) y PDF</li>
+        <li>Filtros por departamento, sede y rango de fechas</li>
+      </ul>
+
+      <h4>Seguridad y auditoría</h4>
+      <ul class="features">
+        <li>Roles: Administrador, Supervisor, Visualizador</li>
+        <li>Bitácora inmutable (quién, qué, cuándo, por qué)</li>
+        <li>Justificación obligatoria al modificar una marcación</li>
+        <li>Acceso remoto cifrado HTTPS vía Cloudflare</li>
+        <li>Hash de contraseñas Argon2id (estándar OWASP)</li>
+      </ul>
+
+      <h4>Acceso remoto</h4>
+      <ul class="features">
+        <li>URL exclusiva: <code>{su-empresa}.cronometrix.com</code></li>
+        <li>Compatible con cualquier navegador moderno</li>
+        <li>Diseño responsive (escritorio, tablet, móvil)</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- =========================== 4. Roadmap =========================== -->
+  <h2>4. Roadmap — incluido sin costo en año 1</h2>
+  <p>
+    Funcionalidades en desarrollo activo que se entregarán como actualizaciones
+    durante los primeros 6 meses:
+  </p>
+  <ul class="features roadmap">
+    <li>Notificaciones automáticas por correo y WhatsApp (ausencias, retardos)</li>
+    <li>Aplicación móvil para supervisores (consulta y aprobación de novedades)</li>
+    <li>Dashboard ejecutivo con KPIs (ausentismo, puntualidad, horas extras)</li>
+    <li>Solicitudes de permisos y vacaciones desde la plataforma</li>
+    <li>Exportación directa a sistemas de nómina locales (formato configurable)</li>
+  </ul>
+  <div class="callout">
+    Las actualizaciones publicadas durante los primeros 6 meses se incluyen
+    automáticamente. A partir del mes 7, las nuevas versiones requieren contrato
+    de soporte vigente.
+  </div>
+
+  <!-- =========================== 5. Legal =========================== -->
+  <h2>5. Cumplimiento legal — Venezuela</h2>
+  <p>
+    Cronometrix está diseñado para cumplir con la normativa laboral venezolana
+    vigente. Marco legal soportado por el sistema:
+  </p>
+
+  <h3>5.1 Ley Orgánica del Trabajo, los Trabajadores y las Trabajadoras (LOTTT, 2012)</h3>
+  <table>
+    <thead>
+      <tr><th>Artículo</th><th>Materia</th><th>Cómo lo cumple Cronometrix</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Art. 167</strong></td><td>Jornada diurna máx. 8h, nocturna 7h, mixta 7h 30min</td><td>Configuración de turnos por tipo, alertas al exceder el tope legal</td></tr>
+      <tr><td><strong>Art. 173</strong></td><td>Jornada semanal máx. 40h diurna / 35h nocturna</td><td>Reporte semanal con totales y advertencia al superar el límite</td></tr>
+      <tr><td><strong>Art. 175</strong></td><td>Descanso intrajornada (1h cuando jornada exceda 5h)</td><td>Descuento automático de almuerzo configurable</td></tr>
+      <tr><td><strong>Art. 178</strong></td><td>Horas extras: máx. 2h diarias, 10h semanales, 100h anuales</td><td>Cálculo separado de horas extras con acumulado anual por empleado</td></tr>
+      <tr><td><strong>Art. 184</strong></td><td>Día de descanso semanal obligatorio</td><td>Marcado automático en calendario; alerta si se trabaja en domingo</td></tr>
+      <tr><td><strong>Art. 119</strong></td><td>Obligación del patrono de llevar registro de jornadas</td><td>Bitácora completa de marcaciones, exportable a auditoría</td></tr>
+      <tr><td><strong>Art. 187</strong></td><td>Registro de horas extras autorizadas</td><td>Reporte segregado de horas extras con totales mensuales y anuales</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5.2 Constitución de la República Bolivariana de Venezuela</h3>
+  <table>
+    <thead>
+      <tr><th>Artículo</th><th>Materia</th><th>Cómo lo cumple Cronometrix</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Art. 28</strong></td><td>Derecho de habeas data</td><td>El empleado puede solicitar y recibir su histórico de marcaciones</td></tr>
+      <tr><td><strong>Art. 60</strong></td><td>Derecho a la privacidad y protección de datos personales</td><td>Datos almacenados localmente, cifrados en tránsito, acceso por roles</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5.3 LOPCYMAT — Ley Orgánica de Prevención, Condiciones y Medio Ambiente de Trabajo</h3>
+  <table>
+    <thead>
+      <tr><th>Artículo</th><th>Materia</th><th>Cómo lo cumple Cronometrix</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Art. 53, num. 9</strong></td><td>Derecho del trabajador a información sobre su jornada</td><td>Acceso del empleado a su registro personal</td></tr>
+      <tr><td><strong>Art. 56, num. 4</strong></td><td>Obligación del patrono de llevar registros de jornada</td><td>Bitácora inmutable con sello de tiempo</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5.4 Cláusula de consentimiento biométrico</h3>
+  <p>
+    El sistema incluye plantilla de <strong>consentimiento informado</strong> para
+    que cada empleado autorice expresamente la captura y procesamiento de su
+    dato biométrico facial. Esto protege legalmente al patrono en caso de
+    reclamación.
+  </p>
+  <div class="callout warn">
+    <strong>Importante:</strong> Cronometrix proporciona las herramientas técnicas
+    para cumplir con la ley. La aplicación correcta de los reglamentos internos de
+    trabajo, contratos y consentimientos es responsabilidad del cliente y de su
+    asesor jurídico.
+  </div>
+
+  <!-- =========================== 6. Inversión =========================== -->
+  <h2>6. ¿Qué incluye la inversión de USD 1.500?</h2>
+  <h3>Incluido</h3>
+  <table>
+    <thead>
+      <tr><th>Ítem</th><th>Detalle</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Licencia de software</strong></td><td>1 sede, hasta 200 empleados activos, hasta 4 dispositivos Hikvision</td></tr>
+      <tr><td><strong>Instalación</strong></td><td>Despliegue del sistema en el servidor del cliente vía conexión remota</td></tr>
+      <tr><td><strong>Configuración inicial</strong></td><td>Conexión con dispositivos Hikvision, turnos, tolerancias y calendario laboral</td></tr>
+      <tr><td><strong>Capacitación remota</strong></td><td>8 horas vía videollamada, agendables en bloques de 2h</td></tr>
+      <tr><td><strong>Acceso remoto</strong></td><td>Túnel Cloudflare configurado: <code>{su-empresa}.cronometrix.com</code></td></tr>
+      <tr><td><strong>Soporte año 1</strong></td><td>12 meses, horario de oficina, vía sistema de tickets</td></tr>
+      <tr><td><strong>Actualizaciones</strong></td><td>Todas las versiones publicadas durante los primeros 6 meses</td></tr>
+      <tr><td><strong>Garantía</strong></td><td>30 días post go-live para corrección de bugs críticos sin costo adicional</td></tr>
+    </tbody>
+  </table>
+
+  <h3>No incluido</h3>
+  <ul>
+    <li>Hardware (lectores Hikvision, servidor, red interna) — el cliente provee</li>
+    <li>Conexión a Internet del servidor</li>
+    <li>Capacitación adicional fuera de las 8 horas pactadas</li>
+    <li>Integraciones a la medida con sistemas de nómina propietarios</li>
+    <li>Migración de datos históricos desde otros sistemas</li>
+    <li>Soporte presencial (toda atención es remota)</li>
+    <li>Personalizaciones, módulos a la medida, cambios de diseño</li>
+    <li>Visitas técnicas físicas</li>
+  </ul>
+
+  <h3>6.5 Add-ons opcionales</h3>
+  <p>Si su operación crece, puede ampliar la licencia base sin reinstalar el sistema:</p>
+
+  <h4>Empleados adicionales (pago único, expansión perpetua)</h4>
+  <table>
+    <thead>
+      <tr><th>Pack</th><th>Precio</th><th>Costo por empleado</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>+10 empleados</strong></td><td>USD 80</td><td>USD 8.00</td></tr>
+      <tr><td><strong>+20 empleados</strong></td><td>USD 150</td><td>USD 7.50</td></tr>
+      <tr><td><strong>+50 empleados</strong></td><td>USD 325</td><td>USD 6.50</td></tr>
+      <tr><td><strong>+100 empleados</strong></td><td>USD 550</td><td>USD 5.50</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    Los packs son acumulables: ej. base 200 + pack 50 + pack 20 = 270 empleados activos.
+  </div>
+
+  <h4>Dispositivos Hikvision adicionales (pago único)</h4>
+  <table>
+    <thead>
+      <tr><th>Concepto</th><th>Precio</th><th>Detalle</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>5to o 6to dispositivo</strong></td><td>USD 200 c/u</td><td>Integración + configuración + prueba remota</td></tr>
+      <tr><td><strong>7mo u 8vo dispositivo</strong></td><td>USD 250 c/u</td><td>Mayor carga concurrente</td></tr>
+      <tr><td><strong>9 o más dispositivos</strong></td><td>A cotizar</td><td>Requiere revisión de arquitectura</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Sede adicional</h4>
+  <table>
+    <thead>
+      <tr><th>Concepto</th><th>Precio</th><th>Detalle</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Instalación de sede adicional</strong></td><td>USD 750</td><td>50% de descuento sobre la base. Sede independiente con servidor propio y URL <code>{cliente-sede2}.cronometrix.com</code> (activable o desactivable a voluntad del cliente)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>Nota sobre acceso remoto:</strong> la URL pública
+    <code>{cliente}.cronometrix.com</code> es <strong>opcional</strong>. Puede
+    activarse o desactivarse en cualquier momento desde el panel de
+    administración. Con el acceso remoto desactivado, el sistema sigue operando
+    en red local y conserva la sincronización cifrada con la nube para respaldo,
+    sin exposición pública.
+  </div>
+
+  <h4>Servicios adicionales</h4>
+  <table>
+    <thead>
+      <tr><th>Concepto</th><th>Precio</th><th>Detalle</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Capacitación remota adicional</strong></td><td>USD 50 / hora</td><td>Más allá de las 8 horas incluidas</td></tr>
+      <tr><td><strong>Capacitación presencial (Táchira)</strong></td><td>USD 150 / hora + viáticos</td><td>Visita técnica al sitio</td></tr>
+      <tr><td><strong>Migración de datos históricos</strong></td><td>USD 200 – 500</td><td>Según volumen y formato fuente</td></tr>
+      <tr><td><strong>Integración con sistema de nómina</strong></td><td>USD 1.000 – 2.000</td><td>Galac, Profit u otros — alcance a definir</td></tr>
+      <tr><td><strong>Onboarding express (≤5 días)</strong></td><td>+USD 200</td><td>Sobrecosto sobre la base</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Escalado de soporte año 2 (según tamaño de operación)</h4>
+  <table>
+    <thead>
+      <tr><th>Empleados activos</th><th>Estándar / año</th><th>Plus / año</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Hasta 200 (base)</td><td>USD 300</td><td>USD 375</td></tr>
+      <tr><td>201 – 500</td><td>USD 400</td><td>USD 500</td></tr>
+      <tr><td>501 – 1000</td><td>USD 550</td><td>USD 700</td></tr>
+      <tr><td>Más de 1000</td><td>A cotizar</td><td>A cotizar</td></tr>
+    </tbody>
+  </table>
+
+  <!-- =========================== 7. SLA =========================== -->
+  <h2>7. Soporte técnico — SLA año 1</h2>
+  <table>
+    <thead>
+      <tr><th>Concepto</th><th>Detalle</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Horario</strong></td><td>Lunes a viernes, 8:00 a.m. – 5:00 p.m. (hora Venezuela), días hábiles</td></tr>
+      <tr><td><strong>Canal</strong></td><td>Sistema de tickets (registro 24/7; atención en horario hábil)</td></tr>
+      <tr><td><strong>Tiempo de respuesta</strong></td><td>4 horas hábiles desde apertura del ticket</td></tr>
+      <tr><td><strong>Tiempo de resolución</strong></td><td>Best-effort según severidad</td></tr>
+      <tr><td><strong>Severidad alta</strong> (sistema caído)</td><td>Atención prioritaria mismo día hábil</td></tr>
+      <tr><td><strong>Severidad media</strong> (función afectada con workaround)</td><td>2 días hábiles</td></tr>
+      <tr><td><strong>Severidad baja</strong> (consulta, mejora)</td><td>5 días hábiles</td></tr>
+      <tr><td><strong>Excluido</strong></td><td>Soporte fuera de horario, presencial, hardware, red del cliente, capacitación nueva</td></tr>
+    </tbody>
+  </table>
+
+  <!-- =========================== 8. Garantía =========================== -->
+  <h2>8. Garantía</h2>
+  <p>
+    Durante los <strong>30 días posteriores al go-live</strong>, cualquier bug
+    crítico (que impida el uso normal del sistema) será corregido sin costo
+    adicional dentro del marco del SLA, independientemente de su origen.
+  </p>
+  <p>
+    No cubre: cambios de alcance, nuevas funcionalidades solicitadas, errores
+    derivados de configuración modificada por el cliente sin asesoría, daños por
+    hardware o red.
+  </p>
+
+  <!-- =========================== 9. Renovación =========================== -->
+  <h2>9. Renovación año 2 en adelante</h2>
+  <p>A partir del mes 13, el cliente puede contratar el plan de soporte y actualizaciones anual:</p>
+  <table>
+    <thead>
+      <tr><th>Plan</th><th>Costo anual</th><th>Incluye</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Soporte estándar</strong></td><td>USD 300</td><td>Tickets en horario de oficina, parches de seguridad, correcciones de bugs</td></tr>
+      <tr><td><strong>Soporte plus</strong></td><td>USD 375</td><td>Estándar + todas las actualizaciones de funcionalidad publicadas en el período</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    Sin contrato de soporte vigente, el sistema sigue funcionando, pero no se
+    garantiza atención de incidentes ni se entregan nuevas versiones.
+  </div>
+
+  <!-- =========================== 10. Pago =========================== -->
+  <h2>10. Forma de pago</h2>
+  <ul>
+    <li><strong>50%</strong> a la firma de la propuesta — se inicia instalación, configuración y agendamiento de capacitación.</li>
+    <li><strong>50%</strong> al go-live — entrega oficial, validación del cliente, inicio del año de soporte.</li>
+    <li><strong>Moneda:</strong> Dólares estadounidenses (USD), efectivo.</li>
+    <li><strong>Sin anticipo no se inicia trabajo.</strong></li>
+  </ul>
+
+  <!-- =========================== 11. Tiempos =========================== -->
+  <h2>11. Tiempos de entrega</h2>
+  <table>
+    <thead>
+      <tr><th>Hito</th><th>Plazo</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Firma + 50% inicial</td><td>Día 0</td></tr>
+      <tr><td>Instalación y configuración inicial</td><td>3–5 días hábiles</td></tr>
+      <tr><td>Capacitación remota (8h)</td><td>A acordar dentro de las 2 semanas siguientes</td></tr>
+      <tr><td>Go-live (entrega oficial)</td><td>Día 10–15 hábil aproximado</td></tr>
+      <tr><td>Pago final 50%</td><td>Al go-live</td></tr>
+    </tbody>
+  </table>
+  <p>Sujeto a disponibilidad del cliente para sesiones de configuración y capacitación.</p>
+
+  <!-- =========================== 12. Requisitos =========================== -->
+  <h2>12. Requisitos técnicos del cliente</h2>
+  <h3>Hardware</h3>
+  <ul>
+    <li><strong>Servidor local</strong> (puede ser PC dedicada): Linux Ubuntu 22.04+ o Debian 12+, 4 GB RAM mínimo, 50 GB disco, conexión Ethernet a la red interna.</li>
+    <li><strong>Lectores Hikvision</strong> compatibles con protocolo ISAPI (modelos faciales como DS-K1T671/672 y similares).</li>
+    <li><strong>Conexión a Internet</strong> estable en el servidor (mínimo 5 Mbps simétricos recomendado).</li>
+  </ul>
+  <h3>Acceso</h3>
+  <ul>
+    <li>Acceso remoto SSH al servidor durante la instalación.</li>
+    <li>Credenciales de administrador de los dispositivos Hikvision.</li>
+    <li>Datos básicos de la empresa (nombre, RIF, sede, departamentos, listado de empleados, turnos vigentes).</li>
+  </ul>
+
+  <!-- =========================== 13. T&C =========================== -->
+  <h2>13. Términos y condiciones</h2>
+  <ol>
+    <li><strong>Propiedad intelectual:</strong> el software es licenciado, no vendido. El cliente no adquiere propiedad sobre el código fuente.</li>
+    <li><strong>Confidencialidad:</strong> ambas partes se comprometen a confidencialidad sobre información sensible compartida durante el proyecto.</li>
+    <li><strong>Datos del cliente:</strong> los datos de marcaciones son propiedad exclusiva del cliente. En caso de terminación se entrega respaldo completo en formato estándar (SQLite + exportación CSV).</li>
+    <li><strong>Limitación de responsabilidad:</strong> Cronometrix no asume responsabilidad por errores de cálculo derivados de configuración incorrecta proporcionada por el cliente, decisiones de nómina, ni reclamaciones laborales basadas en los reportes generados.</li>
+    <li><strong>Vigencia de la propuesta:</strong> 30 días desde la fecha de emisión.</li>
+    <li><strong>Jurisdicción:</strong> cualquier controversia se resolverá en la jurisdicción de la República Bolivariana de Venezuela.</li>
+  </ol>
+
+  <!-- =========================== 14. Próximos pasos =========================== -->
+  <h2>14. Próximos pasos</h2>
+  <ol>
+    <li>Confirmación por escrito de aceptación de la propuesta.</li>
+    <li>Pago del 50% inicial.</li>
+    <li>Agendamiento de sesión de levantamiento técnico (1 hora).</li>
+    <li>Cronograma confirmado de instalación y capacitación.</li>
+  </ol>
+
+  <h3>Contacto comercial</h3>
+  <table>
+    <tbody>
+      <tr><td style="width: 30%"><strong>Nombre</strong></td><td>Gerswin Pineda</td></tr>
+      <tr><td><strong>Correo</strong></td><td><a href="mailto:me@gerswin.com">me@gerswin.com</a></td></tr>
+      <tr><td><strong>Teléfono</strong></td><td>0412 594 5195</td></tr>
+    </tbody>
+  </table>
+
+  <div class="doc-footer">
+    Propuesta válida por 30 días desde su emisión · Precios expresados en USD<br/>
+    Cronometrix · Asistencia y biometría
+  </div>
+
+</div>
+</body>
+</html>
