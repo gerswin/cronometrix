@@ -231,6 +231,7 @@ These items were explicitly deferred from v1.0 with documented design rationale.
 | ID | Description | Notes |
 |----|-------------|-------|
 | DEPL-03-AUTO | Installer auto-registers a Cloudflare tunnel by calling the Cloudflare API with a CF API token (not just a tunnel TOKEN), creating the tunnel + DNS route + cloudflared service config in one step. | v1.1 should evaluate whether `cloudflared tunnel create` CLI invocation suffices vs full Go SDK call. Source: deferred from Phase 6 D-13 (token-based connector flow accepted as v1 ship); cross-referenced from `.planning/phases/06-licensing-deployment/06-VERIFICATION.md` deferred-items table row 1. |
+| LIC-05-CROSS-HOST | Real-hardware cross-host clone test on 2 distinct machines or 2 cloud VMs to prove LIC-05's anti-cloning binding. | Currently deferred to first production deployment evidence — see `.planning/phases/11-v1-0-live-environment-validation/evidence/06-lic-05-deferral/README.md`. v1.1 should evaluate whether this can be CI-automated using two ephemeral cloud VMs (DigitalOcean / Hetzner) or whether it remains a customer-deploy verification step. Source: deferred from Phase 11 D-06/D-07/D-09. |
 
 **Coverage:**
 - v1 requirements: 48 total
@@ -240,4 +241,4 @@ These items were explicitly deferred from v1.0 with documented design rationale.
 
 ---
 *Requirements defined: 2026-04-11*
-*Last updated: 2026-04-29 — traceability refreshed for milestone v1.0 sign-off (Phase 10-03)*
+*Last updated: 2026-04-29 — Phase 11 added LIC-05-CROSS-HOST to v1.1 Backlog (Plan 11-03)*

@@ -17,8 +17,8 @@ STATE.md flips milestone v1.0 to `complete`.
 | 03 | Live CI red regression (deliberate broken PR fails all 3 gates) | [11-02](../11-02-PLAN.md) | VALIDATE-CI-RED | [pending](./03-ci-red/README.md) |
 | 04 | Branch protection — 3 status checks required on `main` | [11-04](../11-04-PLAN.md) | VALIDATE-BRANCH-PROTECTION | [pending](./04-branch-protection/README.md) |
 | 05 | Fresh-VM installer smoke (Ubuntu 22.04 + Docker + CF tunnel + DO Functions) | [11-05](../11-05-PLAN.md) | VALIDATE-INSTALLER-SMOKE | [pending](./05-installer-smoke/README.md) |
-| 06 | LIC-05 cross-host clone test — risk-accept deferral to first prod install | [11-03](../11-03-PLAN.md) | VALIDATE-LIC-05-CLONE | [pending](./06-lic-05-deferral/README.md) |
-| 07 | Real Hikvision alertStream live test — risk-accept deferral to first prod install | [11-03](../11-03-PLAN.md) | VALIDATE-HIKVISION-LIVE | [pending](./07-hikvision-deferral/README.md) |
+| 06 | LIC-05 cross-host clone test — risk-accept deferral to first prod install | [11-03](../11-03-PLAN.md) | VALIDATE-LIC-05-CLONE | [DEFERRED](./06-lic-05-deferral/README.md) |
+| 07 | Real Hikvision alertStream live test — risk-accept deferral to first prod install | [11-03](../11-03-PLAN.md) | VALIDATE-HIKVISION-LIVE | [DEFERRED](./07-hikvision-deferral/README.md) |
 
 ## Evidence README schema (per D-02)
 

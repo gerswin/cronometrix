@@ -58,6 +58,8 @@ deferred:
 |---|------|-------------|----------|
 | 1 | Auto-registers a Cloudflare tunnel via CF API (strict reading of DEPL-03) | v1.1 Backlog — DEPL-03-AUTO (see REQUIREMENTS.md §v1.1 Backlog) | Current architecture: token-based connector to a pre-registered CF Zero Trust tunnel. Slug flows to .env (`CLIENT_SLUG=${CLIENT_SLUG}`) for future automation but no `cloudflare/cloudflare-go` API call exists. Documented as design choice D-13 in 06-CONTEXT.md and 06-03-SUMMARY. |
 
+> **Phase 11 deferral cross-reference (D-08):** The LIC-05 commitment for live cross-host clone-rejection proof is now formally backed by Phase 11 evidence. The risk-acceptance rationale, the v1.1 backlog commitment (`LIC-05-CROSS-HOST`), and the mandatory pre-flight checklist for the deploy engineer at first production install are recorded in [`Phase 11 / 06-lic-05-deferral`](../11-v1-0-live-environment-validation/evidence/06-lic-05-deferral/README.md).
+
 ### Required Artifacts
 
 | Artifact                                                            | Expected                                              | Status     | Details                                                                                                                                                |
