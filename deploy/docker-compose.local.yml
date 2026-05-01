@@ -1,0 +1,77 @@
+# Cronometrix — local development compose
+#
+# Diferente al docker-compose.yml de producción:
+#   - Construye las imágenes localmente (build:) en lugar de pull desde GHCR.
+#   - Sin servicio cloudflared (no túnel público).
+#   - Activa el bypass de licencia de E2E (CRONOMETRIX_E2E=true +
+#     CRONOMETRIX_LICENSE_BYPASS=true) para evitar la activación contra
+#     DO Functions. NO USAR ESTE FICHERO EN PRODUCCIÓN.
+#
+# Uso:
+#   cd deploy
+#   cp .env.local.example .env.local
+#   docker compose -f docker-compose.local.yml --env-file .env.local up --build
+#
+# Endpoints:
+#   API ........ http://localhost:3001
+#   Frontend ... http://localhost:3000
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: cronometrix-api:local
+    container_name: cronometrix-api
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=3001
+      - CRONOMETRIX_DB_PATH=/opt/cronometrix/data/cronometrix.db
+      - LICENSE_JWT_PATH=/opt/cronometrix/data/license.jwt
+      - TZ=America/Caracas
+      # Bypass de licencia para que el binario arranque sin DO Functions.
+      # Solo válido cuando CRONOMETRIX_E2E también es true (ver
+      # backend/tests/license_bypass_safety.rs).
+      - CRONOMETRIX_E2E=true
+      - CRONOMETRIX_LICENSE_BYPASS=true
+      # Túnel Cloudflare termina TLS → navegador ve HTTPS. Secure=true para
+      # que la cookie de refresh se mande de vuelta. Si testeas sólo
+      # localhost:3000 (http), bájalo a false.
+      - COOKIE_SECURE=true
+      # CORS para frontend local + URL del túnel Cloudflare quick.
+      # Cuando el túnel rota, actualiza la URL aquí y `restart api`.
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001,http://localhost:8080,https://seas-cheaper-memorial-refurbished.trycloudflare.com
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./data:/opt/cronometrix/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        # NEXT_PUBLIC_* tiene que estar disponible en BUILD time porque
+        # Next.js inlinea esos valores en el bundle del cliente.
+        # Vacío = URL relativa (mismo origin), ideal cuando hay reverse-proxy
+        # (Caddy + cloudflared) sirviendo API + frontend en el mismo host.
+        NEXT_PUBLIC_API_URL: ""
+    image: cronometrix-web:local
+    container_name: cronometrix-web
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy

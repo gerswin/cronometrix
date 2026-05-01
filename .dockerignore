@@ -1,0 +1,54 @@
+# Build context lives at the repo root because docker-compose uses
+# `context: ..` from /deploy. Without this file, transfers explode to multi-GB
+# (Cargo target/, node_modules/, .next/ all get pushed to the daemon).
+
+# Build artifacts
+**/target/
+**/node_modules/
+**/.next/
+**/dist/
+**/build/
+**/coverage/
+**/playwright-report/
+**/test-results/
+**/.turbo/
+
+# Secrets — NEVER ship in image layers
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+!backend/src/license/pubkey.pem
+!backend/tests/fixtures/*.pem
+
+# Local DBs and license cache
+**/cronometrix.db
+**/cronometrix.db-*
+**/data/
+
+# IDE / OS
+.git/
+.vscode/
+.idea/
+.DS_Store
+
+# Test artifacts
+**/__tests__/
+**/tests/
+**/e2e/
+**/.playwright/
+
+# Documentation + planning
+.planning/
+docs/
+images/
+bruno/
+do-functions/
+*.md
+!README.md
+
+# Pencil design source
+*.pen
