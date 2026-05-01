@@ -38,3 +38,19 @@ backend/default_*.profraw
 
 # Dokku deploy secrets
 deploy/dokku/deploy.env
+
+# Demo deploy local SQLite data (generated, contains seeded credentials)
+deploy/data/
+
+# Backend load-test outputs (regenerated per run)
+backend/load-test-results/
+
+# Claude Code per-user config (local settings, hooks, worktrees)
+.claude/
+.agents/
+
+# Kiro IDE config (per-user)
+.kiro/
+
+# Skill manager lockfile (regenerated)
+skills-lock.json
