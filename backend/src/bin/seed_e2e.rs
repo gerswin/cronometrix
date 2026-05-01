@@ -118,22 +118,25 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("departments insert failed for {}: {}", id, e))?;
     }
 
-    // ----- Employees (6 — 2 per department, varied names for filter tests) -----
-    // Schema (001 + 015): id, employee_code, name, department_id, status, deleted_at,
-    // version, created_at, updated_at, position, hire_date
-    for (id, code, name, dept_id) in [
-        ("emp-ana",    "EMP001", "Ana Pérez",       "dept-prod"),
-        ("emp-luis",   "EMP002", "Luis García",      "dept-prod"),
-        ("emp-maria",  "EMP003", "María López",      "dept-admin"),
-        ("emp-pedro",  "EMP004", "Pedro Ramírez",    "dept-admin"),
-        ("emp-carmen", "EMP005", "Carmen Silva",     "dept-rrhh"),
-        ("emp-jose",   "EMP006", "José Hernández",   "dept-rrhh"),
+    // ----- Employees (6 — 2 per department, varied names + salaries for filter tests) -----
+    // Schema (001 + 015 + 018): id, employee_code, name, department_id, status, deleted_at,
+    // version, created_at, updated_at, position, hire_date, base_salary_cents
+    //
+    // base_salary_cents spread across $30..$80 USD (3000..8000 cents) to validate
+    // payroll math + reports columns with realistic-but-bounded values.
+    for (id, code, name, dept_id, salary_cents) in [
+        ("emp-ana",    "EMP001", "Ana Pérez",       "dept-prod",  3000_i64),
+        ("emp-luis",   "EMP002", "Luis García",      "dept-prod",  4000_i64),
+        ("emp-maria",  "EMP003", "María López",      "dept-admin", 5000_i64),
+        ("emp-pedro",  "EMP004", "Pedro Ramírez",    "dept-admin", 6000_i64),
+        ("emp-carmen", "EMP005", "Carmen Silva",     "dept-rrhh",  7000_i64),
+        ("emp-jose",   "EMP006", "José Hernández",   "dept-rrhh",  8000_i64),
     ] {
         conn.execute(
             "INSERT OR IGNORE INTO employees \
              (id, employee_code, name, department_id, status, version, created_at, updated_at, position, base_salary_cents) \
-             VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch(), '', 100000000)",
-            (id, code, name, dept_id),
+             VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch(), '', ?5)",
+            (id, code, name, dept_id, salary_cents),
         )
         .await
         .map_err(|e| anyhow::anyhow!("employees insert failed for {}: {}", id, e))?;
