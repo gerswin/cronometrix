@@ -38,6 +38,7 @@ LE_EMAIL="${LE_EMAIL:-g3rswin@gmail.com}"
 : "${JWT_SECRET:?export JWT_SECRET — used by backend for HS256 token signing}"
 : "${TURSO_DATABASE_URL:?export TURSO_DATABASE_URL}"
 : "${TURSO_AUTH_TOKEN:?export TURSO_AUTH_TOKEN}"
+: "${DEVICE_CREDS_KEY:?export DEVICE_CREDS_KEY — base64-encoded 32-byte AES-256 key, gen: openssl rand -base64 32}"
 
 DEMO_MODE="${DEMO_MODE:-true}"
 
@@ -66,6 +67,7 @@ dk config:set --no-restart "$API_APP" \
   CORS_ALLOWED_ORIGINS="$WEB_URL" \
   COOKIE_SECURE=true \
   JWT_SECRET="$JWT_SECRET" \
+  DEVICE_CREDS_KEY="$DEVICE_CREDS_KEY" \
   TURSO_DATABASE_URL="$TURSO_DATABASE_URL" \
   TURSO_AUTH_TOKEN="$TURSO_AUTH_TOKEN"
 
