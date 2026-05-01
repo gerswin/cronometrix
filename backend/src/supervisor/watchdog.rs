@@ -44,15 +44,15 @@ pub async fn watchdog_task(state: AppState, cancel: CancellationToken) {
 /// Single iteration of the watchdog sweep. Public so integration tests can
 /// invoke it deterministically without waiting for the interval tick.
 pub async fn run_once(state: &AppState) -> anyhow::Result<u64> {
-    let conn = state.db.connect()?;
-    let rows = conn
+    let rows = state
+        .db_write
         .execute(
             "UPDATE devices \
              SET connection_state = 'offline', updated_at = unixepoch() \
              WHERE status = 'active' \
                AND connection_state != 'offline' \
                AND (last_seen_at IS NULL OR last_seen_at < unixepoch() - ?1)",
-            libsql::params![STALE_THRESHOLD_SECS],
+            vec![libsql::Value::Integer(STALE_THRESHOLD_SECS)],
         )
         .await?;
     Ok(rows)

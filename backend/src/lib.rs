@@ -24,3 +24,4 @@ pub mod state;
 pub mod supervisor;
 pub mod tenant_info;
 pub mod test_reset;
+pub mod users;

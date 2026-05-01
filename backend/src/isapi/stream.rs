@@ -318,7 +318,7 @@ async fn ingest_pair(
         photo_bytes: None,
     };
 
-    match events_service::persist_attendance_event(&conn, &state.paths.events_root, new_event).await {
+    match events_service::persist_attendance_event_queued(&state, &state.paths.events_root, new_event).await {
         Ok(PersistOutcome::Inserted { photo_path }) => {
             tracing::info!(
                 device_id = %cfg.id,

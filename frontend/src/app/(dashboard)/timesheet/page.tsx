@@ -2,12 +2,14 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { startOfWeek, endOfWeek, format } from 'date-fns'
+import { Plus } from 'lucide-react'
 import { api } from '@/lib/api'
 import { TopBar } from '@/components/layout/top-bar'
 import { WeekNavigator } from '@/components/timesheet/week-navigator'
 import { TimesheetTable } from '@/components/timesheet/timesheet-table'
 import { NovedadModal } from '@/components/timesheet/novedad-modal'
 import { useAuth } from '@/hooks/use-auth'
+import { PrimaryButton } from '@/components/ui/primary-button'
 import type { PaginatedResponse, DailyRecord } from '@/types/api'
 import type { PaginationState } from '@tanstack/react-table'
 
@@ -54,16 +56,17 @@ export default function TimesheetPage() {
         <div className="flex items-center justify-between">
           <WeekNavigator currentDate={currentDate} onChange={setCurrentDate} />
           {role === 'admin' && (
-            <button
+            <PrimaryButton
+              size="sm"
+              icon={Plus}
               data-testid="open-novedad-modal"
               onClick={() => {
                 setSelectedRecord(null)
                 setModalOpen(true)
               }}
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
             >
               Registrar Novedad
-            </button>
+            </PrimaryButton>
           )}
         </div>
 

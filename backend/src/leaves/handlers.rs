@@ -179,11 +179,7 @@ pub async fn create_leave(
         leave_type,
         justification,
     };
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let leave = service::create_leave(&conn, &claims.sub, req, evidence_relpath).await?;
+    let leave = service::create_leave_queued(&state, &claims.sub, req, evidence_relpath).await?;
 
     // 4. Publish recompute for every anchor_date in [from_date, to_date] so
     //    existing daily_records pick up the new overlay. Safe if recompute_tx
@@ -232,7 +228,7 @@ pub async fn cancel_leave(
         .map_err(|e| AppError::Internal(e.into()))?;
     // Fetch the leave BEFORE cancelling so we know the date range to recompute.
     let leave = service::get_by_id(&conn, &id).await?;
-    service::cancel(&conn, &id, q.version).await?;
+    service::cancel_queued(&state, &id, q.version).await?;
 
     publish_recompute_for_range(&state, &leave.employee_id, &leave.from_date, &leave.to_date);
 

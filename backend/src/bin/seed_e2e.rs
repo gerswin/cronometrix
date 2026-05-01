@@ -110,8 +110,8 @@ async fn main() -> anyhow::Result<()> {
     ] {
         conn.execute(
             "INSERT OR IGNORE INTO employees \
-             (id, employee_code, name, department_id, status, version, created_at, updated_at, position) \
-             VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch(), '')",
+             (id, employee_code, name, department_id, status, version, created_at, updated_at, position, base_salary_cents) \
+             VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch(), '', 100000000)",
             (id, code, name, dept_id),
         )
         .await

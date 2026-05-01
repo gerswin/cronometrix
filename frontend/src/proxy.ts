@@ -14,17 +14,12 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next()
   }
 
-  // Auth guard: protected routes require a refresh_token cookie (optimistic check;
-  // backend enforces real JWT verification on every request).
-  const isProtected = PROTECTED_PATHS.some(p => pathname.startsWith(p))
-  if (isProtected) {
-    const hasSession = req.cookies.get('refresh_token')?.value
-    if (!hasSession) {
-      const loginUrl = new URL('/login', req.url)
-      loginUrl.searchParams.set('redirect', pathname)
-      return NextResponse.redirect(loginUrl)
-    }
-  }
+  // Auth guard removed: backend cookie scopes refresh_token to /api/v1/auth
+  // so this proxy never sees it on /dashboard navigations and would loop
+  // logged-in users back to /login. Backend still enforces JWT on every API
+  // call, so an unauthenticated user reaching /dashboard hits 401 → axios
+  // interceptor bounces to /login. Net UX is the same.
+  void PROTECTED_PATHS
 
   try {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'

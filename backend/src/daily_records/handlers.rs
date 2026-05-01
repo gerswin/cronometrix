@@ -210,18 +210,27 @@ pub async fn create_override(
     let now = Utc::now().timestamp();
     let id = Uuid::new_v4().to_string();
 
-    conn.execute(
-        "INSERT INTO daily_record_overrides
-           (id, daily_record_id, override_work_minutes, override_entry_at, override_exit_at,
-            justification, evidence_path, overridden_by, overridden_at, status, version, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',1,?9,?9)",
-        libsql::params![
-            id.clone(), daily_record_id.clone(),
-            override_work_minutes, override_entry_at, override_exit_at,
-            justification.clone(), evidence_relpath.clone(),
-            claims.sub.clone(), now,
-        ],
-    ).await.map_err(|e| AppError::Internal(e.into()))?;
+    state
+        .db_write
+        .execute(
+            "INSERT INTO daily_record_overrides
+               (id, daily_record_id, override_work_minutes, override_entry_at, override_exit_at,
+                justification, evidence_path, overridden_by, overridden_at, status, version, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',1,?9,?9)",
+            vec![
+                libsql::Value::Text(id.clone()),
+                libsql::Value::Text(daily_record_id.clone()),
+                override_work_minutes.map(libsql::Value::Integer).unwrap_or(libsql::Value::Null),
+                override_entry_at.map(libsql::Value::Integer).unwrap_or(libsql::Value::Null),
+                override_exit_at.map(libsql::Value::Integer).unwrap_or(libsql::Value::Null),
+                libsql::Value::Text(justification.clone()),
+                evidence_relpath.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                libsql::Value::Text(claims.sub.clone()),
+                libsql::Value::Integer(now),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
 
     // Publish recompute so the daily_record reflects the override promptly
     if let Some(tx) = state.recompute_tx.as_ref() {

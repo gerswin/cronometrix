@@ -15,6 +15,9 @@ pub struct Employee {
     pub status: String,              // "active" | "inactive"
     pub position: String,            // empty string renders as '—' in UI per D-30a
     pub hire_date: Option<String>,   // ISO YYYY-MM-DD or null
+    /// Per-employee base salary in cents (migration 018). Authoritative for payroll math.
+    /// Department-level salary remains as a "default suggestion" only.
+    pub base_salary_cents: i64,
     pub deleted_at: Option<String>,  // ISO 8601 or null
     pub version: i64,
     pub created_at: String,          // ISO 8601
@@ -35,6 +38,8 @@ pub struct CreateEmployeeRequest {
     pub position: Option<String>,
     /// YYYY-MM-DD; service parses to epoch seconds. Empty string treated as NULL.
     pub hire_date: Option<String>,
+    /// Per-employee base salary in cents. Defaults to 0 when omitted.
+    pub base_salary_cents: Option<i64>,
 }
 
 /// Request body for PATCH /employees/:id. All fields optional; `version` is required
@@ -48,6 +53,7 @@ pub struct UpdateEmployeeRequest {
     pub position: Option<String>,
     /// YYYY-MM-DD; service parses to epoch seconds. Empty string treated as NULL clear.
     pub hire_date: Option<String>,
+    pub base_salary_cents: Option<i64>,
     pub version: i64,
 }
 

@@ -147,6 +147,58 @@ pub async fn persist_attendance_event(
     })
 }
 
+pub async fn persist_attendance_event_queued(
+    state: &AppState,
+    events_root: &Path,
+    event: NewAttendanceEvent,
+) -> Result<PersistOutcome, AppError> {
+    let bucket = event.captured_at / 30;
+    let photo_relpath: Option<String> = event.photo_bytes.as_ref().map(|_| {
+        let date = Utc
+            .timestamp_opt(event.captured_at, 0)
+            .single()
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "unknown-date".into());
+        format!("{}/{}.jpg", date, event.id)
+    });
+
+    let rows_affected = state
+        .db_write
+        .execute(
+            "INSERT OR IGNORE INTO attendance_events \
+             (id, employee_id, device_id, direction, captured_at, bucket_30s, \
+              is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
+            vec![
+                libsql::Value::Text(event.id.clone()),
+                event.employee_id.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                libsql::Value::Text(event.device_id.clone()),
+                libsql::Value::Text(event.direction.clone()),
+                libsql::Value::Integer(event.captured_at),
+                libsql::Value::Integer(bucket),
+                libsql::Value::Integer(event.is_unknown as i64),
+                event.face_id.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                event.employee_no_string.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                libsql::Value::Text(event.raw_xml.clone()),
+                photo_relpath.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+
+    if rows_affected == 0 {
+        return Ok(PersistOutcome::Deduplicated);
+    }
+
+    if let (Some(bytes), Some(rel)) = (event.photo_bytes.as_ref(), photo_relpath.as_ref()) {
+        write_photo_atomic(events_root, rel, bytes).map_err(AppError::Internal)?;
+    }
+
+    Ok(PersistOutcome::Inserted {
+        photo_path: photo_relpath,
+    })
+}
+
 /// Atomic write: write to a tempfile in the same dir, fsync, rename. Ensures
 /// partial writes (crash mid-write) never leave a truncated JPEG under the
 /// published path.

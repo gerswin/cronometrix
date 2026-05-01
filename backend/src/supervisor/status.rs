@@ -20,12 +20,16 @@ pub async fn update_connection_state(
     device_id: &str,
     new_state: &str,
 ) -> Result<()> {
-    let conn = state.db.connect()?;
-    conn.execute(
-        "UPDATE devices SET connection_state = ?1, updated_at = unixepoch() WHERE id = ?2",
-        libsql::params![new_state.to_string(), device_id.to_string()],
-    )
-    .await?;
+    state
+        .db_write
+        .execute(
+            "UPDATE devices SET connection_state = ?1, updated_at = unixepoch() WHERE id = ?2",
+            vec![
+                libsql::Value::Text(new_state.to_string()),
+                libsql::Value::Text(device_id.to_string()),
+            ],
+        )
+        .await?;
     Ok(())
 }
 
@@ -33,11 +37,12 @@ pub async fn update_connection_state(
 /// alertStream heartbeat AND every real event (the first byte of a new
 /// part is sufficient — the device is clearly reachable).
 pub async fn touch_last_seen(state: &AppState, device_id: &str) -> Result<()> {
-    let conn = state.db.connect()?;
-    conn.execute(
-        "UPDATE devices SET last_seen_at = unixepoch() WHERE id = ?1",
-        libsql::params![device_id.to_string()],
-    )
-    .await?;
+    state
+        .db_write
+        .execute(
+            "UPDATE devices SET last_seen_at = unixepoch() WHERE id = ?1",
+            vec![libsql::Value::Text(device_id.to_string())],
+        )
+        .await?;
     Ok(())
 }

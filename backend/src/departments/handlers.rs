@@ -24,8 +24,7 @@ pub async fn create_department(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let department = service::create(&conn, body).await?;
+    let department = service::create_queued(&state, body).await?;
 
     Ok((StatusCode::CREATED, Json(department)))
 }
@@ -67,8 +66,7 @@ pub async fn update_department(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let department = service::update(&conn, &id, body).await?;
+    let department = service::update_queued(&state, &id, body).await?;
 
     Ok(Json(department))
 }

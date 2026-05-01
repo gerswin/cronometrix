@@ -60,8 +60,6 @@ pub async fn update_rules(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-
     // Build dynamic SET clause
     let mut sets: Vec<String> = Vec::new();
     let mut values: Vec<libsql::Value> = Vec::new();
@@ -101,10 +99,11 @@ pub async fn update_rules(
         set_clause, version_param
     );
 
-    let rows_affected = conn
-        .execute(&sql, libsql::params_from_iter(values))
+    let rows_affected = state
+        .db_write
+        .execute(sql, values)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(AppError::Internal)?;
 
     if rows_affected == 0 {
         // Version conflict — singleton always exists
@@ -115,6 +114,7 @@ pub async fn update_rules(
     }
 
     // Return updated singleton
+    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
     let row = conn
         .query(
             "SELECT late_arrival_tolerance_min, early_departure_tolerance_min, bonus_minutes, \

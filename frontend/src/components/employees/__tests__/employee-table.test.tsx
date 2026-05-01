@@ -15,7 +15,7 @@ vi.stubGlobal('alert', alertSpy)
 function makeEmployee(over: Partial<Employee> = {}): Employee {
   return {
     id: 'emp-1',
-    cedula: 'V-12345678',
+    employee_code: 'V-12345678',
     name: 'Ana García',
     department_id: 'd1',
     department_name: 'Operaciones',
@@ -44,7 +44,7 @@ describe('EmployeeTable', () => {
         onPaginationChange={() => {}}
       />
     )
-    for (const h of ['Nombre', 'Cédula', 'Departamento', 'Cargo', 'Fecha Ingreso', 'Estatus', 'Acciones']) {
+    for (const h of ['Nombre', 'Identificativo', 'Departamento', 'Cargo', 'Fecha Ingreso', 'Estatus', 'Acciones']) {
       expect(screen.getByText(h)).toBeTruthy()
     }
   })

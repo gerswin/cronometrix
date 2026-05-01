@@ -82,8 +82,7 @@ pub async fn create_device(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let device = service::create(&conn, body, &state.config.device_creds_key).await?;
+    let device = service::create_queued(&state, body, &state.config.device_creds_key).await?;
 
     emit_lifecycle(&state, DeviceLifecycleEvent::Start(device.id.clone()));
 
@@ -136,8 +135,6 @@ pub async fn update_device(
     })?;
 
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-
-    // Snapshot the pre-patch row so we can diff connection-affecting fields.
     let pre = load_snapshot(&conn, &id).await?;
 
     // Track whether the request itself touches a connection-affecting field.
@@ -154,8 +151,7 @@ pub async fn update_device(
         || body.allow_insecure_tls.is_some()
         || body.status.is_some();
 
-    let device =
-        service::update(&conn, &id, body, &state.config.device_creds_key).await?;
+    let device = service::update_queued(&state, &id, body, &state.config.device_creds_key).await?;
 
     if req_touches_connection {
         let changed = match pre {
@@ -205,8 +201,7 @@ pub async fn deactivate_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    service::deactivate(&conn, &id).await?;
+    service::deactivate_queued(&state, &id).await?;
     emit_lifecycle(&state, DeviceLifecycleEvent::Stop(id.clone()));
     Ok(StatusCode::NO_CONTENT)
 }
@@ -276,8 +271,8 @@ pub async fn dispatch_command(
         Err(_) => CommandAuditOutcome::Timeout,
     };
 
-    service::write_command_audit(
-        &conn,
+    service::write_command_audit_queued(
+        &state,
         &claims.sub,
         &device_id,
         command,

@@ -194,7 +194,7 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
   }
 
   return (
-    <div className="overflow-x-auto bg-white rounded-xl border shadow-sm">
+    <div className="overflow-auto bg-white rounded-xl border shadow-sm max-h-[calc(100vh-220px)]">
       <table className="w-full text-sm">
         <thead>
           {table.getHeaderGroups().map((hg) => (
@@ -202,7 +202,7 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
               {hg.headers.map((h) => (
                 <th
                   key={h.id}
-                  className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap"
+                  className="sticky top-0 z-10 bg-white px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap shadow-[inset_0_-1px_0_0_rgb(226_232_240)]"
                 >
                   {flexRender(h.column.columnDef.header, h.getContext())}
                 </th>

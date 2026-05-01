@@ -184,7 +184,7 @@ pub async fn create_enrollment(
         })?;
 
     // Persist enrollment + push rows + write photo to disk.
-    let submit_response = service::start_enrollment(
+    let submit_response = service::start_enrollment_queued(
         &state,
         &claims.sub,
         &employee_id,
@@ -246,7 +246,7 @@ pub async fn retry_push(
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
 
     // Reset the push row to pending (idempotent via INSERT OR REPLACE).
-    let push_id = service::reset_push_to_pending(&conn, &enrollment_id, &device_id).await?;
+    let _push_id = service::reset_push_to_pending_queued(&state, &enrollment_id, &device_id).await?;
     drop(conn);
 
     // Retrieve parameters needed for the push.
@@ -300,14 +300,7 @@ pub async fn retry_push(
                 );
             }
             // Finalise enrollment status after single retry settles.
-            let conn2 = match state.db.connect() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!("retry: failed to connect for finalize: {e}");
-                    return;
-                }
-            };
-            if let Err(e) = service::finalize_enrollment_status(&conn2, &enrollment_id).await {
+            if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await {
                 tracing::error!(enrollment_id = %enrollment_id, err = %e, "retry finalize failed");
             }
         }

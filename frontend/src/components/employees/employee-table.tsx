@@ -47,18 +47,28 @@ export function EmployeeTable({
 
   const columns: ColumnDef<Employee>[] = [
     { accessorKey: 'name', header: 'Nombre' },
-    { accessorKey: 'cedula', header: 'Cédula' },
+    {
+      accessorKey: 'employee_code',
+      header: 'Identificativo',
+      cell: ({ getValue }) => (getValue() as string | undefined) || '—',
+    },
     {
       accessorKey: 'department_name',
       header: 'Departamento',
       cell: ({ getValue }) => (getValue() as string | undefined) ?? '—',
     },
-    { accessorKey: 'position', header: 'Cargo' },
+    {
+      accessorKey: 'position',
+      header: 'Cargo',
+      cell: ({ getValue }) => (getValue() as string | undefined) || '—',
+    },
     {
       accessorKey: 'hire_date',
       header: 'Fecha Ingreso',
       cell: ({ getValue }) => {
-        try { return format(new Date(getValue() as string), 'dd/MM/yyyy') } catch { return '—' }
+        const v = getValue() as string | null | undefined
+        if (!v) return '—'
+        try { return format(new Date(v), 'dd/MM/yyyy') } catch { return '—' }
       },
     },
     {

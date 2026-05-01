@@ -153,7 +153,7 @@ impl PurgeWorker {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(device_id = %device_id, err = %e, "PurgeWorker: failed to fetch device, marking pending_delete");
-                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete(&conn, &mapping_id).await {
+                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete_queued(&self.state, &mapping_id).await {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
                     continue;
@@ -169,7 +169,7 @@ impl PurgeWorker {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(device_id = %device_id, err = %e, "PurgeWorker: failed to build DeviceConnection");
-                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete(&conn, &mapping_id).await {
+                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete_queued(&self.state, &mapping_id).await {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
                     continue;
@@ -185,7 +185,7 @@ impl PurgeWorker {
 
             match result {
                 Ok(Ok(_)) => {
-                    if let Err(e) = enrollment_service::delete_mapping(&conn, &mapping_id).await {
+                    if let Err(e) = enrollment_service::delete_mapping_queued(&self.state, &mapping_id).await {
                         tracing::error!(mapping_id = %mapping_id, err = %e, "PurgeWorker: failed to delete mapping row");
                     } else {
                         tracing::info!(
@@ -198,13 +198,13 @@ impl PurgeWorker {
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(device_id = %device_id, err = %e, "PurgeWorker: delete_user failed");
-                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete(&conn, &mapping_id).await {
+                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete_queued(&self.state, &mapping_id).await {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
                 }
                 Err(_timeout) => {
                     tracing::warn!(device_id = %device_id, "PurgeWorker: delete_user timeout");
-                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete(&conn, &mapping_id).await {
+                    if let Err(ue) = enrollment_service::mark_mapping_pending_delete_queued(&self.state, &mapping_id).await {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete after timeout");
                     }
                 }

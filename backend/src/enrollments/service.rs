@@ -260,6 +260,135 @@ pub async fn start_enrollment(
     })
 }
 
+pub async fn start_enrollment_queued(
+    state: &AppState,
+    actor_id: &str,
+    employee_id: &str,
+    captured_via: &str,
+    source_device_id: Option<&str>,
+    face_quality_score: Option<&str>,
+    normalized_bytes: &[u8],
+) -> Result<EnrollmentSubmitResponse, AppError> {
+    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
+
+    let face_enrollment_id = Uuid::new_v4().to_string();
+    let enrollment_id = Uuid::new_v4().to_string();
+    let new_face_id = Uuid::new_v4().to_string();
+    let photo_relpath = format!("{}/{}.jpg", employee_id, enrollment_id);
+
+    state
+        .db_write
+        .execute(
+            "INSERT INTO face_enrollments \
+             (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
+            vec![
+                libsql::Value::Text(face_enrollment_id.clone()),
+                libsql::Value::Text(employee_id.to_string()),
+                libsql::Value::Text(captured_via.to_string()),
+                source_device_id.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
+                libsql::Value::Text(photo_relpath.clone()),
+                face_quality_score.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
+                libsql::Value::Text(actor_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+
+    state
+        .db_write
+        .execute(
+            "INSERT INTO enrollments \
+             (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
+             VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
+            vec![
+                libsql::Value::Text(enrollment_id.clone()),
+                libsql::Value::Text(employee_id.to_string()),
+                libsql::Value::Text(face_enrollment_id.clone()),
+                libsql::Value::Text(actor_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+
+    state
+        .db_write
+        .execute(
+            "UPDATE employees SET face_id = COALESCE(face_id, ?1) WHERE id = ?2",
+            vec![
+                libsql::Value::Text(new_face_id.clone()),
+                libsql::Value::Text(employee_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+
+    state
+        .db_write
+        .execute(
+            "UPDATE employees SET current_face_enrollment_id = ?1 WHERE id = ?2",
+            vec![
+                libsql::Value::Text(face_enrollment_id.clone()),
+                libsql::Value::Text(employee_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+
+    let mut fid_rows = conn
+        .query("SELECT face_id FROM employees WHERE id = ?1", params![employee_id.to_string()])
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let fid_row = fid_rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::NotFound {
+            code: "EMPLOYEE_NOT_FOUND",
+            message: format!("Employee '{}' not found", employee_id),
+        })?;
+    let face_id: String = fid_row.get(0).map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut push_responses = Vec::new();
+    for device in &devices {
+        let push_id = Uuid::new_v4().to_string();
+        state
+            .db_write
+            .execute(
+                "INSERT OR REPLACE INTO enrollment_device_pushes \
+                 (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
+                 VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
+                vec![
+                    libsql::Value::Text(push_id.clone()),
+                    libsql::Value::Text(enrollment_id.clone()),
+                    libsql::Value::Text(device.id.clone()),
+                ],
+            )
+            .await
+            .map_err(AppError::Internal)?;
+
+        push_responses.push(EnrollmentDevicePushResponse {
+            id: push_id,
+            device_id: device.id.clone(),
+            device_name: device.name.clone(),
+            status: "pending".to_string(),
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+        });
+    }
+
+    write_photo_atomic(&state.paths.enrollments_root, &photo_relpath, normalized_bytes)
+        .map_err(AppError::Internal)?;
+
+    Ok(EnrollmentSubmitResponse {
+        enrollment_id,
+        face_id,
+        device_pushes: push_responses,
+    })
+}
+
 /// Update a single push row's status and error_message.
 pub async fn update_push_status(
     conn: &Connection,
@@ -282,6 +411,29 @@ pub async fn update_push_status(
     Ok(())
 }
 
+pub async fn update_push_status_queued(
+    state: &AppState,
+    push_id: &str,
+    status: &str,
+    error_message: Option<&str>,
+) -> Result<(), AppError> {
+    state
+        .db_write
+        .execute(
+            "UPDATE enrollment_device_pushes \
+             SET status = ?1, error_message = ?2, completed_at = unixepoch() \
+             WHERE id = ?3",
+            vec![
+                libsql::Value::Text(status.to_string()),
+                error_message.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
+                libsql::Value::Text(push_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(())
+}
+
 /// Mark a push row as in_progress (records started_at).
 pub async fn mark_push_in_progress(
     conn: &Connection,
@@ -295,6 +447,20 @@ pub async fn mark_push_in_progress(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
+}
+
+pub async fn mark_push_in_progress_queued(state: &AppState, push_id: &str) -> Result<(), AppError> {
+    state
+        .db_write
+        .execute(
+            "UPDATE enrollment_device_pushes \
+             SET status = 'in_progress', started_at = unixepoch() \
+             WHERE id = ?1",
+            vec![libsql::Value::Text(push_id.to_string())],
+        )
+        .await
+        .map_err(AppError::Internal)?;
     Ok(())
 }
 
@@ -339,6 +505,29 @@ pub async fn reset_push_to_pending(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(push_id)
+}
+
+pub async fn reset_push_to_pending_queued(
+    state: &AppState,
+    enrollment_id: &str,
+    device_id: &str,
+) -> Result<String, AppError> {
+    let push_id = Uuid::new_v4().to_string();
+    state
+        .db_write
+        .execute(
+            "INSERT OR REPLACE INTO enrollment_device_pushes \
+             (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
+             VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
+            vec![
+                libsql::Value::Text(push_id.clone()),
+                libsql::Value::Text(enrollment_id.to_string()),
+                libsql::Value::Text(device_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
     Ok(push_id)
 }
 
@@ -397,6 +586,50 @@ pub async fn finalize_enrollment_status(
     Ok(())
 }
 
+pub async fn finalize_enrollment_status_queued(
+    state: &AppState,
+    enrollment_id: &str,
+) -> Result<(), AppError> {
+    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let mut rows = conn
+        .query(
+            "SELECT \
+               SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
+               SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END), \
+               COUNT(*) \
+             FROM enrollment_device_pushes \
+             WHERE enrollment_id = ?1",
+            params![enrollment_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let row = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!(
+            "no push rows for enrollment {}", enrollment_id
+        )))?;
+    let success: i64 = row.get::<Option<i64>>(0).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
+    let failed: i64 = row.get::<Option<i64>>(1).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
+    let total: i64 = row.get::<Option<i64>>(2).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
+    let final_status = if total == 0 { "failed" } else if success == 0 { "failed" } else if failed == 0 { "success" } else { "partial" };
+    state
+        .db_write
+        .execute(
+            "UPDATE enrollments \
+             SET status = ?1, completed_at = unixepoch(), version = version + 1 \
+             WHERE id = ?2",
+            vec![
+                libsql::Value::Text(final_status.to_string()),
+                libsql::Value::Text(enrollment_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(())
+}
+
 /// Upsert a device_face_mappings row (INSERT OR REPLACE) on push success (D-13).
 pub async fn upsert_device_face_mapping(
     conn: &Connection,
@@ -418,6 +651,31 @@ pub async fn upsert_device_face_mapping(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
+}
+
+pub async fn upsert_device_face_mapping_queued(
+    state: &AppState,
+    device_id: &str,
+    face_id: &str,
+    employee_id: &str,
+) -> Result<(), AppError> {
+    let id = Uuid::new_v4().to_string();
+    state
+        .db_write
+        .execute(
+            "INSERT OR REPLACE INTO device_face_mappings \
+             (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
+            vec![
+                libsql::Value::Text(id),
+                libsql::Value::Text(device_id.to_string()),
+                libsql::Value::Text(face_id.to_string()),
+                libsql::Value::Text(employee_id.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
     Ok(())
 }
 
@@ -517,6 +775,23 @@ pub async fn mark_mapping_pending_delete(
     Ok(())
 }
 
+pub async fn mark_mapping_pending_delete_queued(
+    state: &AppState,
+    mapping_id: &str,
+) -> Result<(), AppError> {
+    state
+        .db_write
+        .execute(
+            "UPDATE device_face_mappings \
+             SET state = 'pending_delete', version = version + 1, updated_at = unixepoch() \
+             WHERE id = ?1",
+            vec![libsql::Value::Text(mapping_id.to_string())],
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(())
+}
+
 /// Delete a device_face_mapping row after successful device purge.
 pub async fn delete_mapping(conn: &Connection, mapping_id: &str) -> Result<(), AppError> {
     conn.execute(
@@ -525,6 +800,18 @@ pub async fn delete_mapping(conn: &Connection, mapping_id: &str) -> Result<(), A
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
+}
+
+pub async fn delete_mapping_queued(state: &AppState, mapping_id: &str) -> Result<(), AppError> {
+    state
+        .db_write
+        .execute(
+            "DELETE FROM device_face_mappings WHERE id = ?1",
+            vec![libsql::Value::Text(mapping_id.to_string())],
+        )
+        .await
+        .map_err(AppError::Internal)?;
     Ok(())
 }
 

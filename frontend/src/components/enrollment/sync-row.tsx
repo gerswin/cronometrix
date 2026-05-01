@@ -1,9 +1,9 @@
 'use client'
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { CheckCircle2, XCircle, Loader2, Clock } from 'lucide-react'
+import { CheckCircle2, XCircle, Loader2, Clock, RotateCcw } from 'lucide-react'
 import { api } from '@/lib/api'
-import { Button } from '@/components/ui/button'
+import { PrimaryButton } from '@/components/ui/primary-button'
 import { Progress } from '@/components/ui/progress'
 import type { EnrollmentDevicePush } from '@/types/api'
 
@@ -53,15 +53,16 @@ export function SyncRow({ push, enrollmentId }: SyncRowProps) {
         <div className="flex items-center gap-2 shrink-0">
           <StatusPill status={push.status} />
           {push.status === 'failed' && (
-            <Button
+            <PrimaryButton
               size="sm"
               variant="outline"
               type="button"
+              icon={retryMutation.isPending ? Loader2 : RotateCcw}
               disabled={retryMutation.isPending}
               onClick={() => retryMutation.mutate()}
             >
-              {retryMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Reintentar'}
-            </Button>
+              {retryMutation.isPending ? 'Reintentando…' : 'Reintentar'}
+            </PrimaryButton>
           )}
         </div>
       </div>

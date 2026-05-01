@@ -2,7 +2,8 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  LayoutDashboard, Clock, Users, Cpu, UserCheck, BarChart2, ShieldCheck, Settings
+  LayoutDashboard, Clock, Users, Cpu, UserCheck, BarChart2, ShieldCheck, Settings, Building2,
+  Sliders, AlertTriangle, Activity, UserCog,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/use-auth'
@@ -22,8 +23,13 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/employees', icon: Users, label: 'Empleados' },
   { href: '/devices', icon: Cpu, label: 'Dispositivos' },
   { href: '/enrollment', icon: UserCheck, label: 'Enrolamiento' },
+  { href: '/anomalies', icon: AlertTriangle, label: 'Anomalías', roles: ['admin', 'supervisor'] },
+  { href: '/events', icon: Activity, label: 'Eventos' },
   { href: '/reports', icon: BarChart2, label: 'Reportes' },
   { href: '/audit', icon: ShieldCheck, label: 'Auditoría' },
+  { href: '/settings/users', icon: UserCog, label: 'Usuarios', roles: ['admin'] },
+  { href: '/settings/departments', icon: Building2, label: 'Departamentos', roles: ['admin'] },
+  { href: '/settings/rules', icon: Sliders, label: 'Reglas', roles: ['admin'] },
   { href: '/settings/tenant-info', icon: Settings, label: 'Configuración', roles: ['admin'] },
 ]
 

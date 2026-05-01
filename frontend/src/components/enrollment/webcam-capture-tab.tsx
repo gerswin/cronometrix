@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { Camera, AlertTriangle } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Camera, Check, RotateCcw, AlertTriangle } from 'lucide-react'
+import { PrimaryButton } from '@/components/ui/primary-button'
 
 interface WebcamCaptureTabProps {
   onCaptured: (blob: Blob) => void
@@ -137,18 +137,17 @@ export function WebcamCaptureTab({ onCaptured, onValidationChange }: WebcamCaptu
       </div>
 
       {!frozen ? (
-        <Button size="sm" onClick={captureFrame} type="button">
-          <Camera size={14} />
+        <PrimaryButton size="sm" icon={Camera} onClick={captureFrame} type="button">
           Capturar Rostro
-        </Button>
+        </PrimaryButton>
       ) : (
         <div className="flex gap-2">
-          <Button size="sm" onClick={accept} type="button">
+          <PrimaryButton size="sm" icon={Check} onClick={accept} type="button">
             Aceptar
-          </Button>
-          <Button size="sm" variant="outline" onClick={retake} type="button">
+          </PrimaryButton>
+          <PrimaryButton size="sm" variant="outline" icon={RotateCcw} onClick={retake} type="button">
             Recapturar
-          </Button>
+          </PrimaryButton>
         </div>
       )}
     </div>

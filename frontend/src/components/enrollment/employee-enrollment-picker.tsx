@@ -2,7 +2,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { Button } from '@/components/ui/button'
+import { ScanFace } from 'lucide-react'
+import { PrimaryButton } from '@/components/ui/primary-button'
 import type { Employee, PaginatedResponse } from '@/types/api'
 
 interface EmployeeEnrollmentPickerProps {
@@ -38,9 +39,9 @@ export function EmployeeEnrollmentPicker({ onSelect }: EmployeeEnrollmentPickerP
           </option>
         ))}
       </select>
-      <Button size="sm" disabled={!selectedId} onClick={handleStart} type="button">
+      <PrimaryButton size="sm" icon={ScanFace} disabled={!selectedId} onClick={handleStart} type="button">
         Iniciar Enrolamiento
-      </Button>
+      </PrimaryButton>
     </div>
   )
 }

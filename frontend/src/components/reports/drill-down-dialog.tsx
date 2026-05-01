@@ -8,21 +8,14 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import type { PaginatedResponse, DailyRecord } from '@/types/api'
+import { fmtTime } from '@/lib/format/datetime'
+import { fmtMin } from '@/lib/format/duration'
 
 interface Props {
   employeeId: string | null
   from: string
   to: string
   onClose: () => void
-}
-
-function fmtTime(iso: string | null | undefined) {
-  if (!iso) return '—'
-  try {
-    return iso.slice(11, 16)
-  } catch {
-    return '—'
-  }
 }
 
 export function DrillDownDialog({ employeeId, from, to, onClose }: Props) {
@@ -67,9 +60,9 @@ export function DrillDownDialog({ employeeId, from, to, onClose }: Props) {
                   <th className="px-2 py-2">Fecha</th>
                   <th className="px-2 py-2">Entrada</th>
                   <th className="px-2 py-2">Salida</th>
-                  <th className="px-2 py-2">Trab</th>
-                  <th className="px-2 py-2">Extra</th>
-                  <th className="px-2 py-2">Retraso</th>
+                  <th className="px-2 py-2 text-right tabular-nums">Trab</th>
+                  <th className="px-2 py-2 text-right tabular-nums">Extra</th>
+                  <th className="px-2 py-2 text-right tabular-nums">Retraso</th>
                   <th className="px-2 py-2">Anomalías</th>
                 </tr>
               </thead>
@@ -83,14 +76,23 @@ export function DrillDownDialog({ employeeId, from, to, onClose }: Props) {
                     <td className="px-2 py-2 text-slate-700">
                       {fmtTime(r.exit_at)}
                     </td>
-                    <td className="px-2 py-2 text-slate-700">
-                      {r.work_minutes}
+                    <td
+                      className="px-2 py-2 text-slate-700 text-right tabular-nums"
+                      title={`${r.work_minutes} min`}
+                    >
+                      {fmtMin(r.work_minutes)}
                     </td>
-                    <td className="px-2 py-2 text-slate-700">
-                      {r.overtime_minutes}
+                    <td
+                      className="px-2 py-2 text-slate-700 text-right tabular-nums"
+                      title={`${r.overtime_minutes} min`}
+                    >
+                      {fmtMin(r.overtime_minutes)}
                     </td>
-                    <td className="px-2 py-2 text-slate-700">
-                      {r.late_minutes}
+                    <td
+                      className="px-2 py-2 text-slate-700 text-right tabular-nums"
+                      title={`${r.late_minutes} min`}
+                    >
+                      {fmtMin(r.late_minutes)}
                     </td>
                     <td className="px-2 py-2 text-slate-700">
                       {r.leave_id ? (

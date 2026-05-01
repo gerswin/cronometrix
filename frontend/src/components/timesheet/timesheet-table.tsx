@@ -10,6 +10,7 @@ import { format } from 'date-fns'
 import { Pencil } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import type { DailyRecord } from '@/types/api'
+import { LeaveRowActions } from './leave-row-actions'
 
 function getStatusBadge(record: DailyRecord) {
   if (record.leave_id) {
@@ -109,25 +110,27 @@ export function TimesheetTable({
       header: 'Estado',
       cell: ({ row }) => getStatusBadge(row.original),
     },
-    // Edit icon column — hidden for non-admin per D-14
-    ...(role === 'admin'
-      ? [
-          {
-            id: 'actions',
-            header: '',
-            cell: ({ row }: { row: { original: DailyRecord } }) => (
-              <button
-                data-testid="open-novedad-modal"
-                onClick={() => onEditClick(row.original)}
-                className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700"
-                aria-label="Registrar novedad"
-              >
-                <Pencil size={14} />
-              </button>
-            ),
-          } as ColumnDef<DailyRecord>,
-        ]
-      : []),
+    {
+      id: 'actions',
+      header: '',
+      cell: ({ row }: { row: { original: DailyRecord } }) => (
+        <span className="inline-flex items-center gap-1">
+          {role === 'admin' && (
+            <button
+              data-testid="open-novedad-modal"
+              onClick={() => onEditClick(row.original)}
+              className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700"
+              aria-label="Registrar novedad"
+            >
+              <Pencil size={14} />
+            </button>
+          )}
+          {row.original.leave_id && (
+            <LeaveRowActions leaveId={row.original.leave_id} />
+          )}
+        </span>
+      ),
+    } as ColumnDef<DailyRecord>,
   ]
 
   const table = useReactTable({

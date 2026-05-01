@@ -101,3 +101,42 @@ pub async fn update_tenant_info(
 
     get_tenant_info(conn).await
 }
+
+pub async fn update_tenant_info_queued(
+    state: &crate::state::AppState,
+    req: UpdateTenantInfoRequest,
+) -> Result<TenantInfo, AppError> {
+    let mut sets: Vec<String> = Vec::new();
+    let mut values: Vec<libsql::Value> = Vec::new();
+
+    if let Some(val) = req.client_name {
+        sets.push(format!("client_name = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(val));
+    }
+    if let Some(val) = req.client_rif {
+        sets.push(format!("client_rif = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(val));
+    }
+    if let Some(val) = req.address {
+        sets.push(format!("address = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(val));
+    }
+    if sets.is_empty() {
+        return get_tenant_info(&state.db.connect().map_err(|e| AppError::Internal(e.into()))?).await;
+    }
+
+    sets.push("updated_at = unixepoch()".to_string());
+    sets.push("version = version + 1".to_string());
+    let set_clause = sets.join(", ");
+    let version_param = values.len() + 1;
+    values.push(libsql::Value::Integer(req.version));
+
+    let sql = format!(
+        "UPDATE tenant_info SET {} WHERE id = 1 AND version = ?{}",
+        set_clause, version_param
+    );
+
+    state.db_write.execute(sql, values).await.map_err(AppError::Internal)?;
+    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    get_tenant_info(&conn).await
+}

@@ -142,7 +142,7 @@ impl DeviceConnection {
     ///   1. Send without auth.  If the device returns 200, return it directly.
     ///   2. If 401: parse WWW-Authenticate, compute digest auth header, resend with it.
     pub async fn upload_face(&self, face_id: &str, jpeg_bytes: Vec<u8>) -> Result<String> {
-        use crate::enrollments::isapi_face::{build_facedata_metadata, build_multipart_form};
+        use crate::enrollments::isapi_face::build_multipart_form;
 
         let url = format!(
             "{}/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json",

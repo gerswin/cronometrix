@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
+use crate::db::write_queue::DbWriteQueue;
 use crate::enrollments::handlers::CapturesMap;
 use crate::recompute::RecomputeRequest;
 use crate::supervisor::LifecycleTx;
@@ -60,6 +61,8 @@ pub struct AppState {
     /// process-globally racy — see CLAUDE.md Conventions § Filesystem-root
     /// injection.
     pub paths: Arc<Paths>,
+    /// Single-writer queue for SQLite/libSQL mutations.
+    pub db_write: DbWriteQueue,
     pub lifecycle_tx: Option<LifecycleTx>,
     pub recompute_tx: Option<UnboundedSender<RecomputeRequest>>,
     pub event_broadcast: Option<broadcast::Sender<AttendanceEventSSEPayload>>,

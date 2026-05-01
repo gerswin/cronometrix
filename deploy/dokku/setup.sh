@@ -36,9 +36,12 @@ WEB_URL="https://${WEB_DOMAIN}"
 LE_EMAIL="${LE_EMAIL:-g3rswin@gmail.com}"
 
 : "${JWT_SECRET:?export JWT_SECRET — used by backend for HS256 token signing}"
-: "${TURSO_DATABASE_URL:?export TURSO_DATABASE_URL}"
-: "${TURSO_AUTH_TOKEN:?export TURSO_AUTH_TOKEN}"
 : "${DEVICE_CREDS_KEY:?export DEVICE_CREDS_KEY — base64-encoded 32-byte AES-256 key, gen: openssl rand -base64 32}"
+# Turso is OPTIONAL. If both TURSO_* vars are non-empty, the backend uses an
+# embedded replica with cloud sync. If either is empty (or absent), the backend
+# falls back to local-only SQLite (still persisted via dokku storage:mount).
+TURSO_DATABASE_URL="${TURSO_DATABASE_URL:-}"
+TURSO_AUTH_TOKEN="${TURSO_AUTH_TOKEN:-}"
 
 DEMO_MODE="${DEMO_MODE:-true}"
 
@@ -67,9 +70,19 @@ dk config:set --no-restart "$API_APP" \
   CORS_ALLOWED_ORIGINS="$WEB_URL" \
   COOKIE_SECURE=true \
   JWT_SECRET="$JWT_SECRET" \
-  DEVICE_CREDS_KEY="$DEVICE_CREDS_KEY" \
-  TURSO_DATABASE_URL="$TURSO_DATABASE_URL" \
-  TURSO_AUTH_TOKEN="$TURSO_AUTH_TOKEN"
+  DEVICE_CREDS_KEY="$DEVICE_CREDS_KEY"
+
+# Apply Turso config only if both vars are present. Otherwise unset them so the
+# backend's `has_turso()` returns false and it boots in local-only mode.
+if [ -n "$TURSO_DATABASE_URL" ] && [ -n "$TURSO_AUTH_TOKEN" ]; then
+  dk config:set --no-restart "$API_APP" \
+    TURSO_DATABASE_URL="$TURSO_DATABASE_URL" \
+    TURSO_AUTH_TOKEN="$TURSO_AUTH_TOKEN"
+  echo "[turso] cloud sync ENABLED"
+else
+  dk config:unset --no-restart "$API_APP" TURSO_DATABASE_URL TURSO_AUTH_TOKEN 2>/dev/null || true
+  echo "[turso] cloud sync DISABLED — running local-only SQLite (persisted via storage:mount)"
+fi
 
 if [ "$DEMO_MODE" = "true" ]; then
   dk config:set --no-restart "$API_APP" \

@@ -2,7 +2,13 @@ import { QueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import { toast } from 'sonner'
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+// `undefined` (var not set) → dev fallback localhost.
+// `""` (empty string) → relative URL, resolves against the page origin so a
+// reverse proxy (Caddy / Cloudflare tunnel) can serve API + frontend on the
+// same host. Distinct from `||` so an explicit empty string is honored.
+const RAW_API_BASE = process.env.NEXT_PUBLIC_API_URL
+export const API_BASE =
+  RAW_API_BASE === undefined ? 'http://localhost:3001' : RAW_API_BASE
 
 export const api = axios.create({
   baseURL: `${API_BASE}/api/v1`,

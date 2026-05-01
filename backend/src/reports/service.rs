@@ -178,7 +178,7 @@ pub async fn compute_report(
             e.position      AS cargo, \
             d.id            AS dept_id, \
             d.name          AS dept_name, \
-            d.base_salary_cents, \
+            e.base_salary_cents, \
             d.ordinary_daily_minutes, \
             dr.shift_type   AS day_shift_type, \
             dr.anchor_date, \
@@ -410,7 +410,7 @@ pub async fn compute_report(
         "SELECT l.employee_id, l.leave_type, l.from_date, l.to_date, \
                 e.employee_code, e.name, e.position, \
                 d.id AS dept_id, d.name AS dept_name, \
-                d.base_salary_cents, d.ordinary_daily_minutes, \
+                e.base_salary_cents, d.ordinary_daily_minutes, \
                 d.shift_type AS dept_shift_type \
            FROM leaves l \
            JOIN employees e   ON e.id = l.employee_id \

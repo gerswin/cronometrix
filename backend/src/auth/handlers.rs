@@ -62,12 +62,17 @@ pub async fn login(
     let refresh_token = service::issue_refresh_token(&user_id, &role, secret)?;
     let refresh_hash = service::hash_token(&refresh_token);
 
-    conn.execute(
-        "UPDATE users SET refresh_token_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
-        libsql::params![refresh_hash, user_id.clone()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    state
+        .db_write
+        .execute(
+            "UPDATE users SET refresh_token_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
+            vec![
+                libsql::Value::Text(refresh_hash),
+                libsql::Value::Text(user_id.clone()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
 
     // Build httpOnly refresh cookie — SameSite=Lax per review fix (not Strict)
     // Lax allows navigation from email/portal links while still blocking CSRF POST attacks
@@ -144,12 +149,17 @@ pub async fn refresh(
     let new_refresh_token = service::issue_refresh_token(&user_id, &role, secret)?;
     let new_refresh_hash = service::hash_token(&new_refresh_token);
 
-    conn.execute(
-        "UPDATE users SET refresh_token_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
-        libsql::params![new_refresh_hash, user_id.clone()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    state
+        .db_write
+        .execute(
+            "UPDATE users SET refresh_token_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
+            vec![
+                libsql::Value::Text(new_refresh_hash),
+                libsql::Value::Text(user_id.clone()),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
 
     let cookie = Cookie::build(("refresh_token", new_refresh_token))
         .http_only(true)
@@ -188,17 +198,14 @@ pub async fn logout(
     let secret = state.config.jwt_secret.as_bytes();
     let claims = service::verify_refresh_token(&refresh_token, secret)?;
 
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    conn.execute(
-        "UPDATE users SET refresh_token_hash = NULL, updated_at = unixepoch() WHERE id = ?1",
-        [claims.sub],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    state
+        .db_write
+        .execute(
+            "UPDATE users SET refresh_token_hash = NULL, updated_at = unixepoch() WHERE id = ?1",
+            vec![libsql::Value::Text(claims.sub)],
+        )
+        .await
+        .map_err(AppError::Internal)?;
 
     // Expire the cookie
     let expired_cookie = Cookie::build(("refresh_token", ""))

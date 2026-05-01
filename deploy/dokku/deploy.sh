@@ -33,9 +33,11 @@ set -a; . "$ENV_FILE"; set +a
 : "${API_DOMAIN:?set API_DOMAIN in $ENV_FILE}"
 : "${WEB_DOMAIN:?set WEB_DOMAIN in $ENV_FILE}"
 : "${JWT_SECRET:?set JWT_SECRET in $ENV_FILE}"
-: "${TURSO_DATABASE_URL:?set TURSO_DATABASE_URL in $ENV_FILE}"
-: "${TURSO_AUTH_TOKEN:?set TURSO_AUTH_TOKEN in $ENV_FILE}"
 : "${DEVICE_CREDS_KEY:?set DEVICE_CREDS_KEY in $ENV_FILE — base64 32-byte AES-256 key, gen: openssl rand -base64 32}"
+# Turso is OPTIONAL. Leave both blank to run local-only SQLite (still persisted
+# via dokku storage:mount). Set both to enable embedded replica + cloud sync.
+TURSO_DATABASE_URL="${TURSO_DATABASE_URL:-}"
+TURSO_AUTH_TOKEN="${TURSO_AUTH_TOKEN:-}"
 : "${LE_EMAIL:?set LE_EMAIL in $ENV_FILE}"
 SKIP_LE="${SKIP_LE:-false}"
 GIT_BRANCH="${GIT_BRANCH:-main}"

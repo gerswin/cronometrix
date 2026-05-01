@@ -3,11 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { X } from 'lucide-react'
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent,
 } from '@/components/ui/dialog'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { Button } from '@/components/ui/button'
+import { PrimaryButton } from '@/components/ui/primary-button'
 import { ValidationPanel } from './validation-panel'
 import { SyncPanel } from './sync-panel'
 import { KioskCaptureTab } from './kiosk-capture-tab'
@@ -140,110 +140,160 @@ export function EnrollmentModal({ open, employee, onClose }: EnrollmentModalProp
   const isSyncing = !!enrollmentId
   const canSubmit = !!photoBlob && allValidationGreen && !submitMutation.isPending && !isSyncing
 
+  const TABS: Array<{ key: CaptureTab; label: string }> = [
+    { key: 'hikvision', label: 'Lector Hikvision' },
+    { key: 'webcam', label: 'Webcam' },
+    { key: 'upload', label: 'Subir JPG' },
+  ]
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-5xl w-full max-h-[88vh] overflow-y-auto p-0">
-        <DialogHeader className="px-6 pt-6 pb-0">
-          <DialogTitle>
-            Enrolamiento Facial
-            {employee ? ` — ${employee.name}` : ''}
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="px-6 py-4 flex gap-6">
-          {/* Left column: capture tabs */}
-          <div className="flex-1 min-w-0">
-            {!isSyncing ? (
-              <Tabs
-                value={tab}
-                onValueChange={(v) => {
-                  setTab(v as CaptureTab)
-                  setPhotoBlob(null)
-                  setAllValidationGreen(false)
-                }}
+      <DialogContent
+        className="max-w-[700px] p-0 overflow-hidden"
+        data-testid="enrollment-modal"
+      >
+        <div className="flex flex-col max-h-[88vh]">
+          {/* ── Header ──────────────────────────────────────────── */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-[#EEF0F2]">
+            <div className="flex flex-col gap-0.5">
+              <h2
+                className="text-[20px] font-bold text-[#1A1A1A] leading-tight"
+                style={{ fontFamily: 'var(--font-sans)' }}
               >
-                <TabsList>
-                  <TabsTrigger value="hikvision">Lector Hikvision</TabsTrigger>
-                  <TabsTrigger value="webcam">Webcam</TabsTrigger>
-                  <TabsTrigger value="upload">Subir JPG</TabsTrigger>
-                </TabsList>
+                Enrolamiento Facial
+              </h2>
+              {employee && (
+                <p
+                  className="text-[13px] italic text-[#666666]"
+                  style={{ fontFamily: 'var(--font-serif)' }}
+                >
+                  {employee.name}
+                  {employee.employee_code ? ` — ${employee.employee_code}` : ''}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              aria-label="Cerrar"
+              onClick={handleClose}
+              className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#F3F4F6] transition-colors"
+            >
+              <X size={20} className="text-[#666666]" />
+            </button>
+          </div>
 
-                <div className="mt-4">
-                  <TabsContent value="hikvision">
-                    {employee && (
-                      <KioskCaptureTab
-                        employeeId={employee.id}
-                        onCaptured={(blob) => setPhotoBlob(blob)}
-                      />
-                    )}
-                  </TabsContent>
+          {/* ── Tabs ────────────────────────────────────────────── */}
+          {!isSyncing && (
+            <div className="flex items-center px-6 border-b border-[#EEF0F2]">
+              {TABS.map((t) => {
+                const active = tab === t.key
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => {
+                      setTab(t.key)
+                      setPhotoBlob(null)
+                      setAllValidationGreen(false)
+                    }}
+                    data-testid={`enroll-tab-${t.key}`}
+                    className={`px-4 py-3 text-[13px] transition-colors border-b-2 ${
+                      active
+                        ? 'text-[#1E3FB8] font-semibold border-[#1E3FB8]'
+                        : 'text-[#666666] border-transparent hover:text-[#1A1A1A]'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
 
-                  <TabsContent value="webcam">
+          {/* ── Body (2 columns) ────────────────────────────────── */}
+          <div className="flex-1 px-6 py-5 flex gap-6 overflow-y-auto">
+            {/* Left column: capture content */}
+            <div className="flex-1 min-w-0">
+              {!isSyncing ? (
+                <>
+                  {tab === 'hikvision' && employee && (
+                    <KioskCaptureTab
+                      employeeId={employee.id}
+                      onCaptured={(blob) => setPhotoBlob(blob)}
+                    />
+                  )}
+                  {tab === 'webcam' && (
                     <WebcamCaptureTab
                       onCaptured={(blob) => setPhotoBlob(blob)}
                       onValidationChange={setAllValidationGreen}
                     />
-                  </TabsContent>
-
-                  <TabsContent value="upload">
+                  )}
+                  {tab === 'upload' && (
                     <UploadCaptureTab
                       onCaptured={(file) => {
                         setPhotoBlob(file)
-                        // Upload tab: skip face-api validation — server validates
                         setAllValidationGreen(true)
                       }}
                     />
-                  </TabsContent>
-                </div>
-              </Tabs>
-            ) : (
-              <p className="text-sm text-slate-500">
-                Enrolamiento enviado. Monitoreando sincronización por dispositivo…
-              </p>
-            )}
+                  )}
+                </>
+              ) : (
+                <p className="text-[13px] text-[#666666]">
+                  Enrolamiento enviado. Monitoreando sincronización por dispositivo…
+                </p>
+              )}
+            </div>
+
+            {/* Right column: validation + sync (280px per design) */}
+            <div className="w-[280px] shrink-0 flex flex-col gap-5">
+              {!isSyncing && tab === 'webcam' && (
+                <ValidationPanel
+                  videoRef={videoRef}
+                  onValidationChange={setAllValidationGreen}
+                  active={tab === 'webcam' && !photoBlob}
+                />
+              )}
+
+              {enrollmentId && enrollmentStatus && (
+                <SyncPanel
+                  device_pushes={enrollmentStatus.device_pushes}
+                  enrollmentId={enrollmentId}
+                />
+              )}
+            </div>
           </div>
 
-          {/* Right column: validation + sync */}
-          <div className="w-64 shrink-0 space-y-6">
-            {!isSyncing && tab === 'webcam' && (
-              <ValidationPanel
-                videoRef={videoRef}
-                onValidationChange={setAllValidationGreen}
-                active={tab === 'webcam' && !photoBlob}
-              />
-            )}
-
-            {enrollmentId && enrollmentStatus && (
-              <SyncPanel
-                device_pushes={enrollmentStatus.device_pushes}
-                enrollmentId={enrollmentId}
-              />
-            )}
+          {/* ── Footer ──────────────────────────────────────────── */}
+          <div className="flex items-center justify-between px-6 py-3 border-t border-[#EEF0F2] bg-[#FAFBFC]">
+            <p className="text-[11px] text-[#666666] flex-1 pr-4">
+              {!photoBlob
+                ? 'Captura una foto para continuar.'
+                : !allValidationGreen && tab !== 'upload'
+                ? 'Espera que las validaciones de IA sean verdes.'
+                : 'Listo para enrolar.'}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleClose}
+                className="px-6 py-2.5 rounded text-[13px] font-medium text-[#1A1A1A] bg-white border border-[#EEF0F2] hover:bg-slate-50 transition-colors"
+              >
+                Cerrar
+              </button>
+              {!isSyncing && (
+                <PrimaryButton
+                  type="button"
+                  size="md"
+                  disabled={!canSubmit}
+                  aria-disabled={!canSubmit}
+                  onClick={() => submitMutation.mutate()}
+                >
+                  {submitMutation.isPending ? 'Enviando…' : 'Enrolar'}
+                </PrimaryButton>
+              )}
+            </div>
           </div>
         </div>
-
-        <DialogFooter className="px-6 pb-6 gap-2">
-          <p className="text-xs text-slate-400 flex-1">
-            {!photoBlob
-              ? 'Captura una foto para continuar.'
-              : !allValidationGreen && tab !== 'upload'
-              ? 'Espera que las validaciones de IA sean verdes.'
-              : 'Listo para enrolar.'}
-          </p>
-          <Button variant="outline" onClick={handleClose} type="button">
-            Cerrar
-          </Button>
-          {!isSyncing && (
-            <Button
-              type="button"
-              disabled={!canSubmit}
-              aria-disabled={!canSubmit}
-              onClick={() => submitMutation.mutate()}
-            >
-              {submitMutation.isPending ? 'Enviando…' : 'Enrolar'}
-            </Button>
-          )}
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

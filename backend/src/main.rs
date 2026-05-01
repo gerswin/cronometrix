@@ -33,7 +33,12 @@ use cronometrix_api::setup;
 use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
 use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
-use cronometrix_api::workers::{backfill::BackfillWorker, purge::PurgeWorker};
+use cronometrix_api::users;
+use cronometrix_api::workers::{
+    backfill::BackfillWorker,
+    db_write,
+    purge::PurgeWorker,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -61,6 +66,9 @@ async fn main() -> anyhow::Result<()> {
     // because the worker drains with HashSet dedup; event burst collapses to a
     // single recompute per (employee_id, anchor_date).
     let (recompute_tx, recompute_rx) = mpsc::unbounded_channel::<RecomputeRequest>();
+
+    // Single-writer channel for SQLite/libSQL mutations.
+    let (db_write_tx, db_write_rx) = mpsc::unbounded_channel::<cronometrix_api::db::write_queue::WriteCommand>();
 
     // Event broadcast: attendance service -> SSE stream clients. Buffer 256 events;
     // lagged subscribers (slow clients) simply drop missed events — non-fatal for a
@@ -121,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
         paths,
+        db_write: cronometrix_api::db::write_queue::DbWriteQueue::new(db_write_tx),
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: Some(recompute_tx),
         event_broadcast: Some(event_tx),
@@ -150,6 +159,14 @@ async fn main() -> anyhow::Result<()> {
     let recompute_worker = recompute::worker::RecomputeWorker::new(state.clone(), shutdown.clone());
     let recompute_handle = tokio::spawn(async move {
         recompute_worker.run(recompute_rx).await;
+    });
+
+    let _db_write_handle = tokio::spawn({
+        let db = state.db.clone();
+        let c = shutdown.clone();
+        async move {
+            db_write::run(db, db_write_rx, c).await;
+        }
     });
 
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
@@ -330,6 +347,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/leaves/{id}", delete(leaves::handlers::cancel_leave))
         .route("/daily-records/{id}/overrides", post(daily_records::handlers::create_override))
         .route("/tenant-info", patch(tenant_info::handlers::patch_tenant_info))
+        .route("/users", post(users::handlers::create_user))
+        .route("/users", get(users::handlers::list_users))
+        .route("/users/{id}", get(users::handlers::get_user))
+        .route("/users/{id}", patch(users::handlers::update_user))
+        .route("/users/{id}", delete(users::handlers::deactivate_user))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,
@@ -455,7 +477,11 @@ async fn health(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    conn.execute("SELECT 1", ())
+    let mut rows = conn
+        .query("SELECT 1", ())
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    rows.next()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 

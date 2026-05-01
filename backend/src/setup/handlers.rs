@@ -88,18 +88,20 @@ pub async fn setup_init(
     let password_hash = service::hash_password(&body.password)?;
     let user_id = Uuid::new_v4().to_string();
 
-    conn.execute(
-        "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
-        libsql::params![
-            user_id.clone(),
-            body.username,
-            body.full_name,
-            password_hash
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    state
+        .db_write
+        .execute(
+            "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
+            vec![
+                libsql::Value::Text(user_id.clone()),
+                libsql::Value::Text(body.username),
+                libsql::Value::Text(body.full_name),
+                libsql::Value::Text(password_hash),
+            ],
+        )
+        .await
+        .map_err(AppError::Internal)?;
 
     Ok((
         StatusCode::CREATED,

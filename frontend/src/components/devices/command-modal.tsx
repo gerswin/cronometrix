@@ -3,8 +3,9 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { Send } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { PrimaryButton } from '@/components/ui/primary-button'
 import type { Device } from '@/types/api'
 
 const COMMANDS = [
@@ -67,14 +68,16 @@ export function CommandModal({ open, device, onClose }: CommandModalProps) {
           )}
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button
+          <PrimaryButton variant="outline" size="md" onClick={onClose}>Cancelar</PrimaryButton>
+          <PrimaryButton
+            size="md"
+            icon={Send}
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending}
             data-testid="command-modal-submit"
           >
             {mutation.isPending ? 'Enviando…' : 'Enviar Comando'}
-          </Button>
+          </PrimaryButton>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -29,7 +29,6 @@ pub async fn patch_tenant_info(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let info = service::update_tenant_info(&conn, body).await?;
+    let info = service::update_tenant_info_queued(&state, body).await?;
     Ok(Json(info))
 }

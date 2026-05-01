@@ -234,114 +234,126 @@ pub async fn recompute_for_day(
     };
     let out = calc::compute_daily_record(&input);
 
-    // 8. Upsert + anomaly replacement on the SAME connection. libSQL uses
-    //    SQLite's shared-cache + file-locked backend; opening a second
-    //    connection for the write side while the read `conn` was still open
-    //    produced "database is locked" under test loads. Reusing `conn` for
-    //    the transaction is safe because all read rows have been drained + the
-    //    statement cursors dropped before BEGIN.
-    let txn_conn = &conn;
-    txn_conn
-        .execute("BEGIN", ())
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let employee_id = employee_id.to_string();
+    let anchor_date_str = anchor_date.format("%Y-%m-%d").to_string();
+    let dept_id = dept.id.clone();
+    let shift_type = dept.shift_type.clone();
+    let out_clone = out.clone();
+    let prior_row_id = prior_row_id.clone();
+    state
+        .db_write
+        .run(move |conn| -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+            Box::pin(async move {
+                let employee_id = employee_id.clone();
+                let anchor_date_str = anchor_date_str.clone();
+                let dept_id = dept_id.clone();
+                let shift_type = shift_type.clone();
+                let out = out_clone.clone();
+                let prior_row_id = prior_row_id.clone();
 
-    let now = chrono::Utc::now().timestamp();
-    let new_id = prior_row_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let now = chrono::Utc::now().timestamp();
+                let new_id = prior_row_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    // ON CONFLICT DO UPDATE preserves the id of the existing row so
-    // daily_record_anomalies FK remains valid (Pitfall 1).
-    txn_conn
-        .execute(
-            "INSERT INTO daily_records (id, employee_id, department_id, anchor_date, shift_type, \
-             work_minutes, overtime_minutes, late_minutes, early_departure_minutes, \
-             is_rest_day_worked, entry_at, exit_at, leave_id, computed_at, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?14) \
-             ON CONFLICT(employee_id, anchor_date) DO UPDATE SET \
-                work_minutes = excluded.work_minutes, \
-                overtime_minutes = excluded.overtime_minutes, \
-                late_minutes = excluded.late_minutes, \
-                early_departure_minutes = excluded.early_departure_minutes, \
-                is_rest_day_worked = excluded.is_rest_day_worked, \
-                entry_at = excluded.entry_at, \
-                exit_at = excluded.exit_at, \
-                leave_id = excluded.leave_id, \
-                shift_type = excluded.shift_type, \
-                computed_at = excluded.computed_at, \
-                updated_at = excluded.updated_at",
-            params![
-                new_id.clone(),
-                employee_id.to_string(),
-                dept.id.clone(),
-                anchor_date.format("%Y-%m-%d").to_string(),
-                dept.shift_type.clone(),
-                out.work_minutes,
-                out.overtime_minutes,
-                out.late_minutes,
-                out.early_departure_minutes,
-                out.is_rest_day_worked as i64,
-                out.entry_at,
-                out.exit_at,
-                out.leave_id.clone(),
-                now,
-            ],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+                conn.execute("BEGIN", ())
+                    .await
+                    .map_err(|e| AppError::Internal(e.into()))?;
+                let txn_result: anyhow::Result<()> = async {
+                    conn.execute(
+                        "INSERT INTO daily_records (id, employee_id, department_id, anchor_date, shift_type, \
+                         work_minutes, overtime_minutes, late_minutes, early_departure_minutes, \
+                         is_rest_day_worked, entry_at, exit_at, leave_id, computed_at, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?14) \
+                         ON CONFLICT(employee_id, anchor_date) DO UPDATE SET \
+                            work_minutes = excluded.work_minutes, \
+                            overtime_minutes = excluded.overtime_minutes, \
+                            late_minutes = excluded.late_minutes, \
+                            early_departure_minutes = excluded.early_departure_minutes, \
+                            is_rest_day_worked = excluded.is_rest_day_worked, \
+                            entry_at = excluded.entry_at, \
+                            exit_at = excluded.exit_at, \
+                            leave_id = excluded.leave_id, \
+                            shift_type = excluded.shift_type, \
+                            computed_at = excluded.computed_at, \
+                            updated_at = excluded.updated_at",
+                        params![
+                            new_id.clone(),
+                            employee_id.clone(),
+                            dept_id.clone(),
+                            anchor_date_str.clone(),
+                            shift_type.clone(),
+                            out.work_minutes,
+                            out.overtime_minutes,
+                            out.late_minutes,
+                            out.early_departure_minutes,
+                            out.is_rest_day_worked as i64,
+                            out.entry_at,
+                            out.exit_at,
+                            out.leave_id.clone(),
+                            now,
+                        ],
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
 
-    // Fetch resolved id (may differ from `new_id` if the ON CONFLICT path
-    // preserved an older row's id).
-    let mut id_rows = txn_conn
-        .query(
-            "SELECT id FROM daily_records WHERE employee_id = ?1 AND anchor_date = ?2",
-            params![
-                employee_id.to_string(),
-                anchor_date.format("%Y-%m-%d").to_string()
-            ],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let resolved_row = id_rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("upserted row vanished")))?;
-    let resolved_id: String = resolved_row
-        .get(0)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    drop(id_rows);
+                    let mut id_rows = conn
+                        .query(
+                            "SELECT id FROM daily_records WHERE employee_id = ?1 AND anchor_date = ?2",
+                            params![employee_id.clone(), anchor_date_str.clone()],
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    let resolved_row = id_rows
+                        .next()
+                        .await
+                        .map_err(|e| AppError::Internal(e.into()))?
+                        .ok_or_else(|| anyhow::anyhow!("upserted row vanished"))?;
+                    let resolved_id: String = resolved_row
+                        .get(0)
+                        .map_err(|e| anyhow::anyhow!(e))?;
 
-    // Replace anomalies (Pitfall 3 — never accumulate).
-    txn_conn
-        .execute(
-            "DELETE FROM daily_record_anomalies WHERE daily_record_id = ?1",
-            params![resolved_id.clone()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+                    conn.execute(
+                        "DELETE FROM daily_record_anomalies WHERE daily_record_id = ?1",
+                        params![resolved_id.clone()],
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
 
-    for code in &out.anomalies {
-        txn_conn
-            .execute(
-                "INSERT INTO daily_record_anomalies (id, daily_record_id, code, detail, created_at) \
-                 VALUES (?1, ?2, ?3, NULL, ?4)",
-                params![
-                    uuid::Uuid::new_v4().to_string(),
-                    resolved_id.clone(),
-                    code.as_str().to_string(),
-                    now
-                ],
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-    }
+                    for code in &out.anomalies {
+                        conn.execute(
+                            "INSERT INTO daily_record_anomalies (id, daily_record_id, code, detail, created_at) \
+                             VALUES (?1, ?2, ?3, NULL, ?4)",
+                            params![
+                                uuid::Uuid::new_v4().to_string(),
+                                resolved_id.clone(),
+                                code.as_str().to_string(),
+                                now
+                            ],
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    }
 
-    txn_conn
-        .execute("COMMIT", ())
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+                    Ok(())
+                }
+                .await;
+
+                match txn_result {
+                    Ok(()) => {
+                        conn.execute("COMMIT", ())
+                            .await
+                            .map_err(|e| AppError::Internal(e.into()))?;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let _ = conn.execute("ROLLBACK", ()).await;
+                        Err(e)
+                    }
+                }
+            })
+        })
+        .await?;
     Ok(())
 }
 

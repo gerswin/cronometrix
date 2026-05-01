@@ -1,17 +1,34 @@
 'use client'
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
-import { api } from '@/lib/api'
+import { Bell, Settings, LogOut } from 'lucide-react'
+import { toast } from 'sonner'
+import { api, setAccessToken } from '@/lib/api'
 import { aggregateKPIs } from '@/lib/kpi-utils'
+import { useAuth } from '@/hooks/use-auth'
 import { KPITile } from '@/components/dashboard/kpi-tile'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
 import { DeptChart } from '@/components/dashboard/dept-chart'
-import { DeviceStatusSummary } from '@/components/dashboard/device-banner'
-import { TopBar } from '@/components/layout/top-bar'
-import type { PaginatedResponse, DailyRecord, Device } from '@/types/api'
+import type { PaginatedResponse, DailyRecord, Device, Department, RawAttendanceEvent } from '@/types/api'
+
+// ── Caracas UTC-4 (no DST) epoch helpers ────────────────────────────────────
+function getTodayCaracasEpochs(): { from: number; to: number } {
+  const today = format(new Date(), 'yyyy-MM-dd') // date-fns uses local TZ (set to America/Caracas)
+  const from = Date.parse(`${today}T00:00:00-04:00`) / 1000
+  const to   = Date.parse(`${today}T23:59:59-04:00`) / 1000
+  return { from, to }
+}
 
 export default function DashboardPage() {
   const today = format(new Date(), 'yyyy-MM-dd')
+  const { from: epochFrom, to: epochTo } = getTodayCaracasEpochs()
+  const router = useRouter()
+  const { role } = useAuth()
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+
+  // ── Data queries ─────────────────────────────────────────────────────────
 
   const { data: recordsData } = useQuery<PaginatedResponse<DailyRecord>>({
     queryKey: ['daily-records-today', today],
@@ -27,42 +44,210 @@ export default function DashboardPage() {
     refetchInterval: 30_000,
   })
 
+  // KPI 1 denominator: total active employees
+  const { data: employeesTotalData } = useQuery<PaginatedResponse<unknown>>({
+    queryKey: ['employees-total-active'],
+    queryFn: () =>
+      api.get('/employees', { params: { status: 'active', limit: 1 } }).then(r => r.data),
+    staleTime: 5 * 60_000,
+  })
+
+  // Department names for donut legend
+  const { data: departmentsData } = useQuery<PaginatedResponse<Department>>({
+    queryKey: ['departments'],
+    queryFn: () => api.get('/departments', { params: { limit: 1000 } }).then(r => r.data),
+    staleTime: 10 * 60_000,
+  })
+
+  // KPI 4: unknown events today
+  const { data: unknownEventsData } = useQuery<PaginatedResponse<RawAttendanceEvent>>({
+    queryKey: ['raw-events', 'unknown-today', epochFrom, epochTo],
+    queryFn: () =>
+      api.get('/events', {
+        params: { from: epochFrom, to: epochTo, include_unknown: true, limit: 500 },
+      }).then(r => r.data),
+    refetchInterval: 60_000,
+  })
+
+  // ── Derived values ───────────────────────────────────────────────────────
+
   const records = recordsData?.data ?? []
   const devices = devicesData?.data ?? []
   const kpis = aggregateKPIs(records)
-  const offlineCount = devices.filter(d => d.status === 'offline').length
-  const deviceVariant = offlineCount === 0 ? 'default' : offlineCount === devices.length ? 'danger' : 'warning'
-
-  // Anomaly count (Alertas Diurnas): records with non-empty anomalies
-  const alertCount = records.filter(r => r.anomalies.length > 0).length
   const latePercent = records.length > 0 ? Math.round((kpis.late / records.length) * 100) : 0
+
+  const totalActiveEmployees = employeesTotalData?.total
+  const presentSub = totalActiveEmployees != null
+    ? `de ${totalActiveEmployees} registrados`
+    : 'de — registrados'
+
+  const onlineCount = devices.filter(d => d.status !== 'offline').length
+  const deviceValueColor =
+    devices.length === 0         ? '#1A1A1A' :
+    onlineCount === devices.length ? '#22C55E' :
+    onlineCount === 0             ? '#EF4444' :
+    '#F59E0B'
+  const deviceSub =
+    devices.length === 0          ? 'sin dispositivos' :
+    onlineCount === devices.length ? 'todos operativos' :
+    `${devices.length - onlineCount} con problemas`
+
+  const unknownCount = unknownEventsData?.data.filter(e => e.is_unknown).length ?? 0
+
+  // Department name lookup map for donut
+  const nameById = new Map<string, string>(
+    (departmentsData?.data ?? []).map(d => [d.id, d.name])
+  )
+
+  // ── Logout ───────────────────────────────────────────────────────────────
+
+  async function handleLogout() {
+    if (isLoggingOut) return
+    setIsLoggingOut(true)
+    try {
+      await api.post('/auth/logout').catch(() => undefined)
+    } finally {
+      setAccessToken(null)
+      router.push('/login')
+    }
+  }
+
+  function handleSettings() {
+    if (role === 'admin') {
+      router.push('/settings/tenant-info')
+    } else {
+      toast.info('Solo administradores')
+    }
+  }
+
+  function handleBell() {
+    toast.info('Notificaciones próximamente')
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col h-full">
-      <TopBar title="Dashboard" />
-      <div className="p-6 space-y-6">
-        {/* KPI row — D-5 */}
+      {/* ── Header bar ──────────────────────────────────────────────────── */}
+      <header className="flex items-center justify-between bg-white border-b border-[#EEF0F2] px-6 py-4">
+        {/* Left: breadcrumb + title */}
+        <div className="flex flex-col gap-1">
+          <span
+            className="text-[12px] text-[#666666]"
+            style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}
+          >
+            Inicio / Dashboard
+          </span>
+          <h1
+            className="text-[22px] font-bold text-[#1A1A1A] leading-tight"
+            style={{ fontFamily: 'var(--font-sans)' }}
+          >
+            Centro de Mando
+          </h1>
+        </div>
+
+        {/* Right: bell + settings + logout */}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleBell}
+            aria-label="Notificaciones"
+            className="text-[#666666] hover:text-[#1A1A1A] transition-colors"
+          >
+            <Bell size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={handleSettings}
+            aria-label="Configuración"
+            className="text-[#666666] hover:text-[#1A1A1A] transition-colors"
+          >
+            <Settings size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={isLoggingOut}
+            aria-label="Cerrar sesión"
+            data-testid="logout-button"
+            className="inline-flex items-center gap-1.5 text-xs text-[#666666] hover:text-[#1A1A1A] px-2.5 py-1.5 rounded-md border border-[#EEF0F2] hover:bg-slate-50 disabled:opacity-50 transition-colors"
+          >
+            <LogOut size={14} />
+            {isLoggingOut ? 'Saliendo…' : 'Salir'}
+          </button>
+        </div>
+      </header>
+
+      {/* ── Main content ────────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-auto p-6 flex flex-col gap-6">
+
+        {/* Row 1: KPI grid */}
         <div className="grid grid-cols-4 gap-4">
-          <KPITile testId="kpi-empleados-presentes" title="Empleados Presentes" value={kpis.present} />
-          <KPITile testId="kpi-retraso-hoy" title="% Retraso Hoy" value={`${latePercent}%`} />
+          {/* KPI 1 — Empleados Presentes */}
+          <KPITile
+            testId="kpi-empleados-presentes"
+            title="Empleados Presentes"
+            value={kpis.present}
+            valueColor="#1A1A1A"
+            sub={presentSub}
+          />
+
+          {/* KPI 2 — % Retraso Hoy */}
+          <KPITile
+            testId="kpi-retraso-hoy"
+            title="% Retraso Hoy"
+            value={`${latePercent}%`}
+            valueColor="#F59E0B"
+            sub={`${kpis.late} empleados con retraso`}
+          />
+
+          {/* KPI 3 — Dispositivos Activos */}
           <KPITile
             testId="kpi-dispositivos-activos"
             title="Dispositivos Activos"
-            value={`${devices.length - offlineCount}/${devices.length}`}
-            sub={<DeviceStatusSummary devices={devices} />}
-            variant={deviceVariant}
+            value={`${onlineCount}/${devices.length}`}
+            valueColor={deviceValueColor}
+            sub={deviceSub}
           />
-          <KPITile testId="kpi-alertas-diurnas" title="Alertas Diurnas" value={alertCount} variant={alertCount > 0 ? 'warning' : 'default'} />
+
+          {/* KPI 4 — Alertas Diurnas / Huérfanos
+              Keep both testids and the "Alertas Diurnas" label because e2e
+              asserts SEL.kpiAlertas = 'kpi-alertas-diurnas' and the text
+              "Alertas Diurnas" (dashboard.spec.ts T-01). */}
+          <div data-testid="kpi-alertas-huerfanos">
+            <KPITile
+              testId="kpi-alertas-diurnas"
+              title="Alertas Diurnas"
+              value={unknownCount}
+              valueColor={unknownCount > 0 ? '#EF4444' : '#1A1A1A'}
+              sub="marcajes sin empleado"
+            />
+          </div>
         </div>
 
-        {/* Bottom panels — D-5: left 60% activity feed, right 40% donut */}
-        <div className="grid grid-cols-5 gap-4">
-          <div className="col-span-3 bg-white rounded-xl border p-4 shadow-sm min-h-[320px]">
+        {/* Row 2: Activity + Donut */}
+        <div className="flex gap-6 flex-1 min-h-[360px]">
+          {/* Activity card (flex-1) */}
+          <div
+            className="flex-1 bg-white rounded border border-[#EEF0F2] overflow-hidden flex flex-col"
+            style={{ boxShadow: '0 2px 4px #00000008, 0 6px 16px #0000000d' }}
+          >
             <ActivityFeed />
           </div>
-          <div className="col-span-2 bg-white rounded-xl border p-4 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-700 mb-3">Distribución por Depto.</h2>
-            <DeptChart records={records} />
+
+          {/* Donut card (fixed 320px) */}
+          <div
+            className="w-[320px] shrink-0 bg-white rounded border border-[#EEF0F2] flex flex-col"
+            style={{ boxShadow: '0 2px 4px #00000008, 0 6px 16px #0000000d' }}
+          >
+            <div className="flex items-center px-4 py-[14px] border-b border-[#EEF0F2]">
+              <span className="text-[15px] font-semibold text-[#1A1A1A]">
+                Distribución por Depto.
+              </span>
+            </div>
+            <div className="flex-1 flex items-start justify-center p-5 overflow-auto">
+              <DeptChart records={records} nameById={nameById} />
+            </div>
           </div>
         </div>
       </div>

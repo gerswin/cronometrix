@@ -4,7 +4,8 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Loader2, AlertTriangle } from 'lucide-react'
 import { api } from '@/lib/api'
-import { Button } from '@/components/ui/button'
+import { PrimaryButton } from '@/components/ui/primary-button'
+import { Camera, Check, RotateCcw } from 'lucide-react'
 import type { Device, CaptureFromDeviceState } from '@/types/api'
 
 interface KioskCaptureTabProps {
@@ -161,18 +162,15 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
               ))}
             </select>
           </div>
-          <Button
+          <PrimaryButton
             size="sm"
             type="button"
+            icon={startCaptureMutation.isPending ? Loader2 : Camera}
             disabled={!selectedDeviceId || startCaptureMutation.isPending}
             onClick={() => startCaptureMutation.mutate()}
           >
-            {startCaptureMutation.isPending ? (
-              <><Loader2 size={14} className="animate-spin" /> Iniciando…</>
-            ) : (
-              'Iniciar Captura'
-            )}
-          </Button>
+            {startCaptureMutation.isPending ? 'Iniciando…' : 'Iniciar Captura'}
+          </PrimaryButton>
         </div>
       )}
 
@@ -183,9 +181,9 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
             <Loader2 size={16} className="animate-spin shrink-0" />
             <span>Esperando captura en el dispositivo… ({countdown}s)</span>
           </div>
-          <Button size="sm" variant="outline" type="button" onClick={handleCancel}>
+          <PrimaryButton size="sm" variant="outline" type="button" onClick={handleCancel}>
             Cancelar
-          </Button>
+          </PrimaryButton>
         </div>
       )}
 
@@ -199,12 +197,12 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
             style={{ width: 160, height: 160 }}
           />
           <div className="flex gap-2">
-            <Button size="sm" type="button" onClick={handleAccept}>
+            <PrimaryButton size="sm" icon={Check} type="button" onClick={handleAccept}>
               Aceptar
-            </Button>
-            <Button size="sm" variant="outline" type="button" onClick={handleRetry}>
+            </PrimaryButton>
+            <PrimaryButton size="sm" variant="outline" icon={RotateCcw} type="button" onClick={handleRetry}>
               Recapturar
-            </Button>
+            </PrimaryButton>
           </div>
         </div>
       )}
@@ -219,9 +217,9 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <span>No se detectó captura. El dispositivo no respondió a tiempo.</span>
           </div>
-          <Button size="sm" variant="outline" type="button" onClick={handleRetry}>
+          <PrimaryButton size="sm" variant="outline" icon={RotateCcw} type="button" onClick={handleRetry}>
             Reintentar
-          </Button>
+          </PrimaryButton>
         </div>
       )}
     </div>

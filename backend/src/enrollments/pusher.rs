@@ -39,14 +39,14 @@ pub fn spawn_enrollment_pushes(
     tokio::spawn(async move {
         if devices.is_empty() {
             // No devices — immediately finalize as failed.
-            let conn = match state.db.connect() {
+            let _conn = match state.db.connect() {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(err = %e, "push driver: failed to connect for finalize (no devices)");
                     return;
                 }
             };
-            if let Err(e) = service::finalize_enrollment_status(&conn, &enrollment_id).await {
+            if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await {
                 tracing::error!(enrollment_id = %enrollment_id, err = %e, "push driver: finalize failed");
             }
             return;
@@ -113,14 +113,14 @@ pub fn spawn_enrollment_pushes(
         }
 
         // Finalise enrollment status (success / partial / failed).
-        let conn = match state.db.connect() {
+        let _conn = match state.db.connect() {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(err = %e, "push driver: failed to connect for finalize");
                 return;
             }
         };
-        if let Err(e) = service::finalize_enrollment_status(&conn, &enrollment_id).await {
+        if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await {
             tracing::error!(enrollment_id = %enrollment_id, err = %e, "push driver: finalize failed");
         }
     });
@@ -148,9 +148,8 @@ pub async fn push_one_device(
     full_name: &str,
     device: &DeviceWithPlaintext,
 ) -> anyhow::Result<()> {
-    let conn = state.db.connect().map_err(|e| anyhow::anyhow!("connect: {e}"))?;
-
     // Find the push row id for this (enrollment_id, device_id) pair.
+    let conn = state.db.connect().map_err(|e| anyhow::anyhow!("connect: {e}"))?;
     let push_id = match service::get_push_id(&conn, enrollment_id, &device.id).await {
         Ok(id) => id,
         Err(e) => {
@@ -165,7 +164,7 @@ pub async fn push_one_device(
     };
 
     // Mark in_progress.
-    if let Err(e) = service::mark_push_in_progress(&conn, &push_id).await {
+    if let Err(e) = service::mark_push_in_progress_queued(state, &push_id).await {
         tracing::warn!(err = %e, "failed to mark push in_progress");
     }
 
@@ -191,11 +190,11 @@ pub async fn push_one_device(
     match result {
         Ok(Ok(_)) => {
             // Success path: update push row + upsert device_face_mapping.
-            if let Err(e) = service::update_push_status(&conn, &push_id, "success", None).await {
+            if let Err(e) = service::update_push_status_queued(state, &push_id, "success", None).await {
                 tracing::warn!(err = %e, "failed to update push row to success");
             }
             if let Err(e) =
-                service::upsert_device_face_mapping(&conn, &device.id, face_id, employee_id).await
+                service::upsert_device_face_mapping_queued(state, &device.id, face_id, employee_id).await
             {
                 tracing::warn!(err = %e, "failed to upsert device_face_mapping");
             }
@@ -203,18 +202,14 @@ pub async fn push_one_device(
         }
         Ok(Err(e)) => {
             let scrubbed = scrub_password(e.to_string(), &device.password);
-            if let Err(ue) =
-                service::update_push_status(&conn, &push_id, "failed", Some(&scrubbed)).await
-            {
+            if let Err(ue) = service::update_push_status_queued(state, &push_id, "failed", Some(&scrubbed)).await {
                 tracing::warn!(err = %ue, "failed to update push row to failed");
             }
             Err(anyhow::anyhow!("ISAPI push failed: {scrubbed}"))
         }
         Err(_timeout) => {
             let msg = "Device did not respond within 30 seconds";
-            if let Err(ue) =
-                service::update_push_status(&conn, &push_id, "failed", Some(msg)).await
-            {
+            if let Err(ue) = service::update_push_status_queued(state, &push_id, "failed", Some(msg)).await {
                 tracing::warn!(err = %ue, "failed to update push row to timeout");
             }
             Err(anyhow::anyhow!("{msg}"))
@@ -254,8 +249,7 @@ pub async fn push_one_device_for_backfill(
 
     match result {
         Ok(Ok(_)) => {
-            let conn = state.db.connect().map_err(|e| anyhow::anyhow!("connect: {e}"))?;
-            service::upsert_device_face_mapping(&conn, &device.id, face_id, employee_id).await
+            service::upsert_device_face_mapping_queued(state, &device.id, face_id, employee_id).await
                 .map_err(|e| anyhow::anyhow!("upsert mapping: {e}"))?;
             Ok(())
         }

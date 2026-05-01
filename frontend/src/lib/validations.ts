@@ -75,6 +75,41 @@ export const tenantInfoSchema = z.object({
 export type TenantInfoFormValues = z.infer<typeof tenantInfoSchema>
 
 // ──────────────────────────────────────────────────────────────────────
+// Departments — POST/PATCH /api/v1/departments
+// Backend canonical fields: base_salary_cents (i64), HH:MM time strings,
+// lunch_mode = "fixed" | "punch", lunch_duration_min required when mode=fixed.
+// Form takes salary in major-unit currency (Bs / VES) and converts × 100 on submit.
+// ──────────────────────────────────────────────────────────────────────
+
+const TIME_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
+
+export const departmentFormSchema = z
+  .object({
+    name: z.string().min(1, 'Nombre es requerido').max(200, 'Máximo 200 caracteres'),
+    base_salary: z
+      .number({ error: 'Salario base debe ser un número' })
+      .nonnegative('Salario base no puede ser negativo'),
+    shift_start_time: z.string().regex(TIME_HHMM, 'Hora inválida (HH:MM, 24 h)'),
+    shift_end_time: z.string().regex(TIME_HHMM, 'Hora inválida (HH:MM, 24 h)'),
+    lunch_mode: z.enum(['fixed', 'punch'], { error: 'Modalidad inválida' }),
+    lunch_duration_min: z
+      .number({ error: 'Duración debe ser un número' })
+      .int('Debe ser entero')
+      .min(0, 'No puede ser negativo')
+      .nullable()
+      .optional(),
+  })
+  .refine(
+    (v) => v.lunch_mode !== 'fixed' || (v.lunch_duration_min !== null && v.lunch_duration_min !== undefined && v.lunch_duration_min > 0),
+    {
+      message: 'Duración del almuerzo es requerida cuando la modalidad es fija',
+      path: ['lunch_duration_min'],
+    },
+  )
+
+export type DepartmentFormValues = z.infer<typeof departmentFormSchema>
+
+// ──────────────────────────────────────────────────────────────────────
 // Phase 6 — License activation (UI-SPEC §Form Validation Contract)
 // ──────────────────────────────────────────────────────────────────────
 
@@ -89,6 +124,31 @@ export const licenseSchema = z.object({
 })
 
 export type LicenseFormData = z.infer<typeof licenseSchema>
+
+// ──────────────────────────────────────────────────────────────────────
+// Global Rules — PATCH /api/v1/rules
+// Tolerances bounded 0–60 min by backend (validator crate).
+// ──────────────────────────────────────────────────────────────────────
+
+export const rulesFormSchema = z.object({
+  late_arrival_tolerance_min: z
+    .number({ error: 'Debe ser un número' })
+    .int('Debe ser entero')
+    .min(0, 'Mínimo 0')
+    .max(60, 'Máximo 60'),
+  early_departure_tolerance_min: z
+    .number({ error: 'Debe ser un número' })
+    .int('Debe ser entero')
+    .min(0, 'Mínimo 0')
+    .max(60, 'Máximo 60'),
+  bonus_minutes: z
+    .number({ error: 'Debe ser un número' })
+    .int('Debe ser entero')
+    .min(0, 'Mínimo 0')
+    .max(60, 'Máximo 60'),
+})
+
+export type RulesFormValues = z.infer<typeof rulesFormSchema>
 
 // ──────────────────────────────────────────────────────────────────────────
 // Phase 7 — Facial Enrollment (07-02)
@@ -106,3 +166,58 @@ export const enrollmentSubmitSchema = z.object({
 )
 
 export type EnrollmentSubmitData = z.infer<typeof enrollmentSubmitSchema>
+
+// ──────────────────────────────────────────────────────────────────────
+// User CRUD (Plan: opcion 3 — admin /settings/users)
+// ──────────────────────────────────────────────────────────────────────
+
+export const createUserFormSchema = z.object({
+  username: z
+    .string()
+    .min(1, 'Usuario es requerido')
+    .max(100, 'Máximo 100 caracteres')
+    .regex(/^[a-zA-Z0-9._-]+$/, 'Solo letras, números y . _ -'),
+  full_name: z.string().min(1, 'Nombre es requerido').max(200, 'Máximo 200 caracteres'),
+  role: z.enum(['admin', 'supervisor', 'viewer'], { error: 'Rol inválido' }),
+  password: z.string().min(8, 'Mínimo 8 caracteres'),
+})
+export type CreateUserFormValues = z.infer<typeof createUserFormSchema>
+
+export const updateUserFormSchema = z.object({
+  full_name: z.string().min(1, 'Nombre es requerido').max(200, 'Máximo 200 caracteres'),
+  role: z.enum(['admin', 'supervisor', 'viewer'], { error: 'Rol inválido' }),
+  password: z
+    .string()
+    .min(8, 'Mínimo 8 caracteres')
+    .or(z.literal(''))
+    .optional(),
+})
+export type UpdateUserFormValues = z.infer<typeof updateUserFormSchema>
+
+// ──────────────────────────────────────────────────────────────────────
+// Devices — POST /api/v1/devices
+// Backend validates: name (1-100), ip (1-100), port (1-65535), scheme (1-10),
+// username (1-100), password (1-200), direction (1-10), allow_insecure_tls (bool).
+// ──────────────────────────────────────────────────────────────────────
+
+const IPV4_OR_HOST = /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*)$/
+
+export const createDeviceFormSchema = z.object({
+  name: z.string().min(1, 'Nombre es requerido').max(100, 'Máximo 100 caracteres'),
+  ip: z
+    .string()
+    .min(1, 'IP / hostname es requerido')
+    .max(100, 'Máximo 100 caracteres')
+    .regex(IPV4_OR_HOST, 'IP o hostname inválido'),
+  port: z
+    .number({ error: 'Puerto debe ser un número' })
+    .int('Debe ser entero')
+    .min(1, 'Mínimo 1')
+    .max(65535, 'Máximo 65535'),
+  scheme: z.enum(['http', 'https'], { error: 'Esquema inválido' }),
+  username: z.string().min(1, 'Usuario es requerido').max(100, 'Máximo 100 caracteres'),
+  password: z.string().min(1, 'Contraseña es requerida').max(200, 'Máximo 200 caracteres'),
+  direction: z.enum(['entry', 'exit', 'both'], { error: 'Función inválida' }),
+  allow_insecure_tls: z.boolean(),
+})
+export type CreateDeviceFormValues = z.infer<typeof createDeviceFormSchema>

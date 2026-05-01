@@ -35,12 +35,16 @@ export interface PaginatedResponse<T> {
 
 export interface Employee {
   id: string
-  cedula: string
+  employee_code: string
+  /** @deprecated backend now returns `employee_code`; kept for legacy callers. */
+  cedula?: string
   name: string
   department_id: string
   department_name?: string
   position: string
   hire_date: string | null
+  /** Per-employee base salary in cents (migration 018). Authoritative for payroll. */
+  base_salary_cents: number
   status: 'active' | 'inactive' | 'pending'
   version: number
   created_at: string
@@ -50,13 +54,16 @@ export interface Employee {
 export interface Department {
   id: string
   name: string
-  base_salary: number
-  shift_start: string   // HH:MM
-  shift_end: string     // HH:MM
+  base_salary_cents: number
+  shift_start_time: string   // HH:MM
+  shift_end_time: string     // HH:MM
   lunch_mode: 'fixed' | 'punch'
-  lunch_minutes: number
-  overtime_threshold_minutes: number
-  is_overnight: boolean
+  lunch_duration_min: number | null
+  status: string
+  deleted_at: string | null
+  version: number
+  created_at: string
+  updated_at: string
 }
 
 export interface Device {
@@ -201,6 +208,65 @@ export interface TenantInfo {
   updated_at: string
 }
 
+export interface GlobalRules {
+  late_arrival_tolerance_min: number
+  early_departure_tolerance_min: number
+  bonus_minutes: number
+  effective_from: string
+  version: number
+  updated_at: string
+}
+
+export interface UpdateRulesRequest {
+  late_arrival_tolerance_min?: number
+  early_departure_tolerance_min?: number
+  bonus_minutes?: number
+  version: number
+}
+
+export interface Anomaly {
+  id: string
+  daily_record_id: string
+  employee_id: string
+  anchor_date: string
+  code: string
+  detail: string | null
+  created_at: string
+}
+
+export interface DailyRecordDetail {
+  id: string
+  employee_id: string
+  department_id: string
+  anchor_date: string
+  shift_type: string
+  work_minutes: number
+  overtime_minutes: number
+  late_minutes: number
+  early_departure_minutes: number
+  is_rest_day_worked: boolean
+  entry_at: string | null
+  exit_at: string | null
+  leave_id: string | null
+  computed_at: string
+  created_at: string
+  updated_at: string
+  anomalies: string[]
+}
+
+export interface RawAttendanceEvent {
+  id: string
+  employee_id: string | null
+  device_id: string
+  direction: 'entry' | 'exit'
+  captured_at: string
+  is_unknown: boolean
+  face_id: string | null
+  employee_no_string: string | null
+  photo_path: string | null
+  created_at: string
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Phase 7 — Facial Enrollment & Sync (07-02)
 // Mirrors backend/src/enrollments/models.rs response types
@@ -230,4 +296,33 @@ export interface CaptureFromDeviceState {
   photo_path: string | null
   photo_b64: string | null      // base64 JPEG iff status=='captured'
   error_message: string | null
+}
+
+export type UserRole = 'admin' | 'supervisor' | 'viewer'
+
+export interface User {
+  id: string
+  username: string
+  full_name: string
+  role: UserRole
+  status: 'active' | 'inactive'
+  deleted_at: string | null
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateUserRequest {
+  username: string
+  full_name: string
+  role: UserRole
+  password: string
+}
+
+export interface UpdateUserRequest {
+  full_name?: string
+  role?: UserRole
+  password?: string
+  status?: 'active' | 'inactive'
+  version: number
 }

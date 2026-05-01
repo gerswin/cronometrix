@@ -4,6 +4,8 @@ use anyhow::Result;
 
 use crate::config::Config;
 
+pub mod write_queue;
+
 /// Embedded SQL migrations — applied in order at startup.
 /// Each tuple is (migration_name, sql_content).
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -75,6 +77,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "017_phase7_audit_triggers",
         include_str!("migrations/017_phase7_audit_triggers.sql"),
     ),
+    (
+        "018_employees_base_salary",
+        include_str!("migrations/018_employees_base_salary.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded
@@ -102,7 +108,17 @@ pub async fn init_db_local(config: &Config) -> Result<libsql::Database> {
         .await?;
 
     let conn = db.connect()?;
-    conn.execute("PRAGMA foreign_keys = ON;", ()).await?;
+    // SQLite contention is expected in dev because the supervisor, watchdog,
+    // HTTP handlers, and background workers can all touch the same file.
+    // WAL + a short busy timeout makes transient writer collisions wait instead
+    // of immediately surfacing as `database is locked`.
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON; \
+         PRAGMA journal_mode = WAL; \
+         PRAGMA synchronous = NORMAL; \
+         PRAGMA busy_timeout = 5000;",
+    )
+    .await?;
     run_migrations(&conn).await?;
 
     Ok(db)
@@ -129,7 +145,13 @@ async fn init_db_remote(config: &Config) -> Result<libsql::Database> {
 
     // Apply PRAGMAs on local connection BEFORE sync (Pitfall 3: remote connection
     // does not support PRAGMA statements).
-    conn.execute("PRAGMA foreign_keys = ON;", ()).await?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON; \
+         PRAGMA journal_mode = WAL; \
+         PRAGMA synchronous = NORMAL; \
+         PRAGMA busy_timeout = 5000;",
+    )
+    .await?;
 
     run_migrations(&conn).await?;
 
@@ -185,7 +207,7 @@ pub async fn run_migrations(conn: &libsql::Connection) -> Result<()> {
         if count == 0 {
             conn.execute_batch(sql).await?;
             conn.execute(
-                "INSERT INTO _migrations (name, applied_at) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?1, ?2)",
                 libsql::params![*name, chrono::Utc::now().timestamp()],
             )
             .await?;

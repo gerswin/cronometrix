@@ -24,8 +24,7 @@ pub async fn create_employee(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let employee = service::create(&conn, body).await?;
+    let employee = service::create_queued(&state, body).await?;
 
     Ok((StatusCode::CREATED, Json(employee)))
 }
@@ -67,8 +66,7 @@ pub async fn update_employee(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let employee = service::update(&conn, &id, body).await?;
+    let employee = service::update_queued(&state, &id, body).await?;
 
     Ok(Json(employee))
 }
@@ -81,8 +79,7 @@ pub async fn deactivate_employee(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    service::deactivate(&conn, &id).await?;
+    service::deactivate_queued(&state, &id).await?;
 
     // Publish purge request (D-15). None in test setups — silently skipped.
     if let Some(tx) = &state.purge_tx {
