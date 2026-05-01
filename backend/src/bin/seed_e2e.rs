@@ -9,10 +9,11 @@
 //! Refuses to run without CRONOMETRIX_E2E=true. Idempotent — INSERT OR IGNORE.
 //!
 //! Seeded data:
-//!   Users:       e2e_admin / e2e_supervisor / e2e_viewer (passwords below)
-//!   Departments: dept-prod, dept-admin, dept-rrhh
-//!   Employees:   6 employees, 2 per department
-//!   Devices:     dev-entry on 127.0.0.1:4400, dev-exit on 127.0.0.1:4401
+//!   Users (e2e):  e2e_admin / e2e_supervisor / e2e_viewer
+//!   Users (demo): demo_admin / demo_super / demo_viewer (shared password)
+//!   Departments:  dept-prod, dept-admin, dept-rrhh
+//!   Employees:    6 employees, 2 per department
+//!   Devices:      dev-entry on 127.0.0.1:4400, dev-exit on 127.0.0.1:4401
 //!
 //! Implementation note — use tuple params (not libsql::params![]) for inserts
 //! that mix &str and String values. libsql::params! produces [Result<Value>; N]
@@ -74,6 +75,26 @@ async fn main() -> anyhow::Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("users insert failed for e2e_viewer: {}", e))?;
+
+    // ----- Demo users (shared password — for live demo handoff, not e2e) -----
+    let demo_pass = "dSQBALuQgXWZp6Oo";
+    let demo_hash = auth::service::hash_password(demo_pass)?;
+    for (id, username, full_name, role) in [
+        ("demo-admin-id",  "demo_admin",  "Demo Admin",      "admin"),
+        ("demo-super-id",  "demo_super",  "Demo Supervisor", "supervisor"),
+        ("demo-viewer-id", "demo_viewer", "Demo Viewer",     "viewer"),
+    ] {
+        conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO users \
+                 (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, '{role}', 'active', 1, unixepoch(), unixepoch())"
+            ),
+            (id, username, full_name, demo_hash.as_str()),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("users insert failed for {}: {}", username, e))?;
+    }
 
     // ----- Departments -----
     // Schema (001 + 012): id, name, base_salary_cents, shift_start_time, shift_end_time,
@@ -154,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("devices insert failed for dev-exit: {}", e))?;
 
-    tracing::info!("seed_e2e: seeded 3 users, 3 departments, 6 employees, 2 devices");
+    tracing::info!("seed_e2e: seeded 6 users (3 e2e + 3 demo), 3 departments, 6 employees, 2 devices");
     println!("seed_e2e: complete");
     Ok(())
 }
