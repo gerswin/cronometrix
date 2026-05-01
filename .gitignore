@@ -35,3 +35,6 @@ backend/cronometrix.db
 backend/cronometrix.db-*
 backend/*.profraw
 backend/default_*.profraw
+
+# Dokku deploy secrets
+deploy/dokku/deploy.env
