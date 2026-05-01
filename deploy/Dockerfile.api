@@ -23,6 +23,9 @@ RUN mkdir -p src && echo "fn main() {}" > src/main.rs && \
 COPY backend/ ./
 # Re-touch main so cargo recompiles with real source
 RUN touch src/main.rs && cargo build --release --bin cronometrix
+# Demo: also build seed_e2e (Cargo feature-gated) so the runner can self-seed
+# on startup when CRONOMETRIX_AUTO_SEED=true is set in env.
+RUN cargo build --release --bin seed_e2e --features seed-e2e
 
 # Runner: debian-slim with CA certs (needed for Turso TLS + DO Functions HTTPS)
 FROM debian:bookworm-slim AS runner
@@ -32,6 +35,9 @@ RUN apt-get update && \
 
 WORKDIR /opt/cronometrix
 COPY --from=builder /app/target/release/cronometrix /usr/local/bin/cronometrix
+COPY --from=builder /app/target/release/seed_e2e /usr/local/bin/seed_e2e
+COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Data directory for SQLite + license.jwt; created by installer outside container
 # but ensured here so the binary's default paths work even without a volume mount.
@@ -48,4 +54,4 @@ ENV RUST_LOG=info \
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -fsS http://localhost:3001/api/v1/health || exit 1
 
-CMD ["/usr/local/bin/cronometrix"]
+CMD ["/usr/local/bin/entrypoint.sh"]
