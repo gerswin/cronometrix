@@ -83,10 +83,11 @@ dk config:set --no-restart "$WEB_APP" \
   NEXT_PUBLIC_API_URL="$API_URL" \
   NODE_ENV=production \
   NEXT_TELEMETRY_DISABLED=1
-# Reset to a single docker-options entry (idempotent re-runs were stacking duplicates)
-dk docker-options:report "$WEB_APP" 2>/dev/null | grep -- '--build-arg NEXT_PUBLIC_API_URL=' \
-  | sed 's/.*: *//' | tr ',' '\n' | sed 's/^ *//' \
-  | while read -r opt; do [ -n "$opt" ] && dk docker-options:remove "$WEB_APP" build "$opt" 2>/dev/null || true; done
+# Add the build-arg. docker-options:add is not idempotent and stacks duplicates
+# on re-run, but duplicate --build-arg with the same value is harmless. Best-effort
+# cleanup of any prior entry — failure is non-fatal (`|| true`) because a fresh
+# app has no options to enumerate.
+{ dk docker-options:remove "$WEB_APP" build "--build-arg NEXT_PUBLIC_API_URL=$API_URL" 2>/dev/null || true; }
 dk docker-options:add "$WEB_APP" build "--build-arg NEXT_PUBLIC_API_URL=$API_URL"
 
 # ---------- Domains ----------
