@@ -5,13 +5,19 @@
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci
+# `npm install` (not `npm ci`) so a stale lock file doesn't block the build.
+# CI in the project repo can re-introduce `npm ci` once the lock is current.
+RUN npm install --no-audit --no-fund
 
 FROM node:24-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend/ ./
-ENV NEXT_TELEMETRY_DISABLED=1
+# Next.js inlines NEXT_PUBLIC_* at build time, so the API URL must be present
+# during `npm run build` rather than just at runtime. Override per environment.
+ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 FROM node:24-alpine AS runner

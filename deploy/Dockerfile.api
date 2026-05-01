@@ -4,18 +4,25 @@
 # links to glibc; using musl/alpine would require extra effort and ships no
 # observable size win after stripping. ~80MB compressed final image.
 
-FROM rust:1.93 AS builder
+FROM rust:1.93-slim-bookworm AS builder
+# Pin to bookworm so the binary's glibc symbols match the runner image
+# (debian:bookworm-slim ships glibc 2.36; bare `rust:1.93` defaults to trixie
+# which links against glibc 2.38+ and the runner aborts at startup).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        pkg-config build-essential cmake libssl-dev ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Pre-cache deps: copy ONLY manifests, fetch, then copy source.
 COPY backend/Cargo.toml backend/Cargo.lock* ./
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs && \
-    cargo build --release --bin cronometrix-api && \
+    cargo build --release --bin cronometrix && \
     rm -rf src
 
 COPY backend/ ./
 # Re-touch main so cargo recompiles with real source
-RUN touch src/main.rs && cargo build --release --bin cronometrix-api
+RUN touch src/main.rs && cargo build --release --bin cronometrix
 
 # Runner: debian-slim with CA certs (needed for Turso TLS + DO Functions HTTPS)
 FROM debian:bookworm-slim AS runner
@@ -24,7 +31,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/cronometrix
-COPY --from=builder /app/target/release/cronometrix-api /usr/local/bin/cronometrix-api
+COPY --from=builder /app/target/release/cronometrix /usr/local/bin/cronometrix
 
 # Data directory for SQLite + license.jwt; created by installer outside container
 # but ensured here so the binary's default paths work even without a volume mount.
@@ -41,4 +48,4 @@ ENV RUST_LOG=info \
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -fsS http://localhost:3001/api/v1/health || exit 1
 
-CMD ["/usr/local/bin/cronometrix-api"]
+CMD ["/usr/local/bin/cronometrix"]
