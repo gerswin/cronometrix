@@ -28,14 +28,17 @@ RUN touch src/main.rs && cargo build --release --bin cronometrix
 RUN cargo build --release --bin seed_e2e --features seed-e2e
 
 # Runner: debian-slim with CA certs (needed for Turso TLS + DO Functions HTTPS)
+# python3 is added so the demo entrypoint can run scripts/seed-reports-data.py
+# to populate full daily_records coverage (late/OT/early/half-day/etc).
 FROM debian:bookworm-slim AS runner
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl python3 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/cronometrix
 COPY --from=builder /app/target/release/cronometrix /usr/local/bin/cronometrix
 COPY --from=builder /app/target/release/seed_e2e /usr/local/bin/seed_e2e
+COPY scripts/seed-reports-data.py /usr/local/bin/seed-reports-data.py
 COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
