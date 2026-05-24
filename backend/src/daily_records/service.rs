@@ -21,10 +21,17 @@ use crate::state::AppState;
 
 use super::models::{DailyRecordListQuery, DailyRecordResponse};
 
-/// Columns used when rendering a DailyRecordResponse.
-const DR_SELECT_COLS: &str = "id, employee_id, department_id, anchor_date, shift_type, \
-    work_minutes, overtime_minutes, late_minutes, early_departure_minutes, \
-    is_rest_day_worked, entry_at, exit_at, leave_id, computed_at, created_at, updated_at";
+/// Columns used when rendering a DailyRecordResponse. Aliased to `dr` because
+/// the query LEFT JOINs `employees e` to resolve the human-readable name; both
+/// tables expose `id`/`department_id`, so unqualified columns would be ambiguous.
+const DR_SELECT_COLS: &str = "dr.id, dr.employee_id, dr.department_id, dr.anchor_date, \
+    dr.shift_type, dr.work_minutes, dr.overtime_minutes, dr.late_minutes, \
+    dr.early_departure_minutes, dr.is_rest_day_worked, dr.entry_at, dr.exit_at, \
+    dr.leave_id, dr.computed_at, dr.created_at, dr.updated_at, e.name";
+
+/// FROM clause shared by `list` and `get_by_id`. LEFT JOIN keeps the row even if
+/// the employee was hard-deleted (name resolves to NULL → None).
+const DR_FROM: &str = "daily_records dr LEFT JOIN employees e ON e.id = dr.employee_id";
 
 /// Full recompute for a single (employee_id, anchor_date) pair.
 pub async fn recompute_for_day(
@@ -424,6 +431,7 @@ fn row_to_dr(row: libsql::Row) -> Result<DailyRecordResponse, AppError> {
         id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
         employee_id: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
         department_id: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
+        employee_name: row.get(16).map_err(|e| AppError::Internal(e.into()))?,
         anchor_date: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
         shift_type: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
         work_minutes: row.get(5).map_err(|e| AppError::Internal(e.into()))?,
@@ -453,22 +461,22 @@ pub async fn list(
     let mut fetch_values: Vec<libsql::Value> = Vec::new();
 
     if let Some(emp) = &q.employee_id {
-        predicates.push(format!("employee_id = ?{}", predicates.len() + 1));
+        predicates.push(format!("dr.employee_id = ?{}", predicates.len() + 1));
         count_values.push(libsql::Value::Text(emp.clone()));
         fetch_values.push(libsql::Value::Text(emp.clone()));
     }
     if let Some(dept) = &q.department_id {
-        predicates.push(format!("department_id = ?{}", predicates.len() + 1));
+        predicates.push(format!("dr.department_id = ?{}", predicates.len() + 1));
         count_values.push(libsql::Value::Text(dept.clone()));
         fetch_values.push(libsql::Value::Text(dept.clone()));
     }
     if let Some(from) = &q.from_date {
-        predicates.push(format!("anchor_date >= ?{}", predicates.len() + 1));
+        predicates.push(format!("dr.anchor_date >= ?{}", predicates.len() + 1));
         count_values.push(libsql::Value::Text(from.clone()));
         fetch_values.push(libsql::Value::Text(from.clone()));
     }
     if let Some(to) = &q.to_date {
-        predicates.push(format!("anchor_date <= ?{}", predicates.len() + 1));
+        predicates.push(format!("dr.anchor_date <= ?{}", predicates.len() + 1));
         count_values.push(libsql::Value::Text(to.clone()));
         fetch_values.push(libsql::Value::Text(to.clone()));
     }
@@ -479,7 +487,7 @@ pub async fn list(
         format!("WHERE {}", predicates.join(" AND "))
     };
 
-    let count_sql = format!("SELECT COUNT(*) FROM daily_records {}", where_clause);
+    let count_sql = format!("SELECT COUNT(*) FROM daily_records dr {}", where_clause);
     let total: i64 = conn
         .query(&count_sql, libsql::params_from_iter(count_values))
         .await
@@ -492,9 +500,10 @@ pub async fn list(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let fetch_sql = format!(
-        "SELECT {cols} FROM daily_records {where_clause} \
-         ORDER BY anchor_date DESC, id ASC LIMIT ?{lim} OFFSET ?{off}",
+        "SELECT {cols} FROM {from} {where_clause} \
+         ORDER BY dr.anchor_date DESC, dr.id ASC LIMIT ?{lim} OFFSET ?{off}",
         cols = DR_SELECT_COLS,
+        from = DR_FROM,
         where_clause = where_clause,
         lim = fetch_values.len() + 1,
         off = fetch_values.len() + 2,
@@ -528,8 +537,8 @@ pub async fn list(
 
 pub async fn get_by_id(conn: &Connection, id: &str) -> Result<DailyRecordResponse, AppError> {
     let sql = format!(
-        "SELECT {} FROM daily_records WHERE id = ?1",
-        DR_SELECT_COLS
+        "SELECT {} FROM {} WHERE dr.id = ?1",
+        DR_SELECT_COLS, DR_FROM
     );
     let row = conn
         .query(&sql, params![id.to_string()])

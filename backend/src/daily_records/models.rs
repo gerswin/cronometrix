@@ -23,6 +23,7 @@ pub struct OverrideResponse {
 pub struct DailyRecordResponse {
     pub id: String,
     pub employee_id: String,
+    pub employee_name: Option<String>,
     pub department_id: String,
     pub anchor_date: String,
     pub shift_type: String,
