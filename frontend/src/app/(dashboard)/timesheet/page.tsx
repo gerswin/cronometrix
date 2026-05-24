@@ -10,7 +10,7 @@ import { TimesheetTable } from '@/components/timesheet/timesheet-table'
 import { NovedadModal } from '@/components/timesheet/novedad-modal'
 import { useAuth } from '@/hooks/use-auth'
 import { PrimaryButton } from '@/components/ui/primary-button'
-import type { PaginatedResponse, DailyRecord } from '@/types/api'
+import type { PaginatedResponse, DailyRecord, Employee } from '@/types/api'
 import type { PaginationState } from '@tanstack/react-table'
 
 const PAGE_SIZE = 50
@@ -43,6 +43,33 @@ export default function TimesheetPage() {
         })
         .then((r) => r.data),
   })
+
+  // The /daily-records payload carries employee_id but not employee_name, so we
+  // join it client-side against the employee directory (paginated to cover the
+  // full roster, since the list endpoint caps each page at 100). Without this the
+  // table falls back to rendering the raw employee_id (issue #3).
+  const { data: employeeNames } = useQuery<Map<string, string>>({
+    queryKey: ['employee-name-map'],
+    queryFn: async () => {
+      const map = new Map<string, string>()
+      const limit = 100
+      let offset = 0
+      for (;;) {
+        const page = await api
+          .get('/employees', { params: { limit, offset } })
+          .then((r) => r.data as PaginatedResponse<Employee>)
+        for (const emp of page.data) map.set(emp.id, emp.name)
+        offset += limit
+        if (page.data.length === 0 || offset >= page.total) break
+      }
+      return map
+    },
+  })
+
+  const records: DailyRecord[] = (data?.data ?? []).map((rec) => ({
+    ...rec,
+    employee_name: rec.employee_name ?? employeeNames?.get(rec.employee_id),
+  }))
 
   const handleEditClick = (record: DailyRecord) => {
     setSelectedRecord(record)
@@ -77,7 +104,7 @@ export default function TimesheetPage() {
             </div>
           ) : (
             <TimesheetTable
-              data={data?.data ?? []}
+              data={records}
               total={data?.total ?? 0}
               pagination={pagination}
               onPaginationChange={setPagination}
