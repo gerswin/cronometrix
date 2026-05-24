@@ -146,6 +146,7 @@ export default function EmployeesPage() {
     },
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['employees'] })
+      queryClient.invalidateQueries({ queryKey: ['employees-total-active'] })
       resetNew()
       setNewEmpOpen(false)
       if (enrollAfterSave) {
@@ -188,6 +189,7 @@ export default function EmployeesPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees'] })
+      queryClient.invalidateQueries({ queryKey: ['employees-total-active'] })
       setDeactivateEmployee(null)
     },
   })
