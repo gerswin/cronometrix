@@ -136,7 +136,16 @@ pub async fn update_tenant_info_queued(
         set_clause, version_param
     );
 
-    state.db_write.execute(sql, values).await.map_err(AppError::Internal)?;
+    let rows_affected = state.db_write.execute(sql, values).await.map_err(AppError::Internal)?;
+    if rows_affected == 0 {
+        // Singleton always exists (seeded by migration 013); the only way to fail
+        // here is a stale version.
+        return Err(AppError::Conflict {
+            code: "VERSION_CONFLICT",
+            message: "Tenant info was modified by another request. Fetch the latest version and retry."
+                .to_string(),
+        });
+    }
     let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
     get_tenant_info(&conn).await
 }

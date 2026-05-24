@@ -49,6 +49,7 @@ async fn create_employee_happy_path_no_optional_fields() {
             department_id: dept_id.clone(),
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -71,6 +72,7 @@ async fn create_employee_with_hire_date_yyyy_mm_dd() {
             department_id: dept_id,
             position: Some("Engineer".into()),
             hire_date: Some("2024-01-15".into()),
+            base_salary_cents: None,
         },
     )
     .await
@@ -92,6 +94,7 @@ async fn create_employee_rejects_malformed_hire_date() {
             department_id: dept_id,
             position: None,
             hire_date: Some("15-01-2024".into()), // wrong format
+            base_salary_cents: None,
         },
     )
     .await
@@ -113,6 +116,7 @@ async fn create_employee_empty_hire_date_treated_as_null() {
             department_id: dept_id,
             position: None,
             hire_date: Some("".into()),
+            base_salary_cents: None,
         },
     )
     .await
@@ -132,6 +136,7 @@ async fn create_employee_404_when_department_unknown() {
             department_id: "no-such-dept".into(),
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -153,6 +158,7 @@ async fn create_employee_duplicate_employee_code_conflicts() {
             department_id: dept_id.clone(),
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -166,6 +172,7 @@ async fn create_employee_duplicate_employee_code_conflicts() {
             department_id: dept_id,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -190,6 +197,7 @@ async fn list_filters_by_name_partial_match() {
             department_id: dept_id.clone(),
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -202,6 +210,7 @@ async fn list_filters_by_name_partial_match() {
             department_id: dept_id,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -237,6 +246,7 @@ async fn list_filters_by_department() {
             department_id: dept_a.clone(),
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -249,6 +259,7 @@ async fn list_filters_by_department() {
             department_id: dept_b,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -314,6 +325,7 @@ async fn update_no_fields_returns_current_state_no_version_bump() {
             department_id: dept_id,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -326,6 +338,7 @@ async fn update_no_fields_returns_current_state_no_version_bump() {
             department_id: None,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
             version: emp.version,
         },
     )
@@ -347,6 +360,7 @@ async fn update_404_unknown_id() {
             department_id: None,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
             version: 1,
         },
     )
@@ -368,6 +382,7 @@ async fn update_409_on_stale_version() {
             department_id: dept_id,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -380,6 +395,7 @@ async fn update_409_on_stale_version() {
             department_id: None,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
             version: emp.version,
         },
     )
@@ -394,6 +410,7 @@ async fn update_409_on_stale_version() {
             department_id: None,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
             version: emp.version, // stale
         },
     )
@@ -415,6 +432,7 @@ async fn update_404_when_changing_to_unknown_department() {
             department_id: dept_id,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -427,6 +445,7 @@ async fn update_404_when_changing_to_unknown_department() {
             department_id: Some("no-such".into()),
             position: None,
             hire_date: None,
+            base_salary_cents: None,
             version: emp.version,
         },
     )
@@ -448,6 +467,7 @@ async fn update_can_clear_hire_date_via_empty_string() {
             department_id: dept_id,
             position: None,
             hire_date: Some("2024-06-01".into()),
+            base_salary_cents: None,
         },
     )
     .await
@@ -461,6 +481,7 @@ async fn update_can_clear_hire_date_via_empty_string() {
             department_id: None,
             position: None,
             hire_date: Some("".into()),
+            base_salary_cents: None,
             version: emp.version,
         },
     )
@@ -482,6 +503,7 @@ async fn update_rejects_malformed_hire_date() {
             department_id: dept_id,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await
@@ -494,6 +516,7 @@ async fn update_rejects_malformed_hire_date() {
             department_id: None,
             position: None,
             hire_date: Some("not-a-date".into()),
+            base_salary_cents: None,
             version: emp.version,
         },
     )
@@ -515,6 +538,7 @@ async fn deactivate_marks_inactive_and_subsequent_call_404s() {
             department_id: dept_id,
             position: None,
             hire_date: None,
+            base_salary_cents: None,
         },
     )
     .await

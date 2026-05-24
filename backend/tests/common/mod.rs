@@ -33,6 +33,20 @@ pub async fn test_db() -> libsql::Database {
 
     let conn = db.connect().expect("Failed to connect to test database");
 
+    // Match the production connection PRAGMAs (src/db/mod.rs): WAL is persisted at
+    // the file level so every later `db.connect()` (handlers, the db_write worker)
+    // inherits it, letting a writer proceed while another connection holds a read
+    // lock. Without this, code paths that read on one connection and write through
+    // the single-writer queue collide with "database is locked".
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON; \
+         PRAGMA journal_mode = WAL; \
+         PRAGMA synchronous = NORMAL; \
+         PRAGMA busy_timeout = 5000;",
+    )
+    .await
+    .expect("Failed to apply test database PRAGMAs");
+
     // Run migrations via the same production code path
     run_migrations(&conn)
         .await
@@ -463,6 +477,17 @@ pub fn test_state(
     config: std::sync::Arc<cronometrix_api::config::Config>,
     paths: std::sync::Arc<cronometrix_api::state::Paths>,
 ) -> cronometrix_api::state::AppState {
+    // Mirror production wiring: spawn the single-writer queue worker against the
+    // same db so handlers exercising `state.db_write` actually persist. Requires
+    // a Tokio runtime — every caller is a `#[tokio::test]`. The CancellationToken
+    // is never cancelled; the worker is reaped when the test runtime shuts down.
+    let (db_write_tx, db_write_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(cronometrix_api::db::write_queue::run_write_worker(
+        db.clone(),
+        db_write_rx,
+        tokio_util::sync::CancellationToken::new(),
+    ));
+
     cronometrix_api::state::AppState {
         db,
         config,
@@ -474,6 +499,7 @@ pub fn test_state(
         purge_tx: None,
         backfill_tx: None,
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
+        db_write: cronometrix_api::db::write_queue::DbWriteQueue::new(db_write_tx),
     }
 }
 

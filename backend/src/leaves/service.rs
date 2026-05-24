@@ -389,7 +389,7 @@ pub async fn cancel_queued(state: &AppState, id: &str, version: i64) -> Result<(
     let rows_affected = state
         .db_write
         .execute(
-            "UPDATE leaves SET status = 'inactive', deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
+            "UPDATE leaves SET status = 'cancelled', deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND status = 'active' AND version = ?2",
             vec![
                 libsql::Value::Text(id.to_string()),

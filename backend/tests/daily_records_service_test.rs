@@ -241,6 +241,8 @@ async fn list_filter_by_employee_id() {
     .unwrap();
     assert_eq!(result.total, 1);
     assert_eq!(result.data[0].employee_id, e1);
+    // The list query LEFT JOINs employees so the table can show a name, not the raw id.
+    assert_eq!(result.data[0].employee_name.as_deref(), Some("Emp"));
 }
 
 #[tokio::test]
