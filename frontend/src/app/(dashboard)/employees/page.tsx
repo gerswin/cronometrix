@@ -38,16 +38,34 @@ const PAGE_SIZE = 10
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
+// Optional currency override (major units), held as a string so the raw input
+// reaches validation. Empty → blank so the employee falls back to the department
+// salary. Accepts ONLY plain digits with up to two decimals — alphanumeric input
+// (letters, scientific notation like "1e5", signs) is rejected instead of being
+// silently coerced, which previously fed NaN/bogus values into the payroll cents
+// calculation. Convert to a number at submit time via parseSalaryCents().
+const optionalSalary = z
+  .string()
+  .trim()
+  .refine((v) => v === '' || /^\d+(\.\d{1,2})?$/.test(v), {
+    message: 'Sueldo debe ser un número válido (solo dígitos, máx. 2 decimales)',
+  })
+  .optional()
+
+// Returns base_salary_cents for a validated salary string, or undefined when the
+// field is blank (no override → department salary applies).
+function parseSalaryCents(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined
+  return Math.round(Number(value) * 100)
+}
+
 const newEmployeeSchema = z.object({
   name: z.string().min(1, 'Nombre es requerido'),
   employee_code: z.string().min(1, 'Cédula es requerida'),
   department_id: z.string().min(1, 'Departamento es requerido'),
   position: z.string().optional(),
   hire_date: z.string().optional(),
-  base_salary: z
-    .number({ error: 'Sueldo debe ser un número' })
-    .nonnegative('Sueldo no puede ser negativo')
-    .optional(),
+  base_salary: optionalSalary,
 })
 type NewEmployeeFormData = z.infer<typeof newEmployeeSchema>
 
@@ -56,10 +74,7 @@ const editEmployeeSchema = z.object({
   department_id: z.string().min(1, 'Departamento es requerido'),
   position: z.string().optional(),
   hire_date: z.string().optional(),
-  base_salary: z
-    .number({ error: 'Sueldo debe ser un número' })
-    .nonnegative('Sueldo no puede ser negativo')
-    .optional(),
+  base_salary: optionalSalary,
 })
 type EditEmployeeFormData = z.infer<typeof editEmployeeSchema>
 
@@ -138,8 +153,8 @@ export default function EmployeesPage() {
         department_id: values.department_id,
         ...(values.position && { position: values.position }),
         ...(values.hire_date && { hire_date: values.hire_date }),
-        ...(values.base_salary !== undefined && {
-          base_salary_cents: Math.round(values.base_salary * 100),
+        ...(parseSalaryCents(values.base_salary) !== undefined && {
+          base_salary_cents: parseSalaryCents(values.base_salary),
         }),
       })
       return r.data
@@ -170,8 +185,8 @@ export default function EmployeesPage() {
         department_id: values.department_id,
         ...(values.position !== undefined && { position: values.position }),
         ...(values.hire_date && { hire_date: values.hire_date }),
-        ...(values.base_salary !== undefined && {
-          base_salary_cents: Math.round(values.base_salary * 100),
+        ...(parseSalaryCents(values.base_salary) !== undefined && {
+          base_salary_cents: parseSalaryCents(values.base_salary),
         }),
         version,
       })
@@ -217,7 +232,7 @@ export default function EmployeesPage() {
       department_id: emp.department_id,
       position: emp.position ?? '',
       hire_date: emp.hire_date ?? '',
-      base_salary: (emp.base_salary_cents ?? 0) / 100,
+      base_salary: emp.base_salary_cents != null ? String(emp.base_salary_cents / 100) : '',
     })
   }
 
@@ -706,11 +721,10 @@ export default function EmployeesPage() {
                       Sueldo Base ($)
                     </span>
                     <input
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      type="text"
+                      inputMode="decimal"
                       placeholder="0.00"
-                      {...registerNew('base_salary', { valueAsNumber: true })}
+                      {...registerNew('base_salary')}
                       className={`w-full px-3 py-2 rounded text-[13px] border bg-white ${
                         errorsNew.base_salary ? 'border-[#DC2626]' : 'border-[#EEF0F2]'
                       } focus:outline-none focus:ring-2 focus:ring-[#1E3FB8] focus:border-transparent`}
@@ -847,10 +861,9 @@ export default function EmployeesPage() {
               <Label htmlFor="edit-emp-salary">Sueldo Base ($)</Label>
               <Input
                 id="edit-emp-salary"
-                type="number"
-                step="0.01"
-                min="0"
-                {...registerEdit('base_salary', { valueAsNumber: true })}
+                type="text"
+                inputMode="decimal"
+                {...registerEdit('base_salary')}
               />
               {errorsEdit.base_salary && (
                 <p role="alert" className="text-xs text-destructive mt-1">
