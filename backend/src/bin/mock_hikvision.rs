@@ -16,7 +16,7 @@ use axum::{
     body::Body,
     extract::State,
     http::{header, Request, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
     routing::{get, post, put},
     Json, Router,
 };

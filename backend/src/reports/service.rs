@@ -1,6 +1,6 @@
 //! Reports service — SQL aggregation across daily_records + overrides + leaves
 //! + anomalies, plus secondary leaves aggregation (W-5), money math (LOTTT
-//! Art. 117/118/120), and app-code audit insert (D-21).
+//!   Art. 117/118/120), and app-code audit insert (D-21).
 //!
 //! Read-only path on daily_records. Audit insert is the only write — it lands
 //! AFTER aggregation succeeds (Pitfall 7: failed reports must not leak audit

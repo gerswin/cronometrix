@@ -304,7 +304,7 @@ async fn soft_delete_only_no_hard_delete() {
     // Verify it does NOT appear in the default active listing
     let list_req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/employees?status=active"))
+        .uri("/api/v1/employees?status=active".to_string())
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();
@@ -326,7 +326,7 @@ async fn soft_delete_only_no_hard_delete() {
     // Verify it DOES appear when filtering by status=inactive
     let inactive_req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/employees?status=inactive"))
+        .uri("/api/v1/employees?status=inactive".to_string())
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();

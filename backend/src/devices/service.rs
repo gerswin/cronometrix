@@ -79,7 +79,7 @@ pub async fn create(
     validate_direction(&req.direction).map_err(val_err)?;
 
     let encrypted_password =
-        crypto::encrypt_password(&req.password, key).map_err(|e| AppError::Internal(e.into()))?;
+        crypto::encrypt_password(&req.password, key).map_err(AppError::Internal)?;
 
     let id = Uuid::new_v4().to_string();
     let allow_int: i64 = if req.allow_insecure_tls { 1 } else { 0 };
@@ -107,22 +107,19 @@ pub async fn create(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            // SQLite reports the partial unique index by index name when it fires.
-            if msg.contains("UNIQUE constraint failed")
-                && (msg.contains("idx_devices_ip_port_active")
-                    || (msg.contains("devices.ip") && msg.contains("devices.port")))
-            {
-                return Err(AppError::Conflict {
-                    code: "DEVICE_IP_EXISTS",
-                    message: format!("Device with IP {}:{} is already active", req.ip, req.port),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        // SQLite reports the partial unique index by index name when it fires.
+        if msg.contains("UNIQUE constraint failed")
+            && (msg.contains("idx_devices_ip_port_active")
+                || (msg.contains("devices.ip") && msg.contains("devices.port")))
+        {
+            return Err(AppError::Conflict {
+                code: "DEVICE_IP_EXISTS",
+                message: format!("Device with IP {}:{} is already active", req.ip, req.port),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e.into()));
     }
 
     get_by_id(conn, &id).await
@@ -138,7 +135,7 @@ pub async fn create_queued(
     validate_direction(&req.direction).map_err(val_err)?;
 
     let encrypted_password =
-        crypto::encrypt_password(&req.password, key).map_err(|e| AppError::Internal(e.into()))?;
+        crypto::encrypt_password(&req.password, key).map_err(AppError::Internal)?;
     let id = Uuid::new_v4().to_string();
     let allow_int: i64 = if req.allow_insecure_tls { 1 } else { 0 };
 
@@ -166,21 +163,18 @@ pub async fn create_queued(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed")
-                && (msg.contains("idx_devices_ip_port_active")
-                    || (msg.contains("devices.ip") && msg.contains("devices.port")))
-            {
-                return Err(AppError::Conflict {
-                    code: "DEVICE_IP_EXISTS",
-                    message: format!("Device with IP {}:{} is already active", req.ip, req.port),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed")
+            && (msg.contains("idx_devices_ip_port_active")
+                || (msg.contains("devices.ip") && msg.contains("devices.port")))
+        {
+            return Err(AppError::Conflict {
+                code: "DEVICE_IP_EXISTS",
+                message: format!("Device with IP {}:{} is already active", req.ip, req.port),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e));
     }
 
     let conn = state
@@ -335,8 +329,7 @@ pub async fn update(
         values.push(libsql::Value::Text(username));
     }
     if let Some(password) = req.password {
-        let encrypted =
-            crypto::encrypt_password(&password, key).map_err(|e| AppError::Internal(e.into()))?;
+        let encrypted = crypto::encrypt_password(&password, key).map_err(AppError::Internal)?;
         sets.push(format!("encrypted_password = ?{}", values.len() + 1));
         values.push(libsql::Value::Text(encrypted));
     }
@@ -462,8 +455,7 @@ pub async fn update_queued(
         values.push(libsql::Value::Text(username));
     }
     if let Some(password) = req.password {
-        let encrypted =
-            crypto::encrypt_password(&password, key).map_err(|e| AppError::Internal(e.into()))?;
+        let encrypted = crypto::encrypt_password(&password, key).map_err(AppError::Internal)?;
         sets.push(format!("encrypted_password = ?{}", values.len() + 1));
         values.push(libsql::Value::Text(encrypted));
     }
@@ -513,7 +505,7 @@ pub async fn update_queued(
                     message: "Another active device already uses this IP:port".to_string(),
                 });
             }
-            return Err(AppError::Internal(e.into()));
+            return Err(AppError::Internal(e));
         }
     };
 
@@ -632,8 +624,7 @@ pub async fn get_decrypted(
     let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
     let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
 
-    let password =
-        crypto::decrypt_password(&encrypted, key).map_err(|e| AppError::Internal(e.into()))?;
+    let password = crypto::decrypt_password(&encrypted, key).map_err(AppError::Internal)?;
 
     Ok(DeviceWithPlaintext {
         id: device_id,

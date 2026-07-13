@@ -29,8 +29,8 @@ pub struct PurgeRequest {
 ///      a. Re-read employee status (Pitfall 10 — abort if re-activated).
 ///      b. Fetch all device_face_mappings rows.
 ///      c. For each row: fetch DeviceWithPlaintext, call delete_user with 30s timeout.
-///         On Ok → DELETE mapping row.
-///         On Err → UPDATE state='pending_delete' (retry on next purge trigger).
+///      On Ok → DELETE mapping row.
+///      On Err → UPDATE state='pending_delete' (retry on next purge trigger).
 pub struct PurgeWorker {
     state: AppState,
     shutdown: CancellationToken,

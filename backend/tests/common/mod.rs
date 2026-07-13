@@ -1,3 +1,7 @@
+// Shared fixtures are intentionally broader than any single integration test;
+// each test crate selects only the helpers it needs.
+#![allow(dead_code)]
+
 use cronometrix_api::db::run_migrations;
 
 pub mod mock_hikvision;

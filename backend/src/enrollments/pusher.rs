@@ -135,8 +135,8 @@ pub fn spawn_enrollment_pushes(
 ///   3. timeout(30s) wraps both ISAPI calls:
 ///      a. upsert_user(face_id, full_name)
 ///      b. upload_face(face_id, jpeg_bytes)
-///   4a. On success: UPDATE push row to status='success', upsert device_face_mappings.
-///   4b. On failure: UPDATE push row to status='failed', error_message (scrubbed).
+///      4a. On success: UPDATE push row to status='success', upsert device_face_mappings.
+///      4b. On failure: UPDATE push row to status='failed', error_message (scrubbed).
 ///
 /// Password scrubbing (T-7-06): any occurrence of device.password in the error
 /// string is replaced with "[redacted]" before being persisted.

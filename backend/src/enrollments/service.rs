@@ -592,9 +592,7 @@ pub async fn finalize_enrollment_status(
         .map_err(|e| AppError::Internal(e.into()))?
         .unwrap_or(0);
 
-    let final_status = if total == 0 {
-        "failed"
-    } else if success == 0 {
+    let final_status = if total == 0 || success == 0 {
         "failed"
     } else if failed == 0 {
         "success"
@@ -656,9 +654,7 @@ pub async fn finalize_enrollment_status_queued(
         .get::<Option<i64>>(2)
         .map_err(|e| AppError::Internal(e.into()))?
         .unwrap_or(0);
-    let final_status = if total == 0 {
-        "failed"
-    } else if success == 0 {
+    let final_status = if total == 0 || success == 0 {
         "failed"
     } else if failed == 0 {
         "success"

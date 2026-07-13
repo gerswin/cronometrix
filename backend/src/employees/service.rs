@@ -116,18 +116,15 @@ pub async fn create(conn: &Connection, req: CreateEmployeeRequest) -> Result<Emp
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
-                return Err(AppError::Conflict {
-                    code: "EMPLOYEE_CODE_EXISTS",
-                    message: format!("Employee code '{}' is already in use", req.employee_code),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
+            return Err(AppError::Conflict {
+                code: "EMPLOYEE_CODE_EXISTS",
+                message: format!("Employee code '{}' is already in use", req.employee_code),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e.into()));
     }
 
     get_by_id(conn, &id).await
@@ -187,18 +184,15 @@ pub async fn create_queued(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
-                return Err(AppError::Conflict {
-                    code: "EMPLOYEE_CODE_EXISTS",
-                    message: format!("Employee code '{}' is already in use", req.employee_code),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
+            return Err(AppError::Conflict {
+                code: "EMPLOYEE_CODE_EXISTS",
+                message: format!("Employee code '{}' is already in use", req.employee_code),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e));
     }
 
     let conn = state

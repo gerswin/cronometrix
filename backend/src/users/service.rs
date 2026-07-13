@@ -74,18 +74,15 @@ pub async fn create(state: &AppState, req: CreateUserRequest) -> Result<User, Ap
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed") && msg.contains("username") {
-                return Err(AppError::Conflict {
-                    code: "USERNAME_EXISTS",
-                    message: format!("Username '{}' is already in use", req.username),
-                });
-            }
-            return Err(AppError::Internal(e));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed") && msg.contains("username") {
+            return Err(AppError::Conflict {
+                code: "USERNAME_EXISTS",
+                message: format!("Username '{}' is already in use", req.username),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e));
     }
 
     let conn = state

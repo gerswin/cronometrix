@@ -47,8 +47,10 @@ pub type LifecycleTx = mpsc::UnboundedSender<DeviceLifecycleEvent>;
 pub struct Supervisor {
     state: AppState,
     shutdown: CancellationToken,
-    handles: Arc<Mutex<HashMap<String, (JoinHandle<()>, CancellationToken)>>>,
+    handles: Arc<Mutex<HandleMap>>,
 }
+
+type HandleMap = HashMap<String, (JoinHandle<()>, CancellationToken)>;
 
 impl Supervisor {
     pub fn new(state: AppState, shutdown: CancellationToken) -> Self {

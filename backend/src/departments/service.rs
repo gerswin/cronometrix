@@ -90,18 +90,15 @@ pub async fn create(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed") && msg.contains("name") {
-                return Err(AppError::Conflict {
-                    code: "DEPARTMENT_NAME_EXISTS",
-                    message: format!("Department name '{}' is already in use", req.name),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed") && msg.contains("name") {
+            return Err(AppError::Conflict {
+                code: "DEPARTMENT_NAME_EXISTS",
+                message: format!("Department name '{}' is already in use", req.name),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e.into()));
     }
 
     get_by_id(conn, &id).await
@@ -133,18 +130,15 @@ pub async fn create_queued(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed") && msg.contains("name") {
-                return Err(AppError::Conflict {
-                    code: "DEPARTMENT_NAME_EXISTS",
-                    message: format!("Department name '{}' is already in use", req.name),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed") && msg.contains("name") {
+            return Err(AppError::Conflict {
+                code: "DEPARTMENT_NAME_EXISTS",
+                message: format!("Department name '{}' is already in use", req.name),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e));
     }
 
     let conn = state

@@ -36,7 +36,7 @@ const TARGET_DIM_PX: u32 = 480;
 /// - `"image too large after 4 normalisation passes"` — extremely dense input.
 pub fn normalize_face_jpeg(input: &[u8]) -> anyhow::Result<Vec<u8>> {
     // Magic byte check: JPEG starts with FF D8 FF.
-    if input.len() < 3 || &input[..3] != &[0xFF, 0xD8, 0xFF] {
+    if input.len() < 3 || input[..3] != [0xFF, 0xD8, 0xFF] {
         anyhow::bail!(
             "not a JPEG: magic bytes mismatch (got {:02X?})",
             &input[..input.len().min(3)]

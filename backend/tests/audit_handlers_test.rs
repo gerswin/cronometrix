@@ -89,6 +89,9 @@ fn viewer_token() -> String {
 /// `actor_id`, `table_name`, `operation`, `old_data`, `new_data` are all
 /// caller-supplied. `created_at` is base_ts + row_index so rows are
 /// deterministically ordered newest-first.
+// Test fixture keeps explicit SQL fields readable; collapsing them would hide
+// which audit column each case is exercising.
+#[allow(clippy::too_many_arguments)]
 async fn seed_audit_rows(
     db: &libsql::Database,
     count: usize,

@@ -111,7 +111,7 @@ fn command_from_request_str_rejects_unknown() {
 fn command_copy_clone_semantics() {
     let c = Command::Reboot;
     let _c2 = c; // Copy
-    let c3 = c.clone();
+    let c3 = c;
     assert_eq!(c.as_str(), c3.as_str());
 }
 

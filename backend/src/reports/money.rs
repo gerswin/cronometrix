@@ -215,7 +215,7 @@ mod tests {
         /// Monotonicity: more work minutes → at least as much pay (never regress).
         #[test]
         fn work_pay_monotonic(
-            b in 0i64..100_000_000_00,
+            b in 0i64..10_000_000_000,
             o in 360i64..600,
             m1 in 0i64..43200,
             m2 in 0i64..43200,
@@ -232,7 +232,7 @@ mod tests {
             work in 0i64..43200,
             ot in 0i64..43200,
             late in 0i64..43200,
-            base in 0i64..100_000_000_00,
+            base in 0i64..10_000_000_000,
             ord in 360i64..600,
         ) {
             // Must not panic on any of the six functions.

@@ -176,7 +176,7 @@ impl DeviceConnection {
             .unwrap_or("")
             .to_string();
 
-        let path = format!("/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json");
+        let path = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json".to_string();
         let context = digest_auth::AuthContext::new_with_method(
             &self.username,
             &self.password,

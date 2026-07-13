@@ -266,7 +266,7 @@ pub async fn dispatch_command(
         &device.password,
         device.allow_insecure_tls,
     )
-    .map_err(|e| AppError::Internal(e.into()))?;
+    .map_err(AppError::Internal)?;
 
     let dispatched_at = chrono::Utc::now().timestamp();
 

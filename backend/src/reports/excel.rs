@@ -187,7 +187,7 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
         // Per-dept subtotal row D-27.
         if let Some(sub) = payload.dept_subtotals.iter().find(|s| s.dept_id == dept.id) {
             sheet
-                .write_with_format(row, 1, &format!("Total {}", dept.name), &subtotal_fmt)
+                .write_with_format(row, 1, format!("Total {}", dept.name), &subtotal_fmt)
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("xlsx subtotal label: {}", e)))?;
             write_aggregate_row(
                 sheet,

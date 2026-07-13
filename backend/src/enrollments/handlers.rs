@@ -142,7 +142,7 @@ pub async fn create_enrollment(
                     });
                 }
                 // Magic byte check: must be JPEG (Pitfall 2 / RESEARCH).
-                if bytes.len() < 3 || &bytes[..3] != &[0xFF, 0xD8, 0xFF] {
+                if bytes.len() < 3 || bytes[..3] != [0xFF, 0xD8, 0xFF] {
                     return Err(AppError::Validation {
                         code: "PHOTO_NOT_JPEG",
                         message: "photo must be a valid JPEG (magic bytes 0xFF 0xD8 0xFF)".into(),
@@ -379,7 +379,7 @@ pub async fn capture_from_device(
         &device.password,
         device.allow_insecure_tls,
     )
-    .map_err(|e| AppError::Internal(e.into()))?;
+    .map_err(AppError::Internal)?;
 
     let captures = state.captures.clone();
     let cid = capture_id.clone();

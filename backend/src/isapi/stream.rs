@@ -87,40 +87,6 @@ fn extract_boundary(content_type: &str) -> anyhow::Result<String> {
     Ok(unquoted)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_boundary_multipart_mixed() {
-        assert_eq!(
-            extract_boundary("multipart/mixed; boundary=MIME_boundary").unwrap(),
-            "MIME_boundary"
-        );
-    }
-
-    #[test]
-    fn extract_boundary_quoted() {
-        assert_eq!(
-            extract_boundary("multipart/mixed; boundary=\"xyz\"").unwrap(),
-            "xyz"
-        );
-    }
-
-    #[test]
-    fn extract_boundary_form_data() {
-        assert_eq!(
-            extract_boundary("multipart/form-data; boundary=abc").unwrap(),
-            "abc"
-        );
-    }
-
-    #[test]
-    fn extract_boundary_rejects_non_multipart() {
-        assert!(extract_boundary("application/json").is_err());
-    }
-}
-
 /// Open and consume one alertStream connection. Returns when the upstream
 /// closes (gracefully or with an error). The caller (`device_task`) is
 /// responsible for the reconnect loop.
@@ -316,7 +282,7 @@ async fn ingest_pair(
     };
 
     match events_service::persist_attendance_event_queued(
-        &state,
+        state,
         &state.paths.events_root,
         new_event,
     )
@@ -345,4 +311,38 @@ async fn ingest_pair(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_boundary_multipart_mixed() {
+        assert_eq!(
+            extract_boundary("multipart/mixed; boundary=MIME_boundary").unwrap(),
+            "MIME_boundary"
+        );
+    }
+
+    #[test]
+    fn extract_boundary_quoted() {
+        assert_eq!(
+            extract_boundary("multipart/mixed; boundary=\"xyz\"").unwrap(),
+            "xyz"
+        );
+    }
+
+    #[test]
+    fn extract_boundary_form_data() {
+        assert_eq!(
+            extract_boundary("multipart/form-data; boundary=abc").unwrap(),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn extract_boundary_rejects_non_multipart() {
+        assert!(extract_boundary("application/json").is_err());
+    }
 }

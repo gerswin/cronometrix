@@ -7,8 +7,6 @@ mod common;
 
 use std::sync::Arc;
 
-use cronometrix_api::enrollments::service;
-
 // ---------------------------------------------------------------------------
 // Helper: seed the minimal FK chain and return (employee_id, face_id, enrollment_id)
 // ---------------------------------------------------------------------------

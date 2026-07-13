@@ -196,7 +196,7 @@ async fn recompute_upsert_preserves_id_and_replaces_anomalies() {
 
     // Insert an exit event — should now resolve MISSING_EXIT.
     seed_event(
-        &db_ref(&state),
+        db_ref(&state),
         &emp_id,
         "dev-1",
         "exit",

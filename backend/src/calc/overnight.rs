@@ -22,12 +22,11 @@ use super::models::{DepartmentConfig, GlobalRulesRow};
 /// (nonexistent) boundary.
 ///
 /// Uses `.earliest()` (safe for every `LocalResult` variant):
-///   - `Single(dt)`     → `(dt.timestamp(), false)`
-///   - `Ambiguous(e,_)` → `(e.timestamp(), true)` — pick earliest occurrence
-///   - `None`           → spring-forward gap; try `ndt + 1h` then `ndt + 2h`.
-///                         If still None, fall back to interpreting `ndt` as
-///                         UTC and mark ambiguous. The emitted anomaly
-///                         surfaces the degenerate case to the operator.
+/// - `Single(dt)`     → `(dt.timestamp(), false)`
+/// - `Ambiguous(e,_)` → `(e.timestamp(), true)` — pick earliest occurrence
+/// - `None`           → spring-forward gap; try `ndt + 1h` then `ndt + 2h`.
+///   If still None, fall back to interpreting `ndt` as UTC and mark ambiguous.
+///   The emitted anomaly surfaces the degenerate case to the operator.
 pub fn resolve_local_epoch(tz: Tz, ndt: NaiveDateTime) -> (i64, bool) {
     use chrono::LocalResult;
     match tz.from_local_datetime(&ndt) {

@@ -20,11 +20,10 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use cronometrix_api::errors::AppError;
-use cronometrix_api::license;
 use cronometrix_api::license::service::{
     activate_license, load_and_validate_license, renewal_task, LicenseClaims,
 };

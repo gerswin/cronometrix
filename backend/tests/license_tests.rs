@@ -318,7 +318,7 @@ mod gate_behavior_tests {
     use cronometrix_api::config::Config;
     use cronometrix_api::employees;
     use cronometrix_api::setup;
-    use cronometrix_api::state::AppState;
+
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 

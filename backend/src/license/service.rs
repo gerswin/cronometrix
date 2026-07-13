@@ -142,7 +142,7 @@ pub async fn activate_license(
             message: "License server URL not configured".to_string(),
         });
     }
-    let fp = fingerprint::collect_fingerprint().map_err(|e| AppError::Internal(e.into()))?;
+    let fp = fingerprint::collect_fingerprint().map_err(AppError::Internal)?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -249,7 +249,7 @@ async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> {
         return Ok(()); // not yet within renewal window
     }
 
-    let fp = fingerprint::collect_fingerprint().map_err(|e| AppError::Internal(e.into()))?;
+    let fp = fingerprint::collect_fingerprint().map_err(AppError::Internal)?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
