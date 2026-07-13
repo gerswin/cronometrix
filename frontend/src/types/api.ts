@@ -118,6 +118,8 @@ export interface JWTClaims {
   role: 'admin' | 'supervisor' | 'viewer'
   exp: number
   iat: number
+  jti: string
+  token_type: 'access' | 'refresh'
 }
 
 // ──────────────────────────────────────────────────────────────────────────
