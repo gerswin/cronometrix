@@ -10,19 +10,20 @@ export function SessionGate({ children }: { children: ReactNode }) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const serializedSearch = searchParams.toString()
-  const lastRedirect = useRef<string | null>(null)
+  const anonymousEpisodeRedirect = useRef<string | null>(null)
 
   useEffect(() => {
     if (status !== 'anonymous') {
-      if (status === 'authenticated') lastRedirect.current = null
+      anonymousEpisodeRedirect.current = null
       return
     }
 
+    if (anonymousEpisodeRedirect.current !== null) return
+
     const returnTo = `${pathname}${serializedSearch ? `?${serializedSearch}` : ''}`
     const target = `/login?redirect=${encodeURIComponent(returnTo)}`
-    if (lastRedirect.current === target) return
 
-    lastRedirect.current = target
+    anonymousEpisodeRedirect.current = target
     router.replace(target)
   }, [pathname, router, serializedSearch, status])
 

@@ -71,12 +71,60 @@ describe('SessionGate', () => {
     expect(navigation.replace).toHaveBeenCalledTimes(1)
     expect(screen.queryByText('protected employees')).not.toBeInTheDocument()
 
+    navigation.pathname.mockReturnValue('/devices')
+    navigation.search.mockReturnValue('state=offline')
     rerender(
       <SessionGate>
         <div>protected employees</div>
       </SessionGate>
     )
     expect(navigation.replace).toHaveBeenCalledTimes(1)
+    expect(navigation.replace).toHaveBeenLastCalledWith(expectedTarget)
+  })
+
+  it('allows a new redirect after leaving and re-entering anonymous state', async () => {
+    navigation.pathname.mockReturnValue('/reports')
+    navigation.search.mockReturnValue('period=monthly')
+    navigation.useAuth.mockReturnValue({
+      claims: null,
+      role: null,
+      status: 'anonymous',
+      sub: null,
+    })
+
+    const { rerender } = render(
+      <SessionGate>
+        <div>protected reports</div>
+      </SessionGate>
+    )
+    await waitFor(() => expect(navigation.replace).toHaveBeenCalledTimes(1))
+
+    navigation.useAuth.mockReturnValue({
+      claims: null,
+      role: null,
+      status: 'initializing',
+      sub: null,
+    })
+    rerender(
+      <SessionGate>
+        <div>protected reports</div>
+      </SessionGate>
+    )
+    expect(screen.getByTestId('session-initializing')).toBeInTheDocument()
+
+    navigation.useAuth.mockReturnValue({
+      claims: null,
+      role: null,
+      status: 'anonymous',
+      sub: null,
+    })
+    rerender(
+      <SessionGate>
+        <div>protected reports</div>
+      </SessionGate>
+    )
+
+    await waitFor(() => expect(navigation.replace).toHaveBeenCalledTimes(2))
   })
 
   it('renders children for an authenticated session', () => {

@@ -283,6 +283,22 @@ describe('lib/api single-flight refresh', () => {
     expect(mocks.redirectHref).toHaveBeenCalledTimes(2)
   })
 
+  it('cancels a pending expiry redirect when login sets a token before the delay', async () => {
+    const { api, getAccessToken, setAccessToken } = await import('../api')
+    const client = api as unknown as ApiShim
+    mocks.refreshPost.mockRejectedValueOnce(new Error('refresh rejected'))
+
+    await expect(client.__triggerResponseError(unauthorizedError('/employees'))).rejects.toBeTruthy()
+    expect(mocks.toastError).toHaveBeenCalledOnce()
+
+    await vi.advanceTimersByTimeAsync(1500)
+    setAccessToken('new-login-token')
+    await vi.advanceTimersByTimeAsync(1500)
+
+    expect(getAccessToken()).toBe('new-login-token')
+    expect(mocks.redirectHref).not.toHaveBeenCalled()
+  })
+
   it('never refreshes a request already marked _retry=true', async () => {
     const { api } = await import('../api')
     const client = api as unknown as ApiShim

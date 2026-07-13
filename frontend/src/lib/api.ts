@@ -25,6 +25,7 @@ const refreshClient = axios.create({
 // Attach access token from memory
 let accessToken: string | null = null
 let requestTimeExpiryHandled = false
+let requestTimeExpiryRedirectTimer: ReturnType<typeof setTimeout> | null = null
 let refreshPromise: Promise<string> | null = null
 
 // WR-05: pub-sub for token changes so AuthContext can re-decode claims after
@@ -36,6 +37,10 @@ export function setAccessToken(token: string | null) {
   accessToken = token
   if (token !== null) {
     requestTimeExpiryHandled = false
+    if (requestTimeExpiryRedirectTimer !== null) {
+      clearTimeout(requestTimeExpiryRedirectTimer)
+      requestTimeExpiryRedirectTimer = null
+    }
   }
   for (const listener of tokenListeners) {
     try { listener() } catch { /* listener errors must not break the setter */ }
@@ -89,7 +94,8 @@ function handleRequestTimeExpiry() {
 
   toast.error('Tu sesión ha expirado', { duration: 3000 })
   const redirect = `${window.location.pathname}${window.location.search}`
-  setTimeout(() => {
+  requestTimeExpiryRedirectTimer = setTimeout(() => {
+    requestTimeExpiryRedirectTimer = null
     // SessionGate normally navigates first. Keep this fallback for requests
     // made outside the protected tree without causing a second navigation.
     if (window.location.pathname !== '/login') {
