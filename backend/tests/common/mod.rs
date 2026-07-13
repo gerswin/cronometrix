@@ -72,6 +72,7 @@ pub fn test_access_token(user_id: &str, role: &str) -> String {
         "role": role,
         "exp": chrono::Utc::now().timestamp() + 3600,  // 1 hour for tests
         "iat": chrono::Utc::now().timestamp(),
+        "jti": uuid::Uuid::new_v4().to_string(),
         "token_type": "access"
     });
 

@@ -120,11 +120,11 @@ pub async fn refresh(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    // Verify stored hash matches — T-01-10: rotation invalidates stolen tokens
+    // Load the active user; the conditional write below is the sole hash comparison.
     let mut rows = conn
         .query(
-            "SELECT id, username, full_name, role FROM users WHERE id = ?1 AND refresh_token_hash = ?2 AND status = 'active'",
-            libsql::params![claims.sub.clone(), token_hash],
+            "SELECT id, username, full_name, role FROM users WHERE id = ?1 AND status = 'active'",
+            [claims.sub.clone()],
         )
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -149,17 +149,26 @@ pub async fn refresh(
     let new_refresh_token = service::issue_refresh_token(&user_id, &role, secret)?;
     let new_refresh_hash = service::hash_token(&new_refresh_token);
 
-    state
+    let rows_affected = state
         .db_write
         .execute(
-            "UPDATE users SET refresh_token_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
+            "UPDATE users \
+             SET refresh_token_hash = ?1, updated_at = unixepoch() \
+             WHERE id = ?2 \
+               AND refresh_token_hash = ?3 \
+               AND status = 'active'",
             vec![
                 libsql::Value::Text(new_refresh_hash),
                 libsql::Value::Text(user_id.clone()),
+                libsql::Value::Text(token_hash),
             ],
         )
         .await
         .map_err(AppError::Internal)?;
+
+    if rows_affected != 1 {
+        return Err(AppError::Unauthorized);
+    }
 
     let cookie = Cookie::build(("refresh_token", new_refresh_token))
         .http_only(true)

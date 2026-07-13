@@ -69,6 +69,70 @@ async fn body_to_json(body: Body) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(json!(null))
 }
 
+async fn seed_auth_user(
+    db: &libsql::Database,
+    username: &str,
+    full_name: &str,
+    password: &str,
+) -> String {
+    let conn = db.connect().unwrap();
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let password_hash = cronometrix_api::auth::service::hash_password(password).unwrap();
+    conn.execute(
+        "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![
+            user_id.clone(),
+            username.to_string(),
+            full_name.to_string(),
+            password_hash
+        ],
+    )
+    .await
+    .unwrap();
+    user_id
+}
+
+async fn login_tokens(app: &Router, username: &str, password: &str) -> (String, String) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({"username": username, "password": password}).to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let refresh_cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("login must set refresh cookie")
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
+    let body = body_to_json(response.into_body()).await;
+    let access_token = body["access_token"]
+        .as_str()
+        .expect("login must return access token")
+        .to_string();
+    (access_token, refresh_cookie)
+}
+
+async fn refresh_with_cookie(app: &Router, cookie: &str) -> axum::response::Response {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/auth/refresh")
+        .header(header::COOKIE, cookie)
+        .body(Body::empty())
+        .unwrap();
+    app.clone().oneshot(request).await.unwrap()
+}
+
 #[tokio::test]
 async fn password_hashing_uses_argon2id() {
     let hash = cronometrix_api::auth::service::hash_password("testpass").unwrap();
@@ -155,66 +219,109 @@ async fn rbac_middleware_blocks_unauthorized() {
 #[tokio::test]
 async fn jwt_refresh_rotates_tokens() {
     let db = common::test_db().await;
-
-    // Insert a real admin with a properly hashed password
-    let conn = db.connect().unwrap();
-    let user_id = uuid::Uuid::new_v4().to_string();
-    let password_hash = cronometrix_api::auth::service::hash_password("password123").unwrap();
-    conn.execute(
-        "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
-         VALUES (?1, 'refreshadmin', 'Refresh Admin', ?2, 'admin', 'active', 1, unixepoch(), unixepoch())",
-        libsql::params![user_id, password_hash],
-    )
-    .await
-    .unwrap();
+    seed_auth_user(&db, "refreshadmin", "Refresh Admin", "password123").await;
 
     let (app, _tmp) = build_test_app(db).await;
+    let (login_access_token, login_refresh_cookie) =
+        login_tokens(&app, "refreshadmin", "password123").await;
 
-    // Login first to get refresh cookie
-    let login_request = Request::builder()
-        .method(Method::POST)
-        .uri("/api/v1/auth/login")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({"username": "refreshadmin", "password": "password123"}).to_string(),
-        ))
-        .unwrap();
-
-    let login_response = app.clone().oneshot(login_request).await.unwrap();
-    assert_eq!(login_response.status(), StatusCode::OK);
-
-    // Extract refresh cookie from Set-Cookie header
-    let cookie_header = login_response
-        .headers()
-        .get(header::SET_COOKIE)
-        .expect("Should have Set-Cookie header")
-        .to_str()
-        .unwrap()
-        .to_string();
-
-    // Extract just the cookie name=value part
-    let cookie_value = cookie_header.split(';').next().unwrap().trim().to_string();
-
-    // Use refresh token to get new access token
-    let refresh_request = Request::builder()
-        .method(Method::POST)
-        .uri("/api/v1/auth/refresh")
-        .header(header::COOKIE, cookie_value)
-        .body(Body::empty())
-        .unwrap();
-
-    let refresh_response = app.oneshot(refresh_request).await.unwrap();
+    let refresh_response = refresh_with_cookie(&app, &login_refresh_cookie).await;
     assert_eq!(
         refresh_response.status(),
         StatusCode::OK,
         "Refresh should return 200"
     );
-
+    let replacement_refresh_cookie = refresh_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("refresh must set replacement cookie")
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
     let body = body_to_json(refresh_response.into_body()).await;
+    let replacement_access_token = body["access_token"]
+        .as_str()
+        .expect("refresh must return replacement access token");
+    assert_ne!(
+        replacement_access_token, login_access_token,
+        "immediate refresh must mint a different access token"
+    );
+    assert_ne!(
+        replacement_refresh_cookie, login_refresh_cookie,
+        "immediate refresh must mint a different refresh cookie"
+    );
+}
+
+#[tokio::test]
+async fn jwt_refresh_rejects_replayed_cookie_without_set_cookie() {
+    let db = common::test_db().await;
+    seed_auth_user(&db, "replayadmin", "Replay Admin", "password123").await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_, old_refresh_cookie) = login_tokens(&app, "replayadmin", "password123").await;
+
+    let first_response = refresh_with_cookie(&app, &old_refresh_cookie).await;
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let replay_response = refresh_with_cookie(&app, &old_refresh_cookie).await;
+    assert_eq!(replay_response.status(), StatusCode::UNAUTHORIZED);
     assert!(
-        body["access_token"].is_string(),
-        "Refresh should return new access_token, got: {:?}",
-        body
+        replay_response.headers().get(header::SET_COOKIE).is_none(),
+        "replay rejection must not set or delete a cookie"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_refresh_allows_one_rotation_without_loser_cookie() {
+    let db = common::test_db().await;
+    seed_auth_user(&db, "concurrentadmin", "Concurrent Admin", "password123").await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_, old_refresh_cookie) = login_tokens(&app, "concurrentadmin", "password123").await;
+
+    let (first, second) = tokio::join!(
+        refresh_with_cookie(&app, &old_refresh_cookie),
+        refresh_with_cookie(&app, &old_refresh_cookie)
+    );
+    let responses = [first, second];
+    let success_count = responses
+        .iter()
+        .filter(|response| response.status() == StatusCode::OK)
+        .count();
+    let unauthorized_count = responses
+        .iter()
+        .filter(|response| response.status() == StatusCode::UNAUTHORIZED)
+        .count();
+    assert_eq!(success_count, 1, "exactly one refresh must win the CAS");
+    assert_eq!(
+        unauthorized_count, 1,
+        "exactly one concurrent refresh must lose the CAS"
+    );
+
+    let winner = responses
+        .iter()
+        .find(|response| response.status() == StatusCode::OK)
+        .unwrap();
+    let winner_cookie = winner
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("winning refresh must set its replacement cookie")
+        .to_str()
+        .unwrap();
+    assert!(
+        !winner_cookie.starts_with(&old_refresh_cookie),
+        "winning refresh must replace the original cookie"
+    );
+
+    let loser = responses
+        .iter()
+        .find(|response| response.status() == StatusCode::UNAUTHORIZED)
+        .unwrap();
+    assert!(
+        loser.headers().get(header::SET_COOKIE).is_none(),
+        "losing refresh must not clear or overwrite the winning cookie"
     );
 }
 

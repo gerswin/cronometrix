@@ -26,6 +26,7 @@ pub fn issue_access_token(user_id: &str, role: &Role, secret: &[u8]) -> Result<S
         role: role.clone(),
         exp: now + 20 * 60, // 20 minutes
         iat: now,
+        jti: uuid::Uuid::new_v4().to_string(),
         token_type: "access".to_string(),
     };
 
@@ -46,6 +47,7 @@ pub fn issue_refresh_token(user_id: &str, role: &Role, secret: &[u8]) -> Result<
         role: role.clone(),
         exp: now + 7 * 24 * 60 * 60, // 7 days
         iat: now,
+        jti: uuid::Uuid::new_v4().to_string(),
         token_type: "refresh".to_string(),
     };
 
