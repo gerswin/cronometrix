@@ -1,7 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { startOfWeek, endOfWeek, format } from 'date-fns'
+import { startOfWeek, endOfWeek, format, isValid, parseISO } from 'date-fns'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Plus } from 'lucide-react'
 import { api } from '@/lib/api'
 import { TopBar } from '@/components/layout/top-bar'
@@ -10,14 +11,52 @@ import { TimesheetTable } from '@/components/timesheet/timesheet-table'
 import { NovedadModal } from '@/components/timesheet/novedad-modal'
 import { useAuth } from '@/hooks/use-auth'
 import { PrimaryButton } from '@/components/ui/primary-button'
-import type { PaginatedResponse, DailyRecord, Employee } from '@/types/api'
+import type { PaginatedResponse, DailyRecord } from '@/types/api'
 import type { PaginationState } from '@tanstack/react-table'
 
 const PAGE_SIZE = 50
 
-export default function TimesheetPage() {
+function parseAnchorDate(value: string | null): Date | null {
+  if (!value) return null
+  const parsed = parseISO(value)
+  return isValid(parsed) && format(parsed, 'yyyy-MM-dd') === value ? parsed : null
+}
+
+function TimesheetContent() {
+  const searchParams = useSearchParams()
+  const employeeId = searchParams.get('employee_id')?.trim() || null
+  const requestedAnchor = searchParams.get('anchor_date')
+  const parsedAnchor = parseAnchorDate(requestedAnchor)
+  const anchorDate = parsedAnchor ? format(parsedAnchor, 'yyyy-MM-dd') : null
+  const currentDate = parsedAnchor ?? new Date()
+  const filterKey = `${employeeId ?? ''}:${anchorDate ?? ''}`
+
+  return (
+    <TimesheetView
+      key={filterKey}
+      employeeId={employeeId}
+      anchorDate={anchorDate}
+      currentDate={currentDate}
+      searchParamsString={searchParams.toString()}
+    />
+  )
+}
+
+interface TimesheetViewProps {
+  employeeId: string | null
+  anchorDate: string | null
+  currentDate: Date
+  searchParamsString: string
+}
+
+function TimesheetView({
+  employeeId,
+  anchorDate,
+  currentDate,
+  searchParamsString,
+}: TimesheetViewProps) {
   const { role } = useAuth()
-  const [currentDate, setCurrentDate] = useState(new Date())
+  const router = useRouter()
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: PAGE_SIZE,
@@ -30,13 +69,14 @@ export default function TimesheetPage() {
   const weekEnd = format(endOfWeek(currentDate, { weekStartsOn: 1 }), 'yyyy-MM-dd')
 
   const { data, isLoading } = useQuery<PaginatedResponse<DailyRecord>>({
-    queryKey: ['daily-records', weekStart, weekEnd, pagination.pageIndex],
+    queryKey: ['daily-records', employeeId, anchorDate, weekStart, weekEnd, pagination.pageIndex],
     queryFn: () =>
       api
         .get('/daily-records', {
           params: {
             from_date: weekStart,
             to_date: weekEnd,
+            ...(employeeId ? { employee_id: employeeId } : {}),
             limit: PAGE_SIZE,
             offset: pagination.pageIndex * PAGE_SIZE,
           },
@@ -44,32 +84,17 @@ export default function TimesheetPage() {
         .then((r) => r.data),
   })
 
-  // The /daily-records payload carries employee_id but not employee_name, so we
-  // join it client-side against the employee directory (paginated to cover the
-  // full roster, since the list endpoint caps each page at 100). Without this the
-  // table falls back to rendering the raw employee_id (issue #3).
-  const { data: employeeNames } = useQuery<Map<string, string>>({
-    queryKey: ['employee-name-map'],
-    queryFn: async () => {
-      const map = new Map<string, string>()
-      const limit = 100
-      let offset = 0
-      for (;;) {
-        const page = await api
-          .get('/employees', { params: { limit, offset } })
-          .then((r) => r.data as PaginatedResponse<Employee>)
-        for (const emp of page.data) map.set(emp.id, emp.name)
-        offset += limit
-        if (page.data.length === 0 || offset >= page.total) break
-      }
-      return map
-    },
-  })
+  const records: DailyRecord[] = data?.data ?? []
 
-  const records: DailyRecord[] = (data?.data ?? []).map((rec) => ({
-    ...rec,
-    employee_name: rec.employee_name ?? employeeNames?.get(rec.employee_id),
-  }))
+  const handleWeekChange = (date: Date) => {
+    const next = new URLSearchParams(searchParamsString)
+    next.set('anchor_date', format(date, 'yyyy-MM-dd'))
+    router.replace(`/timesheet?${next.toString()}`)
+  }
+
+  const handlePaginationChange = (next: PaginationState) => {
+    setPagination(next)
+  }
 
   const handleEditClick = (record: DailyRecord) => {
     setSelectedRecord(record)
@@ -81,7 +106,7 @@ export default function TimesheetPage() {
       <TopBar title="Marcaciones" />
       <div className="p-6 space-y-4">
         <div className="flex items-center justify-between">
-          <WeekNavigator currentDate={currentDate} onChange={setCurrentDate} />
+          <WeekNavigator currentDate={currentDate} onChange={handleWeekChange} />
           {role === 'admin' && (
             <PrimaryButton
               size="sm"
@@ -107,7 +132,7 @@ export default function TimesheetPage() {
               data={records}
               total={data?.total ?? 0}
               pagination={pagination}
-              onPaginationChange={setPagination}
+              onPaginationChange={handlePaginationChange}
               onEditClick={handleEditClick}
             />
           )}
@@ -123,5 +148,13 @@ export default function TimesheetPage() {
         }}
       />
     </div>
+  )
+}
+
+export default function TimesheetPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-slate-400 text-sm">Cargando…</div>}>
+      <TimesheetContent />
+    </Suspense>
   )
 }

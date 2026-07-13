@@ -27,11 +27,13 @@ use super::models::{DailyRecordListQuery, DailyRecordResponse};
 const DR_SELECT_COLS: &str = "dr.id, dr.employee_id, dr.department_id, dr.anchor_date, \
     dr.shift_type, dr.work_minutes, dr.overtime_minutes, dr.late_minutes, \
     dr.early_departure_minutes, dr.is_rest_day_worked, dr.entry_at, dr.exit_at, \
-    dr.leave_id, dr.computed_at, dr.created_at, dr.updated_at, e.name";
+    dr.leave_id, dr.computed_at, dr.created_at, dr.updated_at, e.name, d.name";
 
 /// FROM clause shared by `list` and `get_by_id`. LEFT JOIN keeps the row even if
 /// the employee was hard-deleted (name resolves to NULL → None).
-const DR_FROM: &str = "daily_records dr LEFT JOIN employees e ON e.id = dr.employee_id";
+const DR_FROM: &str = "daily_records dr \
+    LEFT JOIN employees e ON e.id = dr.employee_id \
+    LEFT JOIN departments d ON d.id = dr.department_id";
 
 /// Full recompute for a single (employee_id, anchor_date) pair.
 pub async fn recompute_for_day(
@@ -429,6 +431,7 @@ fn row_to_dr(row: libsql::Row) -> Result<DailyRecordResponse, AppError> {
         employee_id: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
         department_id: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
         employee_name: row.get(16).map_err(|e| AppError::Internal(e.into()))?,
+        department_name: row.get(17).map_err(|e| AppError::Internal(e.into()))?,
         anchor_date: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
         shift_type: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
         work_minutes: row.get(5).map_err(|e| AppError::Internal(e.into()))?,

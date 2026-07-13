@@ -3,8 +3,9 @@
 export interface DailyRecord {
   id: string
   employee_id: string
-  employee_name?: string   // joined by frontend enrichment
+  employee_name?: string | null
   department_id: string
+  department_name?: string | null
   anchor_date: string      // YYYY-MM-DD
   shift_type: string
   work_minutes: number

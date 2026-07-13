@@ -25,6 +25,7 @@ pub struct DailyRecordResponse {
     pub employee_id: String,
     pub employee_name: Option<String>,
     pub department_id: String,
+    pub department_name: Option<String>,
     pub anchor_date: String,
     pub shift_type: String,
     pub work_minutes: i64,

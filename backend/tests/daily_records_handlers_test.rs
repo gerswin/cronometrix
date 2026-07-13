@@ -214,6 +214,8 @@ async fn list_daily_records_200_for_viewer_with_data() {
     assert_eq!(body["total"], 1);
     let row = &body["data"][0];
     assert_eq!(row["anchor_date"], "2026-04-20");
+    assert!(row["employee_name"].is_string());
+    assert!(row["department_name"].is_string());
     // anomalies array must be present and non-empty per the seeded MISSING_EXIT.
     let anoms = row["anomalies"].as_array().unwrap();
     assert!(

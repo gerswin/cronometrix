@@ -227,6 +227,57 @@ async fn recompute_upsert_preserves_id_and_replaces_anomalies() {
 }
 
 #[tokio::test]
+async fn recompute_same_employee_on_two_dates_keeps_two_rows() {
+    let db = common::test_db().await;
+    ensure_global_rules(&db).await;
+    let dept_id =
+        create_test_department_with_shift(&db, "DeptTwoDays", "day", false, 480, "09:00", "17:00")
+            .await;
+    let emp_id = seed_employee(&db, &dept_id, "E-TWO-DAYS").await;
+    seed_device(&db, "dev-two-days").await;
+
+    let first = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+    let second = NaiveDate::from_ymd_opt(2026, 4, 21).unwrap();
+    seed_event(
+        &db,
+        &emp_id,
+        "dev-two-days",
+        "entry",
+        caracas_epoch(first, 9, 0),
+    )
+    .await;
+    seed_event(
+        &db,
+        &emp_id,
+        "dev-two-days",
+        "entry",
+        caracas_epoch(second, 9, 0),
+    )
+    .await;
+
+    let (state, _tmp) = make_state(db);
+    dr_service::recompute_for_day(&state, &emp_id, first)
+        .await
+        .unwrap();
+    dr_service::recompute_for_day(&state, &emp_id, second)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        count_daily_records(&state.db, &emp_id, "2026-04-20").await,
+        1
+    );
+    assert_eq!(
+        count_daily_records(&state.db, &emp_id, "2026-04-21").await,
+        1
+    );
+    assert_ne!(
+        daily_record_id(&state.db, &emp_id, "2026-04-20").await,
+        daily_record_id(&state.db, &emp_id, "2026-04-21").await
+    );
+}
+
+#[tokio::test]
 async fn recompute_flags_recompute_after_edit_on_second_call() {
     let db = common::test_db().await;
     ensure_global_rules(&db).await;

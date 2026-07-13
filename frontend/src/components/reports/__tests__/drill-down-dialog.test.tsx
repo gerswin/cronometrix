@@ -90,7 +90,7 @@ describe('<DrillDownDialog>', () => {
       expect(screen.getByText('2026-04-01')).toBeInTheDocument(),
     )
     expect(screen.getByText('Detalle por Día')).toBeInTheDocument()
-    expect(screen.getByText('480')).toBeInTheDocument() // work minutes
+    expect(screen.getByText('8:00')).toHaveAttribute('title', '480 min')
   })
 
   it('shows empty placeholder when API returns no records', async () => {

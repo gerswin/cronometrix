@@ -6,9 +6,10 @@ import {
   type ColumnDef,
   type PaginationState,
 } from '@tanstack/react-table'
-import { format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 import { Pencil } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
+import { dailyRecordKey } from '@/lib/daily-record-key'
 import type { DailyRecord } from '@/types/api'
 import { LeaveRowActions } from './leave-row-actions'
 
@@ -41,11 +42,6 @@ function getStatusBadge(record: DailyRecord) {
   )
 }
 
-function formatMinutes(min: number | null | undefined) {
-  if (min === null || min === undefined) return '—'
-  return String(min)
-}
-
 function formatTime(iso: string | null | undefined) {
   if (!iso) return '—'
   try {
@@ -76,9 +72,19 @@ export function TimesheetTable({
 
   const columns: ColumnDef<DailyRecord>[] = [
     {
+      accessorKey: 'anchor_date',
+      header: 'Fecha',
+      cell: ({ getValue }) => format(parseISO(getValue() as string), 'dd/MM/yyyy'),
+    },
+    {
       accessorKey: 'employee_id',
       header: 'Empleado',
       cell: ({ row }) => row.original.employee_name ?? row.original.employee_id,
+    },
+    {
+      accessorKey: 'department_id',
+      header: 'Departamento',
+      cell: ({ row }) => row.original.department_name ?? row.original.department_id,
     },
     {
       accessorKey: 'entry_at',
@@ -86,33 +92,18 @@ export function TimesheetTable({
       cell: ({ getValue }) => formatTime(getValue() as string | null),
     },
     {
-      accessorKey: 'late_minutes',
-      header: 'Min. Inicio',
-      cell: ({ getValue }) => formatMinutes(getValue() as number),
-    },
-    {
-      accessorKey: 'early_departure_minutes',
-      header: 'Min. Fin',
-      cell: ({ getValue }) => formatMinutes(getValue() as number),
-    },
-    {
       accessorKey: 'exit_at',
       header: 'Salida',
       cell: ({ getValue }) => formatTime(getValue() as string | null),
     },
     {
-      accessorKey: 'work_minutes',
-      header: 'Total Min',
-      cell: ({ getValue }) => formatMinutes(getValue() as number),
-    },
-    {
       id: 'estado',
-      header: 'Estado',
+      header: 'Novedades / Estado',
       cell: ({ row }) => getStatusBadge(row.original),
     },
     {
       id: 'actions',
-      header: '',
+      header: 'Acciones',
       cell: ({ row }: { row: { original: DailyRecord } }) => (
         <span className="inline-flex items-center gap-1">
           {role === 'admin' && (
@@ -146,6 +137,7 @@ export function TimesheetTable({
     getCoreRowModel: getCoreRowModel(),
     manualPagination: true,
     manualFiltering: true,
+    getRowId: dailyRecordKey,
   })
 
   return (
@@ -172,6 +164,7 @@ export function TimesheetTable({
           {table.getRowModel().rows.map((row) => (
             <tr
               key={row.id}
+              data-testid={`timesheet-row-${row.id}`}
               className="border-b border-slate-100 hover:bg-slate-50"
             >
               {row.getVisibleCells().map((cell) => (

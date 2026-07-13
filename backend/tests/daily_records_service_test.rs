@@ -243,6 +243,48 @@ async fn list_filter_by_employee_id() {
     assert_eq!(result.data[0].employee_id, e1);
     // The list query LEFT JOINs employees so the table can show a name, not the raw id.
     assert_eq!(result.data[0].employee_name.as_deref(), Some("Emp"));
+    assert_eq!(result.data[0].department_name.as_deref(), Some("DB"));
+}
+
+#[tokio::test]
+async fn list_uses_historical_daily_record_department_name() {
+    let db = common::test_db().await;
+    let historical =
+        create_test_department_with_shift(&db, "Historical", "day", false, 480, "09:00", "17:00")
+            .await;
+    let current =
+        create_test_department_with_shift(&db, "Current", "day", false, 480, "09:00", "17:00")
+            .await;
+    let employee = seed_employee(&db, &historical, "E-HISTORY", "active").await;
+    seed_dr_row(&db, &historical, &employee, "2026-04-20").await;
+    db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET department_id = ?1 WHERE id = ?2",
+            params![current, employee],
+        )
+        .await
+        .unwrap();
+
+    let result = dr_service::list(
+        &db.connect().unwrap(),
+        DailyRecordListQuery {
+            limit: None,
+            offset: None,
+            employee_id: None,
+            department_id: None,
+            from_date: None,
+            to_date: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.data[0].department_id, historical);
+    assert_eq!(
+        result.data[0].department_name.as_deref(),
+        Some("Historical")
+    );
 }
 
 #[tokio::test]
