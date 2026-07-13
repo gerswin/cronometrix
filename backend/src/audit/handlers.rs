@@ -36,9 +36,7 @@ pub async fn list_audit(
 /// RBAC: Admin + Supervisor (via require_supervisor_or_above middleware applied at the
 /// supervisor_read_routes group level). Viewer → 403. Anonymous → 401.
 /// No query params, no pagination — cardinality is bounded by user count.
-pub async fn list_actors(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<AuditActor>>, AppError> {
+pub async fn list_actors(State(state): State<AppState>) -> Result<Json<Vec<AuditActor>>, AppError> {
     let conn = state
         .db
         .connect()

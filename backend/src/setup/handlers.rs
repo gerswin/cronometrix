@@ -119,7 +119,11 @@ pub struct SetupActivateRequest {
     /// Validator only enforces length here; the explicit split-check below
     /// catches non-alphanumeric segments and missing hyphens without pulling
     /// in a `regex` static (avoids the once_cell::Lazy dance).
-    #[validate(length(min = 19, max = 19, message = "License key must be in XXXX-XXXX-XXXX-XXXX format"))]
+    #[validate(length(
+        min = 19,
+        max = 19,
+        message = "License key must be in XXXX-XXXX-XXXX-XXXX format"
+    ))]
     pub license_key: String,
 }
 

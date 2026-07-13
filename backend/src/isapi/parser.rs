@@ -60,19 +60,28 @@ pub async fn parse_buffer(body: &[u8], boundary: &str) -> anyhow::Result<Vec<Eve
             // Commit any pending XML with no JPEG (Pitfall 2 — some streams
             // omit the JPEG part entirely).
             if let Some(prev) = pending_xml.take() {
-                out.push(EventPair { xml: prev, jpeg: None });
+                out.push(EventPair {
+                    xml: prev,
+                    jpeg: None,
+                });
             }
             pending_xml = Some(bytes);
         } else if ct.starts_with("image/jpeg") || bytes.starts_with(b"\xFF\xD8\xFF") {
             if let Some(prev) = pending_xml.take() {
-                out.push(EventPair { xml: prev, jpeg: Some(bytes) });
+                out.push(EventPair {
+                    xml: prev,
+                    jpeg: Some(bytes),
+                });
             }
             // else: orphan image with no preceding XML — drop it.
         }
     }
 
     if let Some(prev) = pending_xml.take() {
-        out.push(EventPair { xml: prev, jpeg: None });
+        out.push(EventPair {
+            xml: prev,
+            jpeg: None,
+        });
     }
     Ok(out)
 }
@@ -108,7 +117,10 @@ pub fn parse_line_scan_fallback(body: &[u8]) -> Vec<EventPair> {
         let jpeg = find_subslice(&body[tail_start..tail_end], b"\xFF\xD8\xFF")
             .map(|j| Bytes::copy_from_slice(&body[tail_start + j..tail_end]));
 
-        out.push(EventPair { xml: xml_bytes, jpeg });
+        out.push(EventPair {
+            xml: xml_bytes,
+            jpeg,
+        });
         start = tail_end;
     }
 
@@ -144,7 +156,10 @@ mod tests {
         assert!(xml.contains("<EventNotificationAlert"));
         assert!(pair.jpeg.is_some(), "k1t341 fixture has an attached JPEG");
         let jpeg = pair.jpeg.as_ref().unwrap();
-        assert!(jpeg.starts_with(b"\xFF\xD8\xFF"), "JPEG must start with SOI");
+        assert!(
+            jpeg.starts_with(b"\xFF\xD8\xFF"),
+            "JPEG must start with SOI"
+        );
     }
 
     #[tokio::test]
@@ -157,8 +172,7 @@ mod tests {
 
     #[tokio::test]
     async fn parses_unknown_face_fixture_into_one_event_pair() {
-        let body =
-            fs::read(fixture_path("alertstream_unknown_face.bin")).expect("fixture missing");
+        let body = fs::read(fixture_path("alertstream_unknown_face.bin")).expect("fixture missing");
         let pairs = parse_buffer(&body, "MIME_boundary").await.expect("parse");
         assert_eq!(pairs.len(), 1);
         let xml = std::str::from_utf8(&pairs[0].xml).expect("xml utf8");
@@ -167,8 +181,7 @@ mod tests {
 
     #[tokio::test]
     async fn ignores_bytes_before_first_boundary() {
-        let fixture =
-            fs::read(fixture_path("alertstream_k1t341.bin")).expect("fixture missing");
+        let fixture = fs::read(fixture_path("alertstream_k1t341.bin")).expect("fixture missing");
         let mut body = vec![0u8; 128];
         body.extend_from_slice(&fixture);
         let pairs = parse_buffer(&body, "MIME_boundary").await.expect("parse");

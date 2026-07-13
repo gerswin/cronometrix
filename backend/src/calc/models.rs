@@ -9,8 +9,8 @@ pub struct AttendanceEventRow {
     pub id: String,
     pub employee_id: Option<String>,
     pub device_id: String,
-    pub direction: String,  // "entry" | "exit"
-    pub captured_at: i64,   // UTC epoch seconds
+    pub direction: String, // "entry" | "exit"
+    pub captured_at: i64,  // UTC epoch seconds
     pub is_unknown: bool,
 }
 
@@ -19,12 +19,12 @@ pub struct AttendanceEventRow {
 #[derive(Debug, Clone)]
 pub struct DepartmentConfig {
     pub id: String,
-    pub shift_start_time: String,    // "HH:MM"
-    pub shift_end_time: String,      // "HH:MM"
-    pub shift_type: String,          // "day" | "night" | "mixed"
-    pub is_overnight_shift: bool,    // Plan 03-01 defaults false; Plan 03-02 wires true
+    pub shift_start_time: String, // "HH:MM"
+    pub shift_end_time: String,   // "HH:MM"
+    pub shift_type: String,       // "day" | "night" | "mixed"
+    pub is_overnight_shift: bool, // Plan 03-01 defaults false; Plan 03-02 wires true
     pub ordinary_daily_minutes: i64,
-    pub lunch_mode: String,          // "fixed" | "punch"
+    pub lunch_mode: String, // "fixed" | "punch"
     pub lunch_duration_min: Option<i64>,
 }
 

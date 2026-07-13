@@ -8,7 +8,9 @@ use validator::Validate;
 use crate::errors::AppError;
 use crate::state::AppState;
 
-use super::models::{CreateDepartmentRequest, Department, DepartmentListQuery, UpdateDepartmentRequest};
+use super::models::{
+    CreateDepartmentRequest, Department, DepartmentListQuery, UpdateDepartmentRequest,
+};
 use super::service;
 use crate::common::PaginatedResponse;
 
@@ -35,7 +37,10 @@ pub async fn list_departments(
     State(state): State<AppState>,
     Query(query): Query<DepartmentListQuery>,
 ) -> Result<Json<PaginatedResponse<Department>>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let result = service::list(&conn, query).await?;
 
     Ok(Json(result))
@@ -47,7 +52,10 @@ pub async fn get_department(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Department>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let department = service::get_by_id(&conn, &id).await?;
 
     Ok(Json(department))

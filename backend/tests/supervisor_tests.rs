@@ -75,12 +75,7 @@ async fn seed_device(conn: &libsql::Connection, id: &str, key: &[u8; 32]) {
          created_at, updated_at) \
          VALUES (?1, ?2, '127.0.0.1', ?3, 'http', 'admin', ?4, \
          'entry', 0, 'offline', 'active', 1, unixepoch(), unixepoch())",
-        params![
-            id.to_string(),
-            format!("dev-{}", id),
-            port,
-            enc
-        ],
+        params![id.to_string(), format!("dev-{}", id), port, enc],
     )
     .await
     .expect("seed device");
@@ -99,12 +94,7 @@ async fn seed_inactive_device(conn: &libsql::Connection, id: &str, key: &[u8; 32
          created_at, updated_at) \
          VALUES (?1, ?2, '127.0.0.1', ?3, 'http', 'admin', ?4, \
          'entry', 0, 'offline', 'inactive', 1, unixepoch(), unixepoch())",
-        params![
-            id.to_string(),
-            format!("dev-{}", id),
-            port,
-            enc
-        ],
+        params![id.to_string(), format!("dev-{}", id), port, enc],
     )
     .await
     .expect("seed inactive device");
@@ -223,7 +213,11 @@ async fn bootstrap_spawns_one_task_per_active_device() {
             }
         })
         .await;
-        assert!(ok, "active device {} must have been touched by bootstrap", id);
+        assert!(
+            ok,
+            "active device {} must have been touched by bootstrap",
+            id
+        );
     }
 
     // Inactive device should NOT have been touched — it remains in its
@@ -342,8 +336,7 @@ async fn stop_signal_cancels_task() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     shutdown.cancel();
-    let completed =
-        tokio::time::timeout(Duration::from_secs(5), supervisor_handle).await;
+    let completed = tokio::time::timeout(Duration::from_secs(5), supervisor_handle).await;
     assert!(completed.is_ok(), "supervisor must join cleanly after Stop");
 }
 
@@ -580,7 +573,10 @@ async fn watchdog_flips_device_with_null_last_seen() {
         .unwrap()
         .unwrap();
     let cs: String = row.get(0).unwrap();
-    assert_eq!(cs, "offline", "device with NULL last_seen must flip offline");
+    assert_eq!(
+        cs, "offline",
+        "device with NULL last_seen must flip offline"
+    );
 }
 
 // =============================================================================
@@ -598,11 +594,10 @@ mod backoff {
     #[test]
     fn doubling_from_initial_caps_at_60s_in_nine_steps() {
         // 1s -> 2s -> 4s -> 8s -> 16s -> 32s -> 60s (capped from 64s)
-        let seq: Vec<u64> = std::iter::successors(Some(INITIAL), |prev| {
-            Some(prev.saturating_mul(2).min(MAX))
-        })
-        .take(10)
-        .collect();
+        let seq: Vec<u64> =
+            std::iter::successors(Some(INITIAL), |prev| Some(prev.saturating_mul(2).min(MAX)))
+                .take(10)
+                .collect();
         assert_eq!(
             seq,
             vec![1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000, 60000]
@@ -639,7 +634,10 @@ async fn build_test_app(
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
         .route("/devices/{id}", patch(devices::handlers::update_device))
-        .route("/devices/{id}", delete(devices::handlers::deactivate_device))
+        .route(
+            "/devices/{id}",
+            delete(devices::handlers::deactivate_device),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,
@@ -654,10 +652,7 @@ async fn build_test_app(
         ));
 
     let app = Router::new()
-        .nest(
-            "/api/v1",
-            admin_routes.merge(viewer_routes),
-        )
+        .nest("/api/v1", admin_routes.merge(viewer_routes))
         .with_state(state.clone());
 
     (app, state, lifecycle_rx, tmp)
@@ -681,7 +676,10 @@ async fn next_event(
     rx: &mut mpsc::UnboundedReceiver<DeviceLifecycleEvent>,
     timeout: Duration,
 ) -> Option<DeviceLifecycleEvent> {
-    tokio::time::timeout(timeout, rx.recv()).await.ok().flatten()
+    tokio::time::timeout(timeout, rx.recv())
+        .await
+        .ok()
+        .flatten()
 }
 
 #[tokio::test]
@@ -832,7 +830,6 @@ async fn delete_device_emits_stop_event() {
         Some(DeviceLifecycleEvent::Stop(id)) => assert_eq!(id, "d-delete"),
         other => panic!("expected Stop event, got {:?}", other),
     }
-
 }
 
 #[tokio::test]

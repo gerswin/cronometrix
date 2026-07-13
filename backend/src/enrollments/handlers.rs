@@ -29,8 +29,8 @@ use crate::state::AppState;
 
 use super::image_pipeline::normalize_face_jpeg;
 use super::models::{
-    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse,
-    EnrollmentResponse, EnrollmentSubmitResponse, RetryResponse,
+    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse, EnrollmentResponse,
+    EnrollmentSubmitResponse, RetryResponse,
 };
 use super::pusher::{push_one_device, spawn_enrollment_pushes};
 use super::service;
@@ -48,8 +48,8 @@ const CAPTURE_TIMEOUT_SECS: u64 = 30;
 /// In-memory capture state for a single kiosk capture session.
 #[derive(Debug, Clone)]
 pub struct CaptureState {
-    pub status: String,              // capturing | captured | timeout | error
-    pub photo_path: Option<String>,  // set when status == "captured"
+    pub status: String,             // capturing | captured | timeout | error
+    pub photo_path: Option<String>, // set when status == "captured"
     pub error_message: Option<String>,
 }
 
@@ -85,10 +85,14 @@ pub async fn create_enrollment(
     let mut face_quality_score: Option<String> = None;
     let mut photo_bytes: Option<Vec<u8>> = None;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Validation {
-        code: "VALIDATION_ERROR",
-        message: format!("malformed multipart: {}", e),
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: format!("malformed multipart: {}", e),
+        })?
+    {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "employee_id" => {
@@ -196,7 +200,10 @@ pub async fn create_enrollment(
     .await?;
 
     // Retrieve active devices for the fan-out.
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
     drop(conn);
 
@@ -228,7 +235,10 @@ pub async fn get_enrollment(
     AuthUser(_claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<EnrollmentResponse>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let enrollment = service::get_enrollment_with_pushes(&conn, &id).await?;
     Ok(Json(enrollment))
 }
@@ -243,14 +253,21 @@ pub async fn retry_push(
     AuthUser(_claims): AuthUser,
     Path((enrollment_id, device_id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<RetryResponse>), AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     // Reset the push row to pending (idempotent via INSERT OR REPLACE).
-    let _push_id = service::reset_push_to_pending_queued(&state, &enrollment_id, &device_id).await?;
+    let _push_id =
+        service::reset_push_to_pending_queued(&state, &enrollment_id, &device_id).await?;
     drop(conn);
 
     // Retrieve parameters needed for the push.
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let (employee_id, face_id, full_name) =
         service::get_enrollment_push_params(&conn, &enrollment_id).await?;
 
@@ -268,7 +285,10 @@ pub async fn retry_push(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("read photo for retry: {e}")))?;
 
     let device = devices_service::get_decrypted(
-        &state.db.connect().map_err(|e| AppError::Internal(e.into()))?,
+        &state
+            .db
+            .connect()
+            .map_err(|e| AppError::Internal(e.into()))?,
         &device_id,
         &state.config.device_creds_key,
     )
@@ -300,7 +320,8 @@ pub async fn retry_push(
                 );
             }
             // Finalise enrollment status after single retry settles.
-            if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await {
+            if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await
+            {
                 tracing::error!(enrollment_id = %enrollment_id, err = %e, "retry finalize failed");
             }
         }
@@ -343,7 +364,10 @@ pub async fn capture_from_device(
     }
 
     // Build device connection.
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let device =
         devices_service::get_decrypted(&conn, &body.device_id, &state.config.device_creds_key)
             .await?;
@@ -417,9 +441,7 @@ pub async fn capture_from_device(
                     CaptureState {
                         status: "timeout".to_string(),
                         photo_path: None,
-                        error_message: Some(
-                            "Device did not respond within 30 seconds".to_string(),
-                        ),
+                        error_message: Some("Device did not respond within 30 seconds".to_string()),
                     },
                 );
             }
@@ -454,10 +476,13 @@ pub async fn get_capture(
     Path(capture_id): Path<String>,
 ) -> Result<Json<CaptureResponse>, AppError> {
     let map = state.captures.read().await;
-    let capture_state = map.get(&capture_id).cloned().ok_or_else(|| AppError::NotFound {
-        code: "CAPTURE_NOT_FOUND",
-        message: format!("Capture session '{}' not found or expired", capture_id),
-    })?;
+    let capture_state = map
+        .get(&capture_id)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound {
+            code: "CAPTURE_NOT_FOUND",
+            message: format!("Capture session '{}' not found or expired", capture_id),
+        })?;
     drop(map);
 
     // Inline photo_b64 when status == "captured" (T-7-13 mitigated: admin-only endpoint).

@@ -15,7 +15,7 @@ pub struct EnrollmentDevicePushResponse {
     pub id: String,
     pub device_id: String,
     pub device_name: String,
-    pub status: String,               // pending | in_progress | success | failed
+    pub status: String, // pending | in_progress | success | failed
     pub error_message: Option<String>,
     pub started_at: Option<String>,   // ISO-8601 or None
     pub completed_at: Option<String>, // ISO-8601 or None
@@ -60,10 +60,10 @@ pub struct RetryResponse {
 #[derive(Debug, Serialize)]
 pub struct CaptureResponse {
     pub capture_id: String,
-    pub status: String,              // capturing | captured | timeout | error
+    pub status: String, // capturing | captured | timeout | error
     pub photo_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub photo_b64: Option<String>,   // Some(base64 JPEG) iff status=="captured"
+    pub photo_b64: Option<String>, // Some(base64 JPEG) iff status=="captured"
     pub error_message: Option<String>,
 }
 

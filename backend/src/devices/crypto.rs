@@ -83,8 +83,8 @@ pub fn decrypt_password(encoded: &str, key_bytes: &[u8; 32]) -> Result<String> {
 /// Used by `Config::from_env()` for `DEVICE_CREDS_KEY` (D-02). Returns `Err` if
 /// the variable is missing, not valid base64, or does not decode to exactly 32 bytes.
 pub fn load_key_from_env(var: &str) -> Result<[u8; 32]> {
-    let raw = std::env::var(var)
-        .with_context(|| format!("{} environment variable is required", var))?;
+    let raw =
+        std::env::var(var).with_context(|| format!("{} environment variable is required", var))?;
     let decoded = STANDARD
         .decode(raw.as_bytes())
         .with_context(|| format!("{} must be valid base64", var))?;
@@ -134,7 +134,10 @@ mod tests {
         let mut raw = STANDARD
             .decode(ciphertext.as_bytes())
             .expect("ours is valid base64");
-        assert!(raw.len() > 20, "fixture must have enough bytes for the target index");
+        assert!(
+            raw.len() > 20,
+            "fixture must have enough bytes for the target index"
+        );
         raw[20] ^= 0x01;
         let tampered = STANDARD.encode(&raw);
 

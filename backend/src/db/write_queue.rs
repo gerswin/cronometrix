@@ -53,7 +53,9 @@ impl DbWriteQueue {
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("write queue closed"))?;
-        reply_rx.await.map_err(|_| anyhow::anyhow!("write queue dropped"))?
+        reply_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("write queue dropped"))?
     }
 
     pub async fn execute_batch(&self, sql: impl Into<String>) -> anyhow::Result<()> {
@@ -64,14 +66,17 @@ impl DbWriteQueue {
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("write queue closed"))?;
-        reply_rx.await.map_err(|_| anyhow::anyhow!("write queue dropped"))?
+        reply_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("write queue dropped"))?
     }
 
     pub async fn run<F>(&self, job: F) -> anyhow::Result<()>
     where
         F: for<'a> FnOnce(
                 &'a libsql::Connection,
-            ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
+            )
+                -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
             + Send
             + 'static,
     {
@@ -82,7 +87,9 @@ impl DbWriteQueue {
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("write queue closed"))?;
-        reply_rx.await.map_err(|_| anyhow::anyhow!("write queue dropped"))?
+        reply_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("write queue dropped"))?
     }
 }
 

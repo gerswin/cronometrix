@@ -42,11 +42,9 @@ fn seconds_until_next_2am(tz: Tz) -> i64 {
         Some(dt) if dt > now_local => dt,
         _ => {
             let tomorrow = now_local.date_naive() + chrono::Duration::days(1);
-            tz.from_local_datetime(
-                &tomorrow.and_time(NaiveTime::from_hms_opt(2, 0, 0).unwrap()),
-            )
-            .single()
-            .expect("America/Caracas has no DST ambiguity")
+            tz.from_local_datetime(&tomorrow.and_time(NaiveTime::from_hms_opt(2, 0, 0).unwrap()))
+                .single()
+                .expect("America/Caracas has no DST ambiguity")
         }
     };
     (target - now_local).num_seconds().max(1)

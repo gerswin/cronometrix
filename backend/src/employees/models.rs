@@ -12,16 +12,16 @@ pub struct Employee {
     pub employee_code: String,
     pub name: String,
     pub department_id: String,
-    pub status: String,              // "active" | "inactive"
-    pub position: String,            // empty string renders as '—' in UI per D-30a
-    pub hire_date: Option<String>,   // ISO YYYY-MM-DD or null
+    pub status: String,            // "active" | "inactive"
+    pub position: String,          // empty string renders as '—' in UI per D-30a
+    pub hire_date: Option<String>, // ISO YYYY-MM-DD or null
     /// Per-employee base salary in cents (migration 018). Authoritative for payroll math.
     /// Department-level salary remains as a "default suggestion" only.
     pub base_salary_cents: i64,
-    pub deleted_at: Option<String>,  // ISO 8601 or null
+    pub deleted_at: Option<String>, // ISO 8601 or null
     pub version: i64,
-    pub created_at: String,          // ISO 8601
-    pub updated_at: String,          // ISO 8601
+    pub created_at: String, // ISO 8601
+    pub updated_at: String, // ISO 8601
 }
 
 /// Request body for POST /employees. `position` and `hire_date` are optional;
@@ -60,9 +60,9 @@ pub struct UpdateEmployeeRequest {
 /// Query parameters for GET /employees pagination and filtering per D-12.
 #[derive(Debug, Deserialize)]
 pub struct EmployeeListQuery {
-    pub limit: Option<i64>,         // default 20, max 100
-    pub offset: Option<i64>,        // default 0
-    pub name: Option<String>,       // partial LIKE match
+    pub limit: Option<i64>,   // default 20, max 100
+    pub offset: Option<i64>,  // default 0
+    pub name: Option<String>, // partial LIKE match
     pub department_id: Option<String>,
-    pub status: Option<String>,     // "active" | "inactive"
+    pub status: Option<String>, // "active" | "inactive"
 }

@@ -60,7 +60,10 @@ pub async fn list_events(
     State(state): State<AppState>,
     Query(q): Query<EventListQuery>,
 ) -> Result<Json<PaginatedResponse<AttendanceEventResponse>>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let result = service::list(&conn, q).await?;
     Ok(Json(result))
 }
@@ -70,7 +73,10 @@ pub async fn get_event(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<AttendanceEventResponse>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     Ok(Json(service::get_by_id(&conn, &id).await?))
 }
 
@@ -87,7 +93,10 @@ pub async fn get_event_photo(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let relpath = service::get_photo_path(&conn, &id).await?;
 
     if relpath.contains("..") || relpath.starts_with('/') {
@@ -131,15 +140,14 @@ pub async fn get_event_photo(
         });
     }
 
-    let bytes = tokio::fs::read(&canonical).await.map_err(|_| AppError::NotFound {
-        code: "EVENT_PHOTO_NOT_FOUND",
-        message: "Photo not found on disk".to_string(),
-    })?;
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|_| AppError::NotFound {
+            code: "EVENT_PHOTO_NOT_FOUND",
+            message: "Photo not found on disk".to_string(),
+        })?;
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("image/jpeg"),
-    );
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
     Ok((StatusCode::OK, headers, bytes).into_response())
 }

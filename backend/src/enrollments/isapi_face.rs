@@ -136,10 +136,7 @@ mod tests {
         let face_id = "test-face-uuid-1234";
         let body = build_user_info_record_body(face_id, "Juan Pérez");
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(
-            parsed["UserInfo"]["employeeNo"].as_str().unwrap(),
-            face_id
-        );
+        assert_eq!(parsed["UserInfo"]["employeeNo"].as_str().unwrap(), face_id);
         // name field should be present
         assert!(parsed["UserInfo"]["name"].as_str().is_some());
     }
@@ -150,7 +147,11 @@ mod tests {
         let body = build_user_info_record_body("fid", &long_name);
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         let name = parsed["UserInfo"]["name"].as_str().unwrap();
-        assert!(name.len() <= 32, "name must be ≤32 bytes, got {}", name.len());
+        assert!(
+            name.len() <= 32,
+            "name must be ≤32 bytes, got {}",
+            name.len()
+        );
     }
 
     #[test]

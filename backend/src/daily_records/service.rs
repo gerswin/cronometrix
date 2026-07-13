@@ -97,9 +97,7 @@ pub async fn recompute_for_day(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("global_rules singleton missing")))?;
     let rules = GlobalRulesRow {
-        late_arrival_tolerance_min: rules_row
-            .get(0)
-            .map_err(|e| AppError::Internal(e.into()))?,
+        late_arrival_tolerance_min: rules_row.get(0).map_err(|e| AppError::Internal(e.into()))?,
         early_departure_tolerance_min: rules_row
             .get(1)
             .map_err(|e| AppError::Internal(e.into()))?,
@@ -220,12 +218,9 @@ pub async fn recompute_for_day(
     //    active leave covers anchor_date; Some(LeaveRow) triggers the engine's
     //    overlay branch (work=0, overtime=0, leave_id set, EVENTS_ON_LEAVE_DAY
     //    if events are present).
-    let active_leave = crate::leaves::service::fetch_active_leave_for_date(
-        &conn,
-        employee_id,
-        anchor_date,
-    )
-    .await?;
+    let active_leave =
+        crate::leaves::service::fetch_active_leave_for_date(&conn, employee_id, anchor_date)
+            .await?;
 
     // 8. Pure engine.
     let input = EngineInput {
@@ -401,7 +396,10 @@ pub async fn reconcile_prior_day(state: &AppState, tz: Tz) -> Result<i64, AppErr
 }
 
 /// Fetch the anomaly codes for a given daily_record id, in insertion order.
-async fn fetch_anomaly_codes(conn: &Connection, daily_record_id: &str) -> Result<Vec<String>, AppError> {
+async fn fetch_anomaly_codes(
+    conn: &Connection,
+    daily_record_id: &str,
+) -> Result<Vec<String>, AppError> {
     let mut rows = conn
         .query(
             "SELECT code FROM daily_record_anomalies \
@@ -423,8 +421,7 @@ async fn fetch_anomaly_codes(conn: &Connection, daily_record_id: &str) -> Result
 }
 
 fn row_to_dr(row: libsql::Row) -> Result<DailyRecordResponse, AppError> {
-    let is_rest_day_worked_int: i64 =
-        row.get(9).map_err(|e| AppError::Internal(e.into()))?;
+    let is_rest_day_worked_int: i64 = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
     let entry_at: Option<i64> = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
     let exit_at: Option<i64> = row.get(11).map_err(|e| AppError::Internal(e.into()))?;
     Ok(DailyRecordResponse {

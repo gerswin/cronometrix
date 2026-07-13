@@ -100,7 +100,10 @@ async fn create_employee_rejects_malformed_hire_date() {
     .await
     .expect_err("malformed hire_date must reject");
     let s = err.to_string();
-    assert!(s.contains("validation") || s.contains("hire_date"), "err: {s}");
+    assert!(
+        s.contains("validation") || s.contains("hire_date"),
+        "err: {s}"
+    );
 }
 
 #[tokio::test]

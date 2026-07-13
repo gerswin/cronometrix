@@ -3,8 +3,8 @@
 //! bucket row 10).
 
 use cronometrix_api::devices::models::{
-    Command, CommandRequest, CreateDeviceRequest, DeviceWithPlaintext, UpdateDeviceRequest,
-    validate_direction, validate_ip, validate_scheme, validate_status,
+    validate_direction, validate_ip, validate_scheme, validate_status, Command, CommandRequest,
+    CreateDeviceRequest, DeviceWithPlaintext, UpdateDeviceRequest,
 };
 use validator::Validate;
 
@@ -235,9 +235,7 @@ fn command_request_validate_happy() {
 
 #[test]
 fn command_request_blank_rejected() {
-    let r = CommandRequest {
-        command: "".into(),
-    };
+    let r = CommandRequest { command: "".into() };
     assert!(r.validate().is_err());
 }
 
@@ -271,7 +269,10 @@ fn device_with_plaintext_debug_redacts_password() {
         !dbg.contains("supersecret"),
         "password MUST not appear in Debug, got: {dbg}"
     );
-    assert!(dbg.contains("[redacted]"), "Debug must mark redaction: {dbg}");
+    assert!(
+        dbg.contains("[redacted]"),
+        "Debug must mark redaction: {dbg}"
+    );
     // Non-sensitive fields appear.
     assert!(dbg.contains("admin"));
     assert!(dbg.contains("10.0.0.1"));

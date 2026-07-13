@@ -470,14 +470,8 @@ async fn fetch_active_leave_returns_some_when_covering_date() {
     let lr = r.expect("Some");
     assert_eq!(lr.id, leave.id);
     assert_eq!(lr.leave_type, "vacation");
-    assert_eq!(
-        lr.from_date,
-        NaiveDate::from_ymd_opt(2026, 4, 20).unwrap()
-    );
-    assert_eq!(
-        lr.to_date,
-        NaiveDate::from_ymd_opt(2026, 4, 25).unwrap()
-    );
+    assert_eq!(lr.from_date, NaiveDate::from_ymd_opt(2026, 4, 20).unwrap());
+    assert_eq!(lr.to_date, NaiveDate::from_ymd_opt(2026, 4, 25).unwrap());
 }
 
 #[tokio::test]

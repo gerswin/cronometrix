@@ -34,11 +34,19 @@ async fn init_db_local_creates_tables() {
     let path = tmp.path().join("cron.db");
     let cfg = make_config(path.to_str().unwrap(), "");
 
-    let db = init_db_local(&cfg).await.expect("init_db_local must succeed");
+    let db = init_db_local(&cfg)
+        .await
+        .expect("init_db_local must succeed");
     let conn = db.connect().unwrap();
 
     // Schema sanity: a few well-known tables must exist after migrations apply.
-    for table in ["users", "departments", "employees", "audit_log", "_migrations"] {
+    for table in [
+        "users",
+        "departments",
+        "employees",
+        "audit_log",
+        "_migrations",
+    ] {
         let mut rows = conn
             .query(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -159,10 +167,7 @@ async fn init_db_local_two_separate_paths_get_two_distinct_dbs() {
         .unwrap();
 
     let mut rows = conn_b
-        .query(
-            "SELECT COUNT(*) FROM departments WHERE id='d1'",
-            (),
-        )
+        .query("SELECT COUNT(*) FROM departments WHERE id='d1'", ())
         .await
         .unwrap();
     let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();

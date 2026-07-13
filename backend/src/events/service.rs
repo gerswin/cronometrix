@@ -8,9 +8,7 @@ use crate::errors::AppError;
 use crate::recompute::RecomputeRequest;
 use crate::state::{AppState, AttendanceEventSSEPayload};
 
-use super::models::{
-    AttendanceEventResponse, EventListQuery, NewAttendanceEvent, PersistOutcome,
-};
+use super::models::{AttendanceEventResponse, EventListQuery, NewAttendanceEvent, PersistOutcome};
 
 /// Publish a recompute request for the (employee_id, anchor_date) pair derived
 /// from a just-inserted event.
@@ -45,7 +43,11 @@ pub fn publish_recompute_if_employee(state: &AppState, event: &NewAttendanceEven
 ///
 /// Non-fatal: if there are no subscribers or the channel is not initialised
 /// (test setups), the send error is silently ignored.
-pub fn publish_sse_event(state: &AppState, event: &NewAttendanceEvent, photo_path: &Option<String>) {
+pub fn publish_sse_event(
+    state: &AppState,
+    event: &NewAttendanceEvent,
+    photo_path: &Option<String>,
+) {
     let Some(tx) = state.event_broadcast.as_ref() else {
         return;
     };
@@ -53,7 +55,7 @@ pub fn publish_sse_event(state: &AppState, event: &NewAttendanceEvent, photo_pat
     let payload = AttendanceEventSSEPayload {
         id: event.id.clone(),
         employee_id: event.employee_id.clone(),
-        employee_name: None,  // enriched on client via employee lookup
+        employee_name: None, // enriched on client via employee lookup
         department: None,
         captured_at: captured_at_iso,
         direction: event.direction.clone(),
@@ -138,8 +140,7 @@ pub async fn persist_attendance_event(
 
     // Only write the JPEG AFTER confirming the DB insert succeeded (no orphaned files on dedup).
     if let (Some(bytes), Some(rel)) = (event.photo_bytes.as_ref(), photo_relpath.as_ref()) {
-        write_photo_atomic(events_root, rel, bytes)
-            .map_err(AppError::Internal)?;
+        write_photo_atomic(events_root, rel, bytes).map_err(AppError::Internal)?;
     }
 
     Ok(PersistOutcome::Inserted {
@@ -171,16 +172,31 @@ pub async fn persist_attendance_event_queued(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
             vec![
                 libsql::Value::Text(event.id.clone()),
-                event.employee_id.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                event
+                    .employee_id
+                    .clone()
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
                 libsql::Value::Text(event.device_id.clone()),
                 libsql::Value::Text(event.direction.clone()),
                 libsql::Value::Integer(event.captured_at),
                 libsql::Value::Integer(bucket),
                 libsql::Value::Integer(event.is_unknown as i64),
-                event.face_id.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
-                event.employee_no_string.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                event
+                    .face_id
+                    .clone()
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
+                event
+                    .employee_no_string
+                    .clone()
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
                 libsql::Value::Text(event.raw_xml.clone()),
-                photo_relpath.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                photo_relpath
+                    .clone()
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
             ],
         )
         .await
@@ -238,7 +254,11 @@ pub async fn lookup_employee_for_event(
             )
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
-        if let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+        {
             return Ok(Some(row.get(0).map_err(|e| AppError::Internal(e.into()))?));
         }
     }
@@ -253,7 +273,11 @@ pub async fn lookup_employee_for_event(
                 )
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
-            if let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+            if let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?
+            {
                 return Ok(Some(row.get(0).map_err(|e| AppError::Internal(e.into()))?));
             }
         }
@@ -342,7 +366,11 @@ pub async fn list(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut data = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         data.push(row_to_event(row)?);
     }
 
@@ -355,10 +383,7 @@ pub async fn list(
 }
 
 /// Fetch a single event by id. Returns `NotFound(EVENT_NOT_FOUND)` when absent.
-pub async fn get_by_id(
-    conn: &Connection,
-    id: &str,
-) -> Result<AttendanceEventResponse, AppError> {
+pub async fn get_by_id(conn: &Connection, id: &str) -> Result<AttendanceEventResponse, AppError> {
     let sql = format!(
         "SELECT {} FROM attendance_events WHERE id = ?1",
         EVENT_SELECT_COLS
@@ -590,7 +615,10 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().expect("row");
         let stored: i64 = row.get(0).unwrap();
-        assert_eq!(stored, epoch, "captured_at must round-trip as UTC epoch int");
+        assert_eq!(
+            stored, epoch,
+            "captured_at must round-trip as UTC epoch int"
+        );
     }
 
     #[tokio::test]
@@ -650,7 +678,10 @@ mod tests {
         let employee_id: Option<String> = row.get(0).unwrap();
         let is_unknown: i64 = row.get(1).unwrap();
         let face_id: Option<String> = row.get(2).unwrap();
-        assert!(employee_id.is_none(), "unknown event must have NULL employee_id");
+        assert!(
+            employee_id.is_none(),
+            "unknown event must have NULL employee_id"
+        );
         assert_eq!(is_unknown, 1);
         assert_eq!(face_id.as_deref(), Some("42"));
     }

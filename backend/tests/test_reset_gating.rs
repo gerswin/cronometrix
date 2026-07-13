@@ -47,10 +47,7 @@ fn test_config() -> Arc<Config> {
 /// Build a minimal router that replicates the CRONOMETRIX_E2E gate from main.rs.
 /// When `e2e=false`, the /__test_reset route is not registered at all (router → 404).
 /// When `e2e=true`, the route is registered and the handler also re-checks the env.
-fn build_minimal_router(
-    state: cronometrix_api::state::AppState,
-    e2e: bool,
-) -> Router {
+fn build_minimal_router(state: cronometrix_api::state::AppState, e2e: bool) -> Router {
     let mut api = Router::new();
     if e2e {
         api = api.route(

@@ -37,7 +37,10 @@ const TARGET_DIM_PX: u32 = 480;
 pub fn normalize_face_jpeg(input: &[u8]) -> anyhow::Result<Vec<u8>> {
     // Magic byte check: JPEG starts with FF D8 FF.
     if input.len() < 3 || &input[..3] != &[0xFF, 0xD8, 0xFF] {
-        anyhow::bail!("not a JPEG: magic bytes mismatch (got {:02X?})", &input[..input.len().min(3)]);
+        anyhow::bail!(
+            "not a JPEG: magic bytes mismatch (got {:02X?})",
+            &input[..input.len().min(3)]
+        );
     }
 
     // Decode once.
@@ -51,10 +54,10 @@ pub fn normalize_face_jpeg(input: &[u8]) -> anyhow::Result<Vec<u8>> {
 
     // Iterative downscale passes.
     let passes: &[(Option<u32>, u8)] = &[
-        (Some(TARGET_DIM_PX), 85),          // pass 1: 480px, q85
-        (Some(TARGET_DIM_PX), 70),          // pass 2: 480px, q70
-        (Some(320), 70),                    // pass 3: 320px, q70
-        (Some(320), 55),                    // pass 4: 320px, q55
+        (Some(TARGET_DIM_PX), 85), // pass 1: 480px, q85
+        (Some(TARGET_DIM_PX), 70), // pass 2: 480px, q70
+        (Some(320), 70),           // pass 3: 320px, q70
+        (Some(320), 55),           // pass 4: 320px, q55
     ];
 
     let mut current_img = img;
@@ -72,7 +75,9 @@ pub fn normalize_face_jpeg(input: &[u8]) -> anyhow::Result<Vec<u8>> {
         "image too large after 4 normalisation passes (final size {} bytes; max {} bytes)",
         {
             // Re-encode at the last pass params to get the size for the error message.
-            reencode_jpeg(&current_img, 55).map(|b| b.len()).unwrap_or(0)
+            reencode_jpeg(&current_img, 55)
+                .map(|b| b.len())
+                .unwrap_or(0)
         },
         MAX_FACE_BYTES
     )

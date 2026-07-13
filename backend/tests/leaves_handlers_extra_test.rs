@@ -78,10 +78,7 @@ async fn body_to_json(body: Body) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(json!(null))
 }
 
-fn build_multipart(
-    fields: &[(&str, &str)],
-    evidence: Option<(&str, &[u8])>,
-) -> (Vec<u8>, String) {
+fn build_multipart(fields: &[(&str, &str)], evidence: Option<(&str, &[u8])>) -> (Vec<u8>, String) {
     let boundary = "MIME_boundary";
     let mut out = Vec::new();
     for (name, value) in fields {
@@ -108,10 +105,9 @@ fn build_multipart(
 
 async fn seed_employee(db: &libsql::Database, code: &str) -> String {
     let dept_name = format!("Dept-{}", &Uuid::new_v4().to_string()[..8]);
-    let dept_id = create_test_department_with_shift(
-        db, &dept_name, "day", false, 480, "09:00", "17:00",
-    )
-    .await;
+    let dept_id =
+        create_test_department_with_shift(db, &dept_name, "day", false, 480, "09:00", "17:00")
+            .await;
     let conn = db.connect().unwrap();
     let id = Uuid::new_v4().to_string();
     conn.execute(
@@ -405,8 +401,7 @@ async fn get_evidence_404_when_no_evidence() {
 async fn get_evidence_404_when_path_traversal_in_db() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let (leave_id, _) =
-        seed_leave_with_evidence_path(&db, &admin, Some("../../etc/passwd")).await;
+    let (leave_id, _) = seed_leave_with_evidence_path(&db, &admin, Some("../../etc/passwd")).await;
     let (state, _tmp) = make_state(db);
     let app = build_app(state);
     let token = test_access_token(&admin, "admin");
@@ -425,8 +420,7 @@ async fn get_evidence_404_when_path_traversal_in_db() {
 async fn get_evidence_404_when_path_starts_with_slash() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let (leave_id, _) =
-        seed_leave_with_evidence_path(&db, &admin, Some("/etc/shadow")).await;
+    let (leave_id, _) = seed_leave_with_evidence_path(&db, &admin, Some("/etc/shadow")).await;
     let (state, _tmp) = make_state(db);
     let app = build_app(state);
     let token = test_access_token(&admin, "admin");
@@ -445,8 +439,7 @@ async fn get_evidence_404_when_path_starts_with_slash() {
 async fn get_evidence_404_when_file_missing_on_disk() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let (leave_id, _) =
-        seed_leave_with_evidence_path(&db, &admin, Some("never-written.pdf")).await;
+    let (leave_id, _) = seed_leave_with_evidence_path(&db, &admin, Some("never-written.pdf")).await;
     let (state, _tmp) = make_state(db);
     let app = build_app(state);
     let token = test_access_token(&admin, "admin");
@@ -467,8 +460,7 @@ async fn get_evidence_returns_jpeg_with_correct_content_type() {
     // get_leave_evidence streams it with the right Content-Type.
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let (leave_id, _) =
-        seed_leave_with_evidence_path(&db, &admin, Some("photo.jpg")).await;
+    let (leave_id, _) = seed_leave_with_evidence_path(&db, &admin, Some("photo.jpg")).await;
     let (state, _tmp) = make_state(db);
     // Materialise the file inside the per-test leaves_root.
     std::fs::create_dir_all(&state.paths.leaves_root).unwrap();
@@ -492,12 +484,7 @@ async fn get_evidence_returns_jpeg_with_correct_content_type() {
         .unwrap_or_default()
         .to_string();
     assert_eq!(ct, "image/jpeg");
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], MINI_JPEG);
 }
 

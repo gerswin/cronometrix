@@ -190,7 +190,17 @@ async fn audit_401_when_unauthenticated() {
 #[tokio::test]
 async fn audit_200_admin_reads_5_rows() {
     let db = common::test_db().await;
-    seed_audit_rows(&db, 5, Some("actor-1"), "employees", "INSERT", None, None, BASE_TS).await;
+    seed_audit_rows(
+        &db,
+        5,
+        Some("actor-1"),
+        "employees",
+        "INSERT",
+        None,
+        None,
+        BASE_TS,
+    )
+    .await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
@@ -228,7 +238,17 @@ async fn audit_200_admin_reads_5_rows() {
 #[tokio::test]
 async fn audit_200_supervisor_reads_list() {
     let db = common::test_db().await;
-    seed_audit_rows(&db, 3, Some("actor-2"), "departments", "UPDATE", None, None, BASE_TS).await;
+    seed_audit_rows(
+        &db,
+        3,
+        Some("actor-2"),
+        "departments",
+        "UPDATE",
+        None,
+        None,
+        BASE_TS,
+    )
+    .await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
@@ -301,8 +321,28 @@ async fn audit_filter_by_actor_id() {
     let db = common::test_db().await;
     let actor_a = Uuid::new_v4().to_string();
     let actor_b = Uuid::new_v4().to_string();
-    seed_audit_rows(&db, 3, Some(&actor_a), "employees", "INSERT", None, None, BASE_TS).await;
-    seed_audit_rows(&db, 2, Some(&actor_b), "employees", "INSERT", None, None, BASE_TS + 10).await;
+    seed_audit_rows(
+        &db,
+        3,
+        Some(&actor_a),
+        "employees",
+        "INSERT",
+        None,
+        None,
+        BASE_TS,
+    )
+    .await;
+    seed_audit_rows(
+        &db,
+        2,
+        Some(&actor_b),
+        "employees",
+        "INSERT",
+        None,
+        None,
+        BASE_TS + 10,
+    )
+    .await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
@@ -335,7 +375,17 @@ async fn audit_filter_by_actor_id() {
 async fn audit_filter_by_table_name() {
     let db = common::test_db().await;
     seed_audit_rows(&db, 4, None, "employees", "INSERT", None, None, BASE_TS).await;
-    seed_audit_rows(&db, 2, None, "departments", "INSERT", None, None, BASE_TS + 10).await;
+    seed_audit_rows(
+        &db,
+        2,
+        None,
+        "departments",
+        "INSERT",
+        None,
+        None,
+        BASE_TS + 10,
+    )
+    .await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
@@ -366,9 +416,29 @@ async fn audit_filter_by_date_range() {
     // Batch A: ts = BASE_TS (2026-04-01)
     seed_audit_rows(&db, 2, None, "employees", "INSERT", None, None, BASE_TS).await;
     // Batch B: ts = BASE_TS + 100 (inside range)
-    seed_audit_rows(&db, 3, None, "employees", "UPDATE", None, None, BASE_TS + 100).await;
+    seed_audit_rows(
+        &db,
+        3,
+        None,
+        "employees",
+        "UPDATE",
+        None,
+        None,
+        BASE_TS + 100,
+    )
+    .await;
     // Batch C: ts = BASE_TS + 1000 (after range)
-    seed_audit_rows(&db, 1, None, "employees", "DELETE", None, None, BASE_TS + 1000).await;
+    seed_audit_rows(
+        &db,
+        1,
+        None,
+        "employees",
+        "DELETE",
+        None,
+        None,
+        BASE_TS + 1000,
+    )
+    .await;
 
     let from_ts = BASE_TS + 50;
     let to_ts = BASE_TS + 200;
@@ -387,7 +457,10 @@ async fn audit_filter_by_date_range() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp.into_body()).await;
     // Batch B rows (BASE_TS+100 .. BASE_TS+102) fall in [from_ts, to_ts]
-    assert_eq!(body["total"], 3, "only rows in [from_ts, to_ts] range returned");
+    assert_eq!(
+        body["total"], 3,
+        "only rows in [from_ts, to_ts] range returned"
+    );
 }
 
 // =============================================================================
@@ -447,7 +520,6 @@ async fn audit_json_data_fields_deserialize_to_objects() {
 // Test 10 — limit clamping (500 → 200, 0 → 1)
 // =============================================================================
 
-
 #[tokio::test]
 async fn audit_limit_clamped_to_200_and_1() {
     let db = common::test_db().await;
@@ -466,10 +538,7 @@ async fn audit_limit_clamped_to_200_and_1() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp.into_body()).await;
-    assert_eq!(
-        body["limit"], 200,
-        "limit=500 must be clamped to max 200"
-    );
+    assert_eq!(body["limit"], 200, "limit=500 must be clamped to max 200");
 
     // limit=0 → clamp to 1
     let req2 = Request::builder()
@@ -482,10 +551,7 @@ async fn audit_limit_clamped_to_200_and_1() {
     let resp2 = app.oneshot(req2).await.unwrap();
     assert_eq!(resp2.status(), StatusCode::OK);
     let body2 = body_to_json(resp2.into_body()).await;
-    assert_eq!(
-        body2["limit"], 1,
-        "limit=0 must be clamped to min 1"
-    );
+    assert_eq!(body2["limit"], 1, "limit=0 must be clamped to min 1");
 }
 
 // =============================================================================
@@ -526,7 +592,17 @@ async fn seed_user_row(db: &libsql::Database, id: &str, username: &str, role: &s
 async fn audit_actors_returns_200_for_admin() {
     let db = common::test_db().await;
     seed_user_row(&db, "admin-user-1", "admin", "admin").await;
-    seed_audit_rows(&db, 1, Some("admin-user-1"), "employees", "INSERT", None, None, BASE_TS).await;
+    seed_audit_rows(
+        &db,
+        1,
+        Some("admin-user-1"),
+        "employees",
+        "INSERT",
+        None,
+        None,
+        BASE_TS,
+    )
+    .await;
     let (state, _tmp) = make_state(db);
     let app = build_actors_test_app(state);
 
@@ -542,10 +618,7 @@ async fn audit_actors_returns_200_for_admin() {
     let body = body_to_json(resp.into_body()).await;
     let arr = body.as_array().expect("response must be a JSON array");
     // Filter to the non-null actor (audit triggers on users INSERT produce a NULL actor_id row)
-    let non_null: Vec<_> = arr
-        .iter()
-        .filter(|a| !a["actor_id"].is_null())
-        .collect();
+    let non_null: Vec<_> = arr.iter().filter(|a| !a["actor_id"].is_null()).collect();
     assert_eq!(non_null.len(), 1, "must return exactly 1 non-null actor");
     assert_eq!(non_null[0]["actor_id"], "admin-user-1");
     assert_eq!(non_null[0]["username"], "admin");

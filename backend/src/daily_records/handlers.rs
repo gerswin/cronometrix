@@ -5,8 +5,8 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use uuid::Uuid;
 use chrono::Utc;
+use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
@@ -83,10 +83,14 @@ pub async fn create_override(
     let mut evidence_bytes: Option<Vec<u8>> = None;
     let mut evidence_ext: Option<&'static str> = None;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Validation {
-        code: "VALIDATION_ERROR",
-        message: format!("malformed multipart: {}", e),
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: format!("malformed multipart: {}", e),
+        })?
+    {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "justification" => {
@@ -137,10 +141,12 @@ pub async fn create_override(
                 }
                 // CR-03: authoritative type check via magic bytes — content-type
                 // header from the client is untrusted (spoofable in multipart).
-                let magic_ext = infer_evidence_ext_from_magic(&bytes).ok_or_else(|| AppError::Validation {
-                    code: "VALIDATION_ERROR",
-                    message: "evidence bytes do not match a supported file type (PDF/JPEG/PNG)".into(),
-                })?;
+                let magic_ext =
+                    infer_evidence_ext_from_magic(&bytes).ok_or_else(|| AppError::Validation {
+                        code: "VALIDATION_ERROR",
+                        message: "evidence bytes do not match a supported file type (PDF/JPEG/PNG)"
+                            .into(),
+                    })?;
                 evidence_ext = Some(magic_ext);
                 evidence_bytes = Some(bytes.to_vec());
             }
@@ -182,12 +188,21 @@ pub async fn create_override(
 
     // WR-03: verify daily_record exists FIRST so a 404 path does not leave
     // an orphaned evidence file on disk. write_photo_atomic comes after.
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let exists: bool = conn.query(
-        "SELECT 1 FROM daily_records WHERE id = ?1 LIMIT 1",
-        libsql::params![daily_record_id.clone()],
-    ).await.map_err(|e| AppError::Internal(e.into()))?.next().await
-        .map_err(|e| AppError::Internal(e.into()))?.is_some();
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let exists: bool = conn
+        .query(
+            "SELECT 1 FROM daily_records WHERE id = ?1 LIMIT 1",
+            libsql::params![daily_record_id.clone()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .is_some();
     if !exists {
         return Err(AppError::NotFound {
             code: "DAILY_RECORD_NOT_FOUND",
@@ -198,7 +213,8 @@ pub async fn create_override(
     // Write evidence to disk — UUID path (same pattern as leaves, T-4-10 mitigation).
     // Phase 8 (D-18/D-19): the overrides root comes from `state.paths.overrides_root`
     // (populated once at startup from `DATA_DIR`/overrides via Paths::from_env).
-    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext) {
+    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext)
+    {
         let rel = format!("{}.{}", Uuid::new_v4(), ext);
         let overrides_root = state.paths.overrides_root.clone();
         write_photo_atomic(&overrides_root, &rel, bytes).map_err(AppError::Internal)?;
@@ -234,10 +250,13 @@ pub async fn create_override(
 
     // Publish recompute so the daily_record reflects the override promptly
     if let Some(tx) = state.recompute_tx.as_ref() {
-        if let Ok(mut rows) = conn.query(
-            "SELECT anchor_date, employee_id FROM daily_records WHERE id = ?1",
-            libsql::params![daily_record_id.clone()],
-        ).await {
+        if let Ok(mut rows) = conn
+            .query(
+                "SELECT anchor_date, employee_id FROM daily_records WHERE id = ?1",
+                libsql::params![daily_record_id.clone()],
+            )
+            .await
+        {
             if let Ok(Some(row)) = rows.next().await {
                 if let (Ok(date_str), Ok(emp_id)) = (row.get::<String>(0), row.get::<String>(1)) {
                     if let Ok(date) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
@@ -251,19 +270,22 @@ pub async fn create_override(
         }
     }
 
-    Ok((StatusCode::CREATED, Json(OverrideResponse {
-        id,
-        daily_record_id,
-        override_work_minutes,
-        override_entry_at,
-        override_exit_at,
-        justification,
-        evidence_path: evidence_relpath,
-        overridden_by: claims.sub,
-        overridden_at: now,
-        status: "active".into(),
-        version: 1,
-        created_at: now,
-        updated_at: now,
-    })))
+    Ok((
+        StatusCode::CREATED,
+        Json(OverrideResponse {
+            id,
+            daily_record_id,
+            override_work_minutes,
+            override_entry_at,
+            override_exit_at,
+            justification,
+            evidence_path: evidence_relpath,
+            overridden_by: claims.sub,
+            overridden_at: now,
+            status: "active".into(),
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        }),
+    ))
 }

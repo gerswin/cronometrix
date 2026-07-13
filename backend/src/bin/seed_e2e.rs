@@ -53,7 +53,12 @@ async fn main() -> anyhow::Result<()> {
         "INSERT OR IGNORE INTO users \
          (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
-        ("e2e-admin-id", "e2e_admin", "E2E Admin", admin_hash.as_str()),
+        (
+            "e2e-admin-id",
+            "e2e_admin",
+            "E2E Admin",
+            admin_hash.as_str(),
+        ),
     )
     .await
     .map_err(|e| anyhow::anyhow!("users insert failed for e2e_admin: {}", e))?;
@@ -62,7 +67,12 @@ async fn main() -> anyhow::Result<()> {
         "INSERT OR IGNORE INTO users \
          (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, 'supervisor', 'active', 1, unixepoch(), unixepoch())",
-        ("e2e-supervisor-id", "e2e_supervisor", "E2E Supervisor", supervisor_hash.as_str()),
+        (
+            "e2e-supervisor-id",
+            "e2e_supervisor",
+            "E2E Supervisor",
+            supervisor_hash.as_str(),
+        ),
     )
     .await
     .map_err(|e| anyhow::anyhow!("users insert failed for e2e_supervisor: {}", e))?;
@@ -71,7 +81,12 @@ async fn main() -> anyhow::Result<()> {
         "INSERT OR IGNORE INTO users \
          (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, 'viewer', 'active', 1, unixepoch(), unixepoch())",
-        ("e2e-viewer-id", "e2e_viewer", "E2E Viewer", viewer_hash.as_str()),
+        (
+            "e2e-viewer-id",
+            "e2e_viewer",
+            "E2E Viewer",
+            viewer_hash.as_str(),
+        ),
     )
     .await
     .map_err(|e| anyhow::anyhow!("users insert failed for e2e_viewer: {}", e))?;
@@ -80,9 +95,14 @@ async fn main() -> anyhow::Result<()> {
     let demo_pass = "dSQBALuQgXWZp6Oo";
     let demo_hash = auth::service::hash_password(demo_pass)?;
     for (id, username, full_name, role) in [
-        ("demo-admin-id",  "demo_admin",  "Demo Admin",      "admin"),
-        ("demo-super-id",  "demo_super",  "Demo Supervisor", "supervisor"),
-        ("demo-viewer-id", "demo_viewer", "Demo Viewer",     "viewer"),
+        ("demo-admin-id", "demo_admin", "Demo Admin", "admin"),
+        (
+            "demo-super-id",
+            "demo_super",
+            "Demo Supervisor",
+            "supervisor",
+        ),
+        ("demo-viewer-id", "demo_viewer", "Demo Viewer", "viewer"),
     ] {
         conn.execute(
             &format!(
@@ -101,9 +121,9 @@ async fn main() -> anyhow::Result<()> {
     // lunch_mode, lunch_duration_min, status, version, created_at, updated_at,
     // shift_type, is_overnight_shift, ordinary_daily_minutes
     for (id, name) in [
-        ("dept-prod",  "Producción"),
+        ("dept-prod", "Producción"),
         ("dept-admin", "Administración"),
-        ("dept-rrhh",  "Recursos Humanos"),
+        ("dept-rrhh", "Recursos Humanos"),
     ] {
         conn.execute(
             "INSERT OR IGNORE INTO departments \
@@ -125,12 +145,30 @@ async fn main() -> anyhow::Result<()> {
     // base_salary_cents spread across $30..$80 USD (3000..8000 cents) to validate
     // payroll math + reports columns with realistic-but-bounded values.
     for (id, code, name, dept_id, salary_cents) in [
-        ("emp-ana",    "EMP001", "Ana Pérez",       "dept-prod",  3000_i64),
-        ("emp-luis",   "EMP002", "Luis García",      "dept-prod",  4000_i64),
-        ("emp-maria",  "EMP003", "María López",      "dept-admin", 5000_i64),
-        ("emp-pedro",  "EMP004", "Pedro Ramírez",    "dept-admin", 6000_i64),
-        ("emp-carmen", "EMP005", "Carmen Silva",     "dept-rrhh",  7000_i64),
-        ("emp-jose",   "EMP006", "José Hernández",   "dept-rrhh",  8000_i64),
+        ("emp-ana", "EMP001", "Ana Pérez", "dept-prod", 3000_i64),
+        ("emp-luis", "EMP002", "Luis García", "dept-prod", 4000_i64),
+        ("emp-maria", "EMP003", "María López", "dept-admin", 5000_i64),
+        (
+            "emp-pedro",
+            "EMP004",
+            "Pedro Ramírez",
+            "dept-admin",
+            6000_i64,
+        ),
+        (
+            "emp-carmen",
+            "EMP005",
+            "Carmen Silva",
+            "dept-rrhh",
+            7000_i64,
+        ),
+        (
+            "emp-jose",
+            "EMP006",
+            "José Hernández",
+            "dept-rrhh",
+            8000_i64,
+        ),
     ] {
         conn.execute(
             "INSERT OR IGNORE INTO employees \
@@ -178,7 +216,9 @@ async fn main() -> anyhow::Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("devices insert failed for dev-exit: {}", e))?;
 
-    tracing::info!("seed_e2e: seeded 6 users (3 e2e + 3 demo), 3 departments, 6 employees, 2 devices");
+    tracing::info!(
+        "seed_e2e: seeded 6 users (3 e2e + 3 demo), 3 departments, 6 employees, 2 devices"
+    );
     println!("seed_e2e: complete");
     Ok(())
 }

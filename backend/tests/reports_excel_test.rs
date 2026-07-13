@@ -94,11 +94,7 @@ async fn post_excel(
     app: &Router,
     token: &str,
     body_json: Value,
-) -> (
-    StatusCode,
-    axum::http::HeaderMap,
-    Vec<u8>,
-) {
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let req = Request::builder()
         .method(Method::POST)
         .uri("/api/v1/reports/excel")
@@ -123,8 +119,7 @@ async fn post_excel(
 fn parse_xlsx(bytes: Vec<u8>) -> calamine::Range<calamine::Data> {
     use calamine::Reader;
     let cursor = std::io::Cursor::new(bytes);
-    let mut wb: calamine::Xlsx<_> =
-        calamine::open_workbook_from_rs(cursor).expect("open xlsx");
+    let mut wb: calamine::Xlsx<_> = calamine::open_workbook_from_rs(cursor).expect("open xlsx");
     wb.worksheet_range("Resumen").expect("Resumen sheet")
 }
 
@@ -240,8 +235,7 @@ async fn excel_round_trip() {
 
     use calamine::Reader;
     let cursor = std::io::Cursor::new(bytes);
-    let mut wb: calamine::Xlsx<_> =
-        calamine::open_workbook_from_rs(cursor).expect("open xlsx");
+    let mut wb: calamine::Xlsx<_> = calamine::open_workbook_from_rs(cursor).expect("open xlsx");
     let sheet_names = wb.sheet_names();
     assert!(sheet_names.iter().any(|s| s == "Resumen"));
     let range = wb.worksheet_range("Resumen").expect("Resumen sheet");

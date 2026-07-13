@@ -14,10 +14,10 @@ use chrono::NaiveDate;
 use libsql::{params, Connection};
 use uuid::Uuid;
 
-use crate::state::AppState;
 use crate::calc::models::LeaveRow;
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::errors::AppError;
+use crate::state::AppState;
 
 use super::models::{CreateLeaveRequest, LeaveListQuery, LeaveResponse};
 
@@ -44,8 +44,7 @@ pub async fn create_leave(
         _ => {
             return Err(AppError::Validation {
                 code: "VALIDATION_ERROR",
-                message: "leave_type must be one of: medical, vacation, unpaid, manual"
-                    .into(),
+                message: "leave_type must be one of: medical, vacation, unpaid, manual".into(),
             })
         }
     }
@@ -65,12 +64,11 @@ pub async fn create_leave(
             message: "from_date must be YYYY-MM-DD".into(),
         }
     })?;
-    let to = NaiveDate::parse_from_str(&req.to_date, "%Y-%m-%d").map_err(|_| {
-        AppError::Validation {
+    let to =
+        NaiveDate::parse_from_str(&req.to_date, "%Y-%m-%d").map_err(|_| AppError::Validation {
             code: "VALIDATION_ERROR",
             message: "to_date must be YYYY-MM-DD".into(),
-        }
-    })?;
+        })?;
     if from > to {
         return Err(AppError::Validation {
             code: "VALIDATION_ERROR",
@@ -156,21 +154,27 @@ pub async fn create_leave_queued(
             message: "Medical leave requires evidence file upload".into(),
         });
     }
-    let from = NaiveDate::parse_from_str(&req.from_date, "%Y-%m-%d").map_err(|_| AppError::Validation {
-        code: "VALIDATION_ERROR",
-        message: "from_date must be YYYY-MM-DD".into(),
+    let from = NaiveDate::parse_from_str(&req.from_date, "%Y-%m-%d").map_err(|_| {
+        AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "from_date must be YYYY-MM-DD".into(),
+        }
     })?;
-    let to = NaiveDate::parse_from_str(&req.to_date, "%Y-%m-%d").map_err(|_| AppError::Validation {
-        code: "VALIDATION_ERROR",
-        message: "to_date must be YYYY-MM-DD".into(),
-    })?;
+    let to =
+        NaiveDate::parse_from_str(&req.to_date, "%Y-%m-%d").map_err(|_| AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "to_date must be YYYY-MM-DD".into(),
+        })?;
     if from > to {
         return Err(AppError::Validation {
             code: "VALIDATION_ERROR",
             message: "from_date must be <= to_date".into(),
         });
     }
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let overlap_count: i64 = {
         let mut rows = conn
             .query(
@@ -216,7 +220,9 @@ pub async fn create_leave_queued(
                 libsql::Value::Text(req.to_date.clone()),
                 libsql::Value::Text(req.leave_type.clone()),
                 libsql::Value::Text(req.justification.clone()),
-                evidence_relpath.map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                evidence_relpath
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
                 libsql::Value::Text(actor_id.to_string()),
             ],
         )
@@ -326,7 +332,11 @@ pub async fn list(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut data: Vec<LeaveResponse> = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         data.push(row_to_leave(row)?);
     }
 
@@ -365,9 +375,7 @@ pub async fn cancel(conn: &Connection, id: &str, version: i64) -> Result<(), App
                 .next()
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?
-                .ok_or_else(|| {
-                    AppError::Internal(anyhow::anyhow!("COUNT returned no row"))
-                })?;
+                .ok_or_else(|| AppError::Internal(anyhow::anyhow!("COUNT returned no row")))?;
             row.get(0).map_err(|e| AppError::Internal(e.into()))?
         };
         if exists == 0 {
@@ -385,7 +393,10 @@ pub async fn cancel(conn: &Connection, id: &str, version: i64) -> Result<(), App
 }
 
 pub async fn cancel_queued(state: &AppState, id: &str, version: i64) -> Result<(), AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let rows_affected = state
         .db_write
         .execute(
@@ -400,7 +411,10 @@ pub async fn cancel_queued(state: &AppState, id: &str, version: i64) -> Result<(
         .map_err(AppError::Internal)?;
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM leaves WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM leaves WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -414,7 +428,8 @@ pub async fn cancel_queued(state: &AppState, id: &str, version: i64) -> Result<(
         }
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Leave was modified by another request. Fetch the latest version and retry.".to_string(),
+            message: "Leave was modified by another request. Fetch the latest version and retry."
+                .to_string(),
         });
     }
     Ok(())
@@ -458,12 +473,10 @@ pub async fn fetch_active_leave_for_date(
     Ok(Some(LeaveRow {
         id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
         employee_id: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
-        from_date: NaiveDate::parse_from_str(&from_str, "%Y-%m-%d").map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("bad from_date in leaves: {}", e))
-        })?,
-        to_date: NaiveDate::parse_from_str(&to_str, "%Y-%m-%d").map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("bad to_date in leaves: {}", e))
-        })?,
+        from_date: NaiveDate::parse_from_str(&from_str, "%Y-%m-%d")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("bad from_date in leaves: {}", e)))?,
+        to_date: NaiveDate::parse_from_str(&to_str, "%Y-%m-%d")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("bad to_date in leaves: {}", e)))?,
         leave_type: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
     }))
 }

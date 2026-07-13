@@ -2,15 +2,15 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use axum::Router;
 use axum::routing::{get, post};
+use axum::Router;
 use cronometrix_api::auth;
-use cronometrix_api::setup;
 use cronometrix_api::config::Config;
+use cronometrix_api::setup;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
-use http_body_util::BodyExt;
 
 /// Build a test app with all auth + setup routes wired up. Returns
 /// (Router, TempDir) per Plan 08-02 D-20: caller binds the TempDir to a
@@ -55,7 +55,10 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         ));
 
     let app = Router::new()
-        .nest("/api/v1", public_routes.merge(cookie_auth_routes).merge(admin_routes))
+        .nest(
+            "/api/v1",
+            public_routes.merge(cookie_auth_routes).merge(admin_routes),
+        )
         .with_state(state);
     (app, tmp)
 }
@@ -78,7 +81,10 @@ async fn password_hashing_uses_argon2id() {
         .expect("verify_password should succeed with correct password");
 
     let result = cronometrix_api::auth::service::verify_password("wrongpass", &hash);
-    assert!(result.is_err(), "verify_password should fail with wrong password");
+    assert!(
+        result.is_err(),
+        "verify_password should fail with wrong password"
+    );
 }
 
 #[tokio::test]
@@ -103,7 +109,9 @@ async fn auth_login_returns_jwt() {
         .method(Method::POST)
         .uri("/api/v1/auth/login")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(json!({"username": "admin", "password": "password123"}).to_string()))
+        .body(Body::from(
+            json!({"username": "admin", "password": "password123"}).to_string(),
+        ))
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
@@ -167,7 +175,9 @@ async fn jwt_refresh_rotates_tokens() {
         .method(Method::POST)
         .uri("/api/v1/auth/login")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(json!({"username": "refreshadmin", "password": "password123"}).to_string()))
+        .body(Body::from(
+            json!({"username": "refreshadmin", "password": "password123"}).to_string(),
+        ))
         .unwrap();
 
     let login_response = app.clone().oneshot(login_request).await.unwrap();
@@ -183,12 +193,7 @@ async fn jwt_refresh_rotates_tokens() {
         .to_string();
 
     // Extract just the cookie name=value part
-    let cookie_value = cookie_header
-        .split(';')
-        .next()
-        .unwrap()
-        .trim()
-        .to_string();
+    let cookie_value = cookie_header.split(';').next().unwrap().trim().to_string();
 
     // Use refresh token to get new access token
     let refresh_request = Request::builder()

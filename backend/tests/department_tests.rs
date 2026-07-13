@@ -2,16 +2,16 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use axum::Router;
 use axum::routing::{get, patch, post};
+use axum::Router;
 use cronometrix_api::auth;
+use cronometrix_api::config::Config;
 use cronometrix_api::departments;
 use cronometrix_api::employees;
-use cronometrix_api::config::Config;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
-use http_body_util::BodyExt;
 
 /// Build a test app with department + employee routes. Returns
 /// (Router, TempDir) per Plan 08-02 D-20: caller binds the TempDir to a
@@ -38,7 +38,10 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
 
     let viewer_routes = Router::new()
         .route("/departments", get(departments::handlers::list_departments))
-        .route("/departments/{id}", get(departments::handlers::get_department))
+        .route(
+            "/departments/{id}",
+            get(departments::handlers::get_department),
+        )
         .route("/employees", get(employees::handlers::list_employees))
         .route("/employees/{id}", get(employees::handlers::get_employee))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -47,8 +50,14 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         ));
 
     let admin_routes = Router::new()
-        .route("/departments", post(departments::handlers::create_department))
-        .route("/departments/{id}", patch(departments::handlers::update_department))
+        .route(
+            "/departments",
+            post(departments::handlers::create_department),
+        )
+        .route(
+            "/departments/{id}",
+            patch(departments::handlers::update_department),
+        )
         .route("/employees", post(employees::handlers::create_employee))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -101,10 +110,16 @@ async fn crud_department_endpoints() {
     );
 
     let created = body_to_json(create_resp.into_body()).await;
-    let dept_id = created["id"].as_str().expect("id should be present").to_string();
+    let dept_id = created["id"]
+        .as_str()
+        .expect("id should be present")
+        .to_string();
     assert_eq!(created["name"], "Engineering");
     assert_eq!(created["version"], 1);
-    assert!(created["created_at"].is_string(), "created_at should be ISO 8601");
+    assert!(
+        created["created_at"].is_string(),
+        "created_at should be ISO 8601"
+    );
 
     // GET list — department should appear
     let list_req = Request::builder()
@@ -156,7 +171,11 @@ async fn crud_department_endpoints() {
         .unwrap();
 
     let patch_resp = app.clone().oneshot(patch_req).await.unwrap();
-    assert_eq!(patch_resp.status(), StatusCode::OK, "PATCH should return 200");
+    assert_eq!(
+        patch_resp.status(),
+        StatusCode::OK,
+        "PATCH should return 200"
+    );
     let patched = body_to_json(patch_resp.into_body()).await;
     assert_eq!(patched["base_salary_cents"], 600000);
     assert_eq!(patched["version"], 2, "Version should increment to 2");
@@ -205,14 +224,32 @@ async fn department_has_salary_schedule_lunch() {
     assert_eq!(get_resp.status(), StatusCode::OK);
     let got = body_to_json(get_resp.into_body()).await;
 
-    assert_eq!(got["base_salary_cents"], 350000, "base_salary_cents must be present and correct");
-    assert_eq!(got["shift_start_time"], "09:00", "shift_start_time must be correct");
-    assert_eq!(got["shift_end_time"], "18:00", "shift_end_time must be correct");
+    assert_eq!(
+        got["base_salary_cents"], 350000,
+        "base_salary_cents must be present and correct"
+    );
+    assert_eq!(
+        got["shift_start_time"], "09:00",
+        "shift_start_time must be correct"
+    );
+    assert_eq!(
+        got["shift_end_time"], "18:00",
+        "shift_end_time must be correct"
+    );
     assert_eq!(got["lunch_mode"], "fixed", "lunch_mode must be correct");
-    assert_eq!(got["lunch_duration_min"], 45, "lunch_duration_min must be correct");
+    assert_eq!(
+        got["lunch_duration_min"], 45,
+        "lunch_duration_min must be correct"
+    );
     assert_eq!(got["status"], "active");
-    assert!(got["created_at"].is_string(), "created_at should be ISO 8601 string");
-    assert!(got["updated_at"].is_string(), "updated_at should be ISO 8601 string");
+    assert!(
+        got["created_at"].is_string(),
+        "created_at should be ISO 8601 string"
+    );
+    assert!(
+        got["updated_at"].is_string(),
+        "updated_at should be ISO 8601 string"
+    );
 }
 
 #[tokio::test]

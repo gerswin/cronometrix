@@ -91,11 +91,7 @@ async fn seed_dept_emp_user(db: &libsql::Database) -> (String, String, String) {
 }
 
 /// Seed an active device pointing at `base_url` so the pusher resolves to the wiremock host.
-async fn seed_device_at(
-    db: &libsql::Database,
-    key: &[u8; 32],
-    base_url: &str,
-) -> String {
+async fn seed_device_at(db: &libsql::Database, key: &[u8; 32], base_url: &str) -> String {
     // Parse host:port out of base_url ("http://127.0.0.1:NNNN") to fit the schema.
     let url = url_lite_split(base_url);
     let conn = db.connect().expect("connect");
@@ -176,11 +172,10 @@ async fn push_one_device_happy_path_success() {
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
 
     // start_enrollment to insert push row.
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -214,8 +209,12 @@ async fn push_one_device_happy_path_success() {
     assert!(err.is_none());
 
     // device_face_mapping should be upserted.
-    let mappings = service::list_mappings_for_employee(&conn, &emp_id).await.unwrap();
-    assert!(mappings.iter().any(|(_, did, fid)| did == &device_id && fid == &resp.face_id));
+    let mappings = service::list_mappings_for_employee(&conn, &emp_id)
+        .await
+        .unwrap();
+    assert!(mappings
+        .iter()
+        .any(|(_, did, fid)| did == &device_id && fid == &resp.face_id));
 }
 
 // =============================================================================
@@ -237,11 +236,10 @@ async fn push_one_device_5xx_marks_push_failed() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -260,7 +258,10 @@ async fn push_one_device_5xx_marks_push_failed() {
     let s = err.to_string();
     // Critical: the password "device-pw" must NOT appear in the surfaced error string
     // (T-7-06 — credential redaction).
-    assert!(!s.contains("device-pw"), "password must be scrubbed from error: {s}");
+    assert!(
+        !s.contains("device-pw"),
+        "password must be scrubbed from error: {s}"
+    );
 
     // Push row was marked failed with a scrubbed error_message.
     let conn = state.db.connect().unwrap();
@@ -278,7 +279,10 @@ async fn push_one_device_5xx_marks_push_failed() {
     assert_eq!(st, "failed");
     let msg = err_msg.expect("error_message must be set on failure");
     // Even if the upstream body included the password, the scrubbed copy must not.
-    assert!(!msg.contains("device-pw"), "stored error_message must be scrubbed: {msg}");
+    assert!(
+        !msg.contains("device-pw"),
+        "stored error_message must be scrubbed: {msg}"
+    );
 }
 
 // =============================================================================
@@ -352,8 +356,12 @@ async fn push_one_device_for_backfill_happy_path() {
     .expect("backfill push must succeed");
 
     let conn = state.db.connect().unwrap();
-    let mappings = service::list_mappings_for_employee(&conn, &emp_id).await.unwrap();
-    assert!(mappings.iter().any(|(_, did, fid)| did == &device_id && fid == face_id));
+    let mappings = service::list_mappings_for_employee(&conn, &emp_id)
+        .await
+        .unwrap();
+    assert!(mappings
+        .iter()
+        .any(|(_, did, fid)| did == &device_id && fid == face_id));
 }
 
 // =============================================================================
@@ -407,11 +415,10 @@ async fn spawn_enrollment_pushes_zero_devices_finalises_failed() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
 
     // No devices seeded → push rows table empty.
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "upload", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let photo = Arc::new(MINI_JPEG.to_vec());
 
     spawn_enrollment_pushes(
@@ -468,11 +475,10 @@ async fn spawn_enrollment_pushes_with_devices_finalises_success() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());

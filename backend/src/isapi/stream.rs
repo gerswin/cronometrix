@@ -69,10 +69,7 @@ fn extract_boundary(content_type: &str) -> anyhow::Result<String> {
     // Fast path: find "boundary=" and take the value until `;` or end-of-string.
     let lower = content_type.to_ascii_lowercase();
     if !lower.starts_with("multipart/") {
-        anyhow::bail!(
-            "expected multipart/* content-type, got {}",
-            content_type
-        );
+        anyhow::bail!("expected multipart/* content-type, got {}", content_type);
     }
     let idx = lower
         .find("boundary=")
@@ -318,7 +315,13 @@ async fn ingest_pair(
         photo_bytes: None,
     };
 
-    match events_service::persist_attendance_event_queued(&state, &state.paths.events_root, new_event).await {
+    match events_service::persist_attendance_event_queued(
+        &state,
+        &state.paths.events_root,
+        new_event,
+    )
+    .await
+    {
         Ok(PersistOutcome::Inserted { photo_path }) => {
             tracing::info!(
                 device_id = %cfg.id,

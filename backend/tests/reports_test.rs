@@ -40,8 +40,8 @@ use common::{
     test_device_creds_key, TEST_JWT_SECRET,
 };
 use seed::{
-    seed_anomaly, seed_daily_record, seed_dept, seed_employee, seed_inactive_employee,
-    seed_leave, seed_override, set_tenant_branding,
+    seed_anomaly, seed_daily_record, seed_dept, seed_employee, seed_inactive_employee, seed_leave,
+    seed_override, set_tenant_branding,
 };
 
 // -----------------------------------------------------------------------------
@@ -113,7 +113,12 @@ fn row_for(payload: &Value, employee_id: &str) -> Value {
         .iter()
         .find(|r| r["employee_id"] == employee_id)
         .cloned()
-        .unwrap_or_else(|| panic!("no row for employee {} in payload {:?}", employee_id, payload))
+        .unwrap_or_else(|| {
+            panic!(
+                "no row for employee {} in payload {:?}",
+                employee_id, payload
+            )
+        })
 }
 
 /// Count audit rows for `REPORT_EXPORT` operation, optionally filtered by actor_id.
@@ -634,19 +639,7 @@ async fn shift_type_night_premium_applied() {
 
     let dept = seed_dept(&db, "Night Dept", 100_000, 480, "night").await;
     let emp = seed_employee(&db, "N1", "Nina", &dept, "Sec").await;
-    let _dr = seed_daily_record(
-        &db,
-        &emp,
-        &dept,
-        "2026-04-15",
-        "night",
-        480,
-        0,
-        0,
-        0,
-        None,
-    )
-    .await;
+    let _dr = seed_daily_record(&db, &emp, &dept, "2026-04-15", "night", 480, 0, 0, 0, None).await;
 
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
@@ -674,19 +667,7 @@ async fn shift_type_day_no_night_premium() {
 
     let dept = seed_dept(&db, "Day Dept", 100_000, 480, "day").await;
     let emp = seed_employee(&db, "D1", "Dan", &dept, "Dev").await;
-    let _dr = seed_daily_record(
-        &db,
-        &emp,
-        &dept,
-        "2026-04-15",
-        "day",
-        480,
-        0,
-        0,
-        0,
-        None,
-    )
-    .await;
+    let _dr = seed_daily_record(&db, &emp, &dept, "2026-04-15", "day", 480, 0, 0, 0, None).await;
 
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
@@ -776,8 +757,8 @@ async fn subtotals_match_constituents() {
     let row1 = row_for(&body, &e1);
     let row2 = row_for(&body, &e2);
     let sum_work_min = row1["work_min"].as_i64().unwrap() + row2["work_min"].as_i64().unwrap();
-    let sum_pay = row1["work_pay_cents"].as_i64().unwrap()
-        + row2["work_pay_cents"].as_i64().unwrap();
+    let sum_pay =
+        row1["work_pay_cents"].as_i64().unwrap() + row2["work_pay_cents"].as_i64().unwrap();
     assert_eq!(sub["aggregates"]["work_min"], sum_work_min);
     assert_eq!(sub["aggregates"]["work_pay_cents"], sum_pay);
 }
@@ -1004,7 +985,8 @@ async fn department_filter_applied() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["employee_id"], ea);
     assert!(
-        rows.iter().all(|r| r["employee_id"] != Value::String(eb.clone())),
+        rows.iter()
+            .all(|r| r["employee_id"] != Value::String(eb.clone())),
         "Beta dept employee should be excluded"
     );
 }
@@ -1118,7 +1100,16 @@ async fn include_inactive_filter_works() {
     let inactive = seed_inactive_employee(&db, "I1", "Inactive", &dept).await;
     let _ = seed_daily_record(&db, &active, &dept, "2026-04-15", "day", 480, 0, 0, 0, None).await;
     let _ = seed_daily_record(
-        &db, &inactive, &dept, "2026-04-15", "day", 480, 0, 0, 0, None,
+        &db,
+        &inactive,
+        &dept,
+        "2026-04-15",
+        "day",
+        480,
+        0,
+        0,
+        0,
+        None,
     )
     .await;
 

@@ -109,17 +109,10 @@ async fn start_enrollment_writes_rows_and_photo_no_devices() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
 
-    let resp = service::start_enrollment(
-        &state,
-        &user_id,
-        &emp_id,
-        "upload",
-        None,
-        None,
-        MINI_JPEG,
-    )
-    .await
-    .expect("start_enrollment");
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .expect("start_enrollment");
 
     assert!(!resp.enrollment_id.is_empty());
     assert!(!resp.face_id.is_empty());
@@ -194,14 +187,12 @@ async fn start_enrollment_preserves_face_id_on_re_enrollment() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
 
-    let r1 =
-        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
-            .await
-            .unwrap();
-    let r2 =
-        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
-            .await
-            .unwrap();
+    let r1 = service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+        .await
+        .unwrap();
+    let r2 = service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+        .await
+        .unwrap();
 
     // D-10: face_id must be stable across re-enrollment.
     assert_eq!(r1.face_id, r2.face_id);
@@ -220,17 +211,10 @@ async fn get_enrollment_with_pushes_returns_full_response() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
     let _d1 = seed_device(&state.db, &config.device_creds_key).await;
 
-    let resp = service::start_enrollment(
-        &state,
-        &user_id,
-        &emp_id,
-        "upload",
-        None,
-        None,
-        MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
 
     let conn = state.db.connect().unwrap();
     let got = service::get_enrollment_with_pushes(&conn, &resp.enrollment_id)
@@ -251,7 +235,9 @@ async fn get_enrollment_with_pushes_404_when_missing() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
 
     let conn = state.db.connect().unwrap();
-    let err = service::get_enrollment_with_pushes(&conn, "no-such-id").await.unwrap_err();
+    let err = service::get_enrollment_with_pushes(&conn, "no-such-id")
+        .await
+        .unwrap_err();
     match err {
         AppError::NotFound { code, .. } => assert_eq!(code, "ENROLLMENT_NOT_FOUND"),
         other => panic!("expected NotFound, got {other:?}"),
@@ -270,25 +256,22 @@ async fn push_status_lifecycle() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
     let device_id = seed_device(&state.db, &config.device_creds_key).await;
 
-    let resp = service::start_enrollment(
-        &state,
-        &user_id,
-        &emp_id,
-        "device",
-        None,
-        None,
-        MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let conn = state.db.connect().unwrap();
 
     // get_push_id
-    let push_id = service::get_push_id(&conn, &resp.enrollment_id, &device_id).await.unwrap();
+    let push_id = service::get_push_id(&conn, &resp.enrollment_id, &device_id)
+        .await
+        .unwrap();
     assert!(!push_id.is_empty());
 
     // mark_push_in_progress
-    service::mark_push_in_progress(&conn, &push_id).await.unwrap();
+    service::mark_push_in_progress(&conn, &push_id)
+        .await
+        .unwrap();
     let mut rows = conn
         .query(
             "SELECT status, started_at FROM enrollment_device_pushes WHERE id = ?1",
@@ -303,7 +286,9 @@ async fn push_status_lifecycle() {
     assert!(started.is_some());
 
     // update_push_status — success
-    service::update_push_status(&conn, &push_id, "success", None).await.unwrap();
+    service::update_push_status(&conn, &push_id, "success", None)
+        .await
+        .unwrap();
     let mut rows = conn
         .query(
             "SELECT status, error_message, completed_at FROM enrollment_device_pushes WHERE id = ?1",
@@ -345,16 +330,19 @@ async fn reset_push_to_pending_idempotent() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
     let device_id = seed_device(&state.db, &config.device_creds_key).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let conn = state.db.connect().unwrap();
 
     // First mark failed.
-    let push_id_orig = service::get_push_id(&conn, &resp.enrollment_id, &device_id).await.unwrap();
-    service::update_push_status(&conn, &push_id_orig, "failed", Some("err")).await.unwrap();
+    let push_id_orig = service::get_push_id(&conn, &resp.enrollment_id, &device_id)
+        .await
+        .unwrap();
+    service::update_push_status(&conn, &push_id_orig, "failed", Some("err"))
+        .await
+        .unwrap();
 
     // Reset.
     let new_push_id = service::reset_push_to_pending(&conn, &resp.enrollment_id, &device_id)
@@ -384,7 +372,9 @@ async fn get_push_id_404_when_missing() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let conn = state.db.connect().unwrap();
 
-    let err = service::get_push_id(&conn, "no-enr", "no-dev").await.unwrap_err();
+    let err = service::get_push_id(&conn, "no-enr", "no-dev")
+        .await
+        .unwrap_err();
     match err {
         AppError::NotFound { code, .. } => assert_eq!(code, "PUSH_NOT_FOUND"),
         other => panic!("expected NotFound, got {other:?}"),
@@ -403,11 +393,10 @@ async fn finalize_status_all_success() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
     let _d1 = seed_device(&state.db, &config.device_creds_key).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let conn = state.db.connect().unwrap();
     // Mark all pushes success.
     conn.execute(
@@ -443,11 +432,10 @@ async fn finalize_status_partial_when_some_failed() {
     let _d1 = seed_device(&state.db, &config.device_creds_key).await;
     let _d2 = seed_device(&state.db, &config.device_creds_key).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let conn = state.db.connect().unwrap();
     let mut rows = conn
         .query(
@@ -474,7 +462,9 @@ async fn finalize_status_partial_when_some_failed() {
     )
     .await
     .unwrap();
-    service::finalize_enrollment_status(&conn, &resp.enrollment_id).await.unwrap();
+    service::finalize_enrollment_status(&conn, &resp.enrollment_id)
+        .await
+        .unwrap();
     let mut rows = conn
         .query(
             "SELECT status FROM enrollments WHERE id = ?1",
@@ -494,11 +484,10 @@ async fn finalize_status_failed_when_all_failed() {
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
     let _d1 = seed_device(&state.db, &config.device_creds_key).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let conn = state.db.connect().unwrap();
     conn.execute(
         "UPDATE enrollment_device_pushes SET status='failed' WHERE enrollment_id = ?1",
@@ -506,7 +495,9 @@ async fn finalize_status_failed_when_all_failed() {
     )
     .await
     .unwrap();
-    service::finalize_enrollment_status(&conn, &resp.enrollment_id).await.unwrap();
+    service::finalize_enrollment_status(&conn, &resp.enrollment_id)
+        .await
+        .unwrap();
     let mut rows = conn
         .query(
             "SELECT status FROM enrollments WHERE id = ?1",
@@ -526,14 +517,15 @@ async fn finalize_status_failed_when_no_pushes() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "upload", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let conn = state.db.connect().unwrap();
     // No devices seeded → 0 push rows.
-    service::finalize_enrollment_status(&conn, &resp.enrollment_id).await.unwrap();
+    service::finalize_enrollment_status(&conn, &resp.enrollment_id)
+        .await
+        .unwrap();
     let mut rows = conn
         .query(
             "SELECT status FROM enrollments WHERE id = ?1",
@@ -559,22 +551,34 @@ async fn mapping_lifecycle_upsert_list_mark_delete() {
     let conn = state.db.connect().unwrap();
 
     let face_id = "face-aaa";
-    service::upsert_device_face_mapping(&conn, &device_id, face_id, &emp_id).await.unwrap();
+    service::upsert_device_face_mapping(&conn, &device_id, face_id, &emp_id)
+        .await
+        .unwrap();
     // Upsert again — INSERT OR REPLACE creates a new row id under the same (device_id, face_id).
-    service::upsert_device_face_mapping(&conn, &device_id, face_id, &emp_id).await.unwrap();
+    service::upsert_device_face_mapping(&conn, &device_id, face_id, &emp_id)
+        .await
+        .unwrap();
 
-    let mappings = service::list_mappings_for_employee(&conn, &emp_id).await.unwrap();
+    let mappings = service::list_mappings_for_employee(&conn, &emp_id)
+        .await
+        .unwrap();
     assert!(!mappings.is_empty());
     let (mapping_id, _dev, _face) = mappings[0].clone();
 
     // Mark pending_delete; list should still include it.
-    service::mark_mapping_pending_delete(&conn, &mapping_id).await.unwrap();
-    let after = service::list_mappings_for_employee(&conn, &emp_id).await.unwrap();
+    service::mark_mapping_pending_delete(&conn, &mapping_id)
+        .await
+        .unwrap();
+    let after = service::list_mappings_for_employee(&conn, &emp_id)
+        .await
+        .unwrap();
     assert_eq!(after.len(), mappings.len());
 
     // Delete; list should drop it.
     service::delete_mapping(&conn, &mapping_id).await.unwrap();
-    let after_del = service::list_mappings_for_employee(&conn, &emp_id).await.unwrap();
+    let after_del = service::list_mappings_for_employee(&conn, &emp_id)
+        .await
+        .unwrap();
     assert!(after_del.iter().all(|(id, _, _)| id != &mapping_id));
 }
 
@@ -601,7 +605,9 @@ async fn get_employee_status_404_on_missing() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let conn = state.db.connect().unwrap();
 
-    let err = service::get_employee_status(&conn, "no-such-emp").await.unwrap_err();
+    let err = service::get_employee_status(&conn, "no-such-emp")
+        .await
+        .unwrap_err();
     match err {
         AppError::NotFound { code, .. } => assert_eq!(code, "EMPLOYEE_NOT_FOUND"),
         other => panic!("expected NotFound, got {other:?}"),
@@ -625,19 +631,24 @@ async fn list_employees_with_face_and_get_current_photo_path() {
     assert!(before.iter().all(|(id, _, _)| id != &emp_id));
 
     // Before enrollment — get_current_photo_path returns None.
-    let p = service::get_current_photo_path(&conn, &emp_id).await.unwrap();
+    let p = service::get_current_photo_path(&conn, &emp_id)
+        .await
+        .unwrap();
     assert!(p.is_none());
 
     // After enrollment — both should produce a hit.
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "upload", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let after = service::list_employees_with_face(&conn).await.unwrap();
-    assert!(after.iter().any(|(id, fid, _)| id == &emp_id && fid == &resp.face_id));
+    assert!(after
+        .iter()
+        .any(|(id, fid, _)| id == &emp_id && fid == &resp.face_id));
 
-    let p = service::get_current_photo_path(&conn, &emp_id).await.unwrap();
+    let p = service::get_current_photo_path(&conn, &emp_id)
+        .await
+        .unwrap();
     assert!(p.is_some());
     let p = p.unwrap();
     assert!(p.contains(&emp_id));
@@ -655,11 +666,10 @@ async fn get_enrollment_push_params_returns_triple() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
 
-    let resp = service::start_enrollment(
-        &state, &user_id, &emp_id, "upload", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let conn = state.db.connect().unwrap();
 
     let (e, f, n) = service::get_enrollment_push_params(&conn, &resp.enrollment_id)

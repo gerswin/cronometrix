@@ -31,13 +31,11 @@ pub fn resolve_period(preset: PeriodPreset, ref_date: NaiveDate) -> (NaiveDate, 
         }
         PeriodPreset::BiweeklyFirst => {
             let first = NaiveDate::from_ymd_opt(ref_date.year(), ref_date.month(), 1).unwrap();
-            let fifteenth =
-                NaiveDate::from_ymd_opt(ref_date.year(), ref_date.month(), 15).unwrap();
+            let fifteenth = NaiveDate::from_ymd_opt(ref_date.year(), ref_date.month(), 15).unwrap();
             (first, fifteenth)
         }
         PeriodPreset::BiweeklySecond => {
-            let sixteenth =
-                NaiveDate::from_ymd_opt(ref_date.year(), ref_date.month(), 16).unwrap();
+            let sixteenth = NaiveDate::from_ymd_opt(ref_date.year(), ref_date.month(), 16).unwrap();
             let eom = last_day_of_month(ref_date.year(), ref_date.month());
             (sixteenth, eom)
         }
@@ -67,17 +65,14 @@ pub fn parse_period(
     to_date: &str,
 ) -> Result<PeriodPreset, crate::errors::AppError> {
     use crate::errors::AppError;
-    let from = NaiveDate::parse_from_str(from_date, "%Y-%m-%d").map_err(|_| {
-        AppError::Validation {
+    let from =
+        NaiveDate::parse_from_str(from_date, "%Y-%m-%d").map_err(|_| AppError::Validation {
             code: "VALIDATION_ERROR",
             message: "from_date must be YYYY-MM-DD".to_string(),
-        }
-    })?;
-    let to = NaiveDate::parse_from_str(to_date, "%Y-%m-%d").map_err(|_| {
-        AppError::Validation {
-            code: "VALIDATION_ERROR",
-            message: "to_date must be YYYY-MM-DD".to_string(),
-        }
+        })?;
+    let to = NaiveDate::parse_from_str(to_date, "%Y-%m-%d").map_err(|_| AppError::Validation {
+        code: "VALIDATION_ERROR",
+        message: "to_date must be YYYY-MM-DD".to_string(),
     })?;
     match period_type {
         "weekly" => Ok(PeriodPreset::Weekly),

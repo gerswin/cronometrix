@@ -11,9 +11,8 @@
 
 use cronometrix_api::enrollments::models::{
     validate_captured_via, validate_enrollment_status, validate_push_status,
-    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse,
-    CreateEnrollmentRequest, EnrollmentDevicePushResponse, EnrollmentResponse,
-    EnrollmentSubmitResponse, RetryResponse,
+    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse, CreateEnrollmentRequest,
+    EnrollmentDevicePushResponse, EnrollmentResponse, EnrollmentSubmitResponse, RetryResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -215,7 +214,10 @@ fn capture_response_omits_photo_b64_when_none() {
     };
     let s = serde_json::to_string(&resp).unwrap();
     // photo_b64 must be absent (skip_serializing_if = "Option::is_none").
-    assert!(!s.contains("photo_b64"), "expected photo_b64 omitted, got: {s}");
+    assert!(
+        !s.contains("photo_b64"),
+        "expected photo_b64 omitted, got: {s}"
+    );
 }
 
 #[test]
@@ -277,10 +279,13 @@ fn dtos_have_debug_impls() {
     let s = format!("{:?}", c);
     assert!(s.contains("CaptureResponse"));
 
-    let s = format!("{:?}", CaptureFromDeviceResponse {
-        capture_id: "c".into(),
-        status: "capturing".into(),
-    });
+    let s = format!(
+        "{:?}",
+        CaptureFromDeviceResponse {
+            capture_id: "c".into(),
+            status: "capturing".into(),
+        }
+    );
     assert!(s.contains("CaptureFromDeviceResponse"));
 
     let s = format!(

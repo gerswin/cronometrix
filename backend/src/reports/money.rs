@@ -29,11 +29,7 @@ pub fn work_pay_cents(
 
 /// Overtime pay at +50% premium (LOTTT Art. 118):
 /// `ot_min × base_cents × 150 / (100 × ord_min)`.
-pub fn ot_pay_cents(
-    ot_minutes: i64,
-    base_salary_cents: i64,
-    ordinary_daily_minutes: i64,
-) -> i64 {
+pub fn ot_pay_cents(ot_minutes: i64, base_salary_cents: i64, ordinary_daily_minutes: i64) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
     }
@@ -201,7 +197,10 @@ mod tests {
     #[test]
     fn total_a_pagar_composition() {
         // 50_000 + 18_750 + 30_000 + 0 - 3_125 = 95_625
-        assert_eq!(total_a_pagar_cents(50_000, 18_750, 30_000, 0, 3_125), 95_625);
+        assert_eq!(
+            total_a_pagar_cents(50_000, 18_750, 30_000, 0, 3_125),
+            95_625
+        );
     }
 
     #[test]

@@ -43,7 +43,10 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         ));
 
     let admin_routes = Router::new()
-        .route("/tenant-info", patch(tenant_info::handlers::patch_tenant_info))
+        .route(
+            "/tenant-info",
+            patch(tenant_info::handlers::patch_tenant_info),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,

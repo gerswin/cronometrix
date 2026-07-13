@@ -33,7 +33,10 @@ pub async fn list_users(
     State(state): State<AppState>,
     Query(query): Query<UserListQuery>,
 ) -> Result<Json<PaginatedResponse<User>>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let result = service::list(&conn, query).await?;
     Ok(Json(result))
 }
@@ -43,7 +46,10 @@ pub async fn get_user(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<User>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let user = service::get_by_id(&conn, &id).await?;
     Ok(Json(user))
 }

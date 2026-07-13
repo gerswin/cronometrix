@@ -51,7 +51,10 @@ fn license_module_is_reachable() {
 fn fingerprint_collection_returns_string_or_error() {
     let result = license::fingerprint::collect_fingerprint();
     match result {
-        Ok(s) => assert!(s.len() == 64 || s.is_empty(), "expected 64-hex-char SHA256 or empty"),
+        Ok(s) => assert!(
+            s.len() == 64 || s.is_empty(),
+            "expected 64-hex-char SHA256 or empty"
+        ),
         Err(_) => { /* macOS dev host — expected */ }
     }
 }
@@ -75,8 +78,7 @@ async fn unlicensed_error_maps_to_403_with_code_unlicensed() {
 #[test]
 fn jsonwebtoken_use_pem_feature_enabled() {
     let pem = include_bytes!("fixtures/test_license_pubkey.pem");
-    let _key = jsonwebtoken::DecodingKey::from_rsa_pem(pem)
-        .expect("test pubkey should parse");
+    let _key = jsonwebtoken::DecodingKey::from_rsa_pem(pem).expect("test pubkey should parse");
 }
 
 // =============================================================================
@@ -123,7 +125,10 @@ fn test_verify_accepts_expired_token() {
     let claims = make_claims("test-fp", -3600);
     let token = sign_test_jwt(&claims);
     let result = cronometrix_api::license::service::verify_license_jwt(&token);
-    assert!(result.is_ok(), "expired but signed token must still verify (D-07)");
+    assert!(
+        result.is_ok(),
+        "expired but signed token must still verify (D-07)"
+    );
     assert_eq!(result.unwrap().license_key, "TEST-KEY-1234-5678");
 }
 
@@ -159,19 +164,18 @@ async fn test_activation_calls_do_functions_with_fingerprint() {
 
     Mock::given(wm_method("POST"))
         .and(wm_path("/licenses/activate"))
-        .and(body_partial_json(json!({ "license_key": "ABCD-EFGH-IJKL-MNOP" })))
+        .and(body_partial_json(
+            json!({ "license_key": "ABCD-EFGH-IJKL-MNOP" }),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "token": signed })))
         .mount(&mock)
         .await;
 
     let url = format!("{}/licenses/activate", mock.uri());
     let path = format!("/tmp/cronometrix-license-{}.jwt", uuid::Uuid::new_v4());
-    let result = cronometrix_api::license::service::activate_license(
-        "ABCD-EFGH-IJKL-MNOP",
-        &url,
-        &path,
-    )
-    .await;
+    let result =
+        cronometrix_api::license::service::activate_license("ABCD-EFGH-IJKL-MNOP", &url, &path)
+            .await;
 
     // On Linux the activation succeeds (fp present, claims match, JWT verifies, file written).
     // On macOS dev the very first step (collect_fingerprint) errors with AppError::Internal,
@@ -181,8 +185,7 @@ async fn test_activation_calls_do_functions_with_fingerprint() {
             let persisted = std::fs::read_to_string(&path).unwrap();
             assert!(!persisted.is_empty(), "JWT must be written on success");
             // Offline-load round-trip works (DEPL-04)
-            let valid =
-                cronometrix_api::license::service::load_and_validate_license(&path).await;
+            let valid = cronometrix_api::license::service::load_and_validate_license(&path).await;
             let _ = valid; // platform-dependent; persistence is the load-bearing assertion
         }
         Err(AppError::Internal(_)) => {
@@ -213,12 +216,9 @@ async fn test_activation_rejects_fingerprint_mismatch() {
 
     let url = format!("{}/licenses/activate", mock.uri());
     let path = format!("/tmp/cronometrix-mismatch-{}.jwt", uuid::Uuid::new_v4());
-    let result = cronometrix_api::license::service::activate_license(
-        "ABCD-EFGH-IJKL-MNOP",
-        &url,
-        &path,
-    )
-    .await;
+    let result =
+        cronometrix_api::license::service::activate_license("ABCD-EFGH-IJKL-MNOP", &url, &path)
+            .await;
 
     // On Linux the local fp is collected and rejected as Forbidden.
     // On macOS the fp lookup itself errors → Internal (still fail-closed).
@@ -307,13 +307,13 @@ async fn test_offline_operation_with_cached_jwt() {
 
 mod gate_behavior_tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{header, Method, Request, StatusCode};
-    use axum::Router;
     use axum::routing::{get, post};
+    use axum::Router;
     use cronometrix_api::auth;
     use cronometrix_api::config::Config;
     use cronometrix_api::employees;
@@ -343,14 +343,11 @@ mod gate_behavior_tests {
             turso_sync_interval_secs: 300,
             device_creds_key: common::test_device_creds_key(),
             timezone: "America/Caracas".parse().unwrap(),
-            license_jwt_path: format!(
-                "/tmp/cronometrix-test-{}.jwt",
-                uuid::Uuid::new_v4()
-            ),
+            license_jwt_path: format!("/tmp/cronometrix-test-{}.jwt", uuid::Uuid::new_v4()),
             do_functions_activate_url: do_url,
             do_functions_renew_url: String::new(),
-        cors_allowed_origins: Vec::new(),
-        cookie_secure: false,
+            cors_allowed_origins: Vec::new(),
+            cookie_secure: false,
         });
 
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -491,16 +488,14 @@ mod gate_behavior_tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let mock = MockServer::start().await;
-        let fp = cronometrix_api::license::fingerprint::collect_fingerprint()
-            .unwrap_or_default();
+        let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap_or_default();
         let claims = make_claims(&fp, 365 * 24 * 60 * 60);
         let signed = sign_test_jwt(&claims);
 
         Mock::given(wm_method("POST"))
             .and(wm_path("/licenses/activate"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"token": signed})),
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": signed})),
             )
             .mount(&mock)
             .await;

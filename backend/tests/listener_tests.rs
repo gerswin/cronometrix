@@ -64,11 +64,7 @@ async fn seed_device(conn: &libsql::Connection, id: &str, _hint_port: u16) {
          created_at, updated_at) \
          VALUES (?1, ?2, '127.0.0.1', ?3, 'http', 'admin', 'ciphertext', \
          'entry', 0, 'offline', 'active', 1, unixepoch(), unixepoch())",
-        params![
-            id.to_string(),
-            format!("dev-{}", id),
-            port
-        ],
+        params![id.to_string(), format!("dev-{}", id), port],
     )
     .await
     .expect("seed device");
@@ -98,7 +94,12 @@ async fn seed_employee(conn: &libsql::Connection, emp_id: &str, emp_code: &str) 
     .expect("seed employee");
 }
 
-async fn seed_face_mapping(conn: &libsql::Connection, device_id: &str, face_id: &str, emp_id: &str) {
+async fn seed_face_mapping(
+    conn: &libsql::Connection,
+    device_id: &str,
+    face_id: &str,
+    emp_id: &str,
+) {
     conn.execute(
         "INSERT INTO device_face_mappings (id, device_id, face_id, employee_id, version, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, 1, unixepoch(), unixepoch())",
@@ -154,7 +155,11 @@ async fn connect_and_stream_persists_one_event() {
         )
         .await
         .unwrap();
-    let row = rows.next().await.unwrap().expect("must have at least one row");
+    let row = rows
+        .next()
+        .await
+        .unwrap()
+        .expect("must have at least one row");
     let employee_id: Option<String> = row.get(0).unwrap();
     let direction: String = row.get(1).unwrap();
     let raw_xml: String = row.get(2).unwrap();
@@ -167,7 +172,11 @@ async fn connect_and_stream_persists_one_event() {
     assert_eq!(is_unknown, 0);
     let relpath = photo_path.expect("photo_path populated");
     let on_disk = state.paths.events_root.join(&relpath);
-    assert!(on_disk.exists(), "photo jpeg must be on disk at {:?}", on_disk);
+    assert!(
+        on_disk.exists(),
+        "photo jpeg must be on disk at {:?}",
+        on_disk
+    );
 
     // No additional rows.
     let next = rows.next().await.unwrap();
@@ -206,10 +215,7 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
     assert_eq!(count, 0, "heartbeat must not persist an attendance event");
 
     let ls_row = conn
-        .query(
-            "SELECT last_seen_at FROM devices WHERE id = 'd-hb'",
-            (),
-        )
+        .query("SELECT last_seen_at FROM devices WHERE id = 'd-hb'", ())
         .await
         .unwrap()
         .next()
@@ -276,11 +282,15 @@ async fn second_identical_event_deduplicates() {
     let addr1 = spawn_mock_hikvision_plain(body.clone(), "MIME_boundary").await;
     let (state, _tmp) = make_state(db);
     let cfg1 = device_cfg("d-dup", addr1);
-    connect_and_stream(&cfg1, &state).await.expect("first stream");
+    connect_and_stream(&cfg1, &state)
+        .await
+        .expect("first stream");
 
     let addr2 = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
     let cfg2 = device_cfg("d-dup", addr2);
-    connect_and_stream(&cfg2, &state).await.expect("second stream");
+    connect_and_stream(&cfg2, &state)
+        .await
+        .expect("second stream");
 
     let conn = state.db.connect().unwrap();
     let row = conn
@@ -295,7 +305,10 @@ async fn second_identical_event_deduplicates() {
         .unwrap()
         .unwrap();
     let count: i64 = row.get(0).unwrap();
-    assert_eq!(count, 1, "dedup must keep row count at 1 on identical replay");
+    assert_eq!(
+        count, 1,
+        "dedup must keep row count at 1 on identical replay"
+    );
 }
 
 #[tokio::test]

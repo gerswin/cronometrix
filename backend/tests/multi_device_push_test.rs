@@ -17,7 +17,12 @@ async fn seed_enrollment_scenario(
     conn: &libsql::Connection,
     n_devices: usize,
     device_base_urls: &[String],
-) -> (String, String, String, Vec<cronometrix_api::devices::models::DeviceWithPlaintext>) {
+) -> (
+    String,
+    String,
+    String,
+    Vec<cronometrix_api::devices::models::DeviceWithPlaintext>,
+) {
     // User
     let user_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
@@ -33,7 +38,9 @@ async fn seed_enrollment_scenario(
          lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
          VALUES (?1, ?2, 0, '08:00', '17:00', 'fixed', 60, 'active', 1, unixepoch(), unixepoch())",
         libsql::params![dept_id.clone(), format!("Dept-{}", &dept_id[..8])],
-    ).await.expect("seed dept");
+    )
+    .await
+    .expect("seed dept");
 
     // Employee
     let emp_id = uuid::Uuid::new_v4().to_string();
@@ -63,11 +70,16 @@ async fn seed_enrollment_scenario(
     let mut devices = Vec::new();
     for i in 0..n_devices {
         let dev_id = uuid::Uuid::new_v4().to_string();
-        let url = device_base_urls.get(i).cloned().unwrap_or_else(|| format!("http://192.168.1.{}:80", i + 10));
+        let url = device_base_urls
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| format!("http://192.168.1.{}:80", i + 10));
 
         // Parse ip and port from the URL so unique(ip,port) constraint holds per device.
         // URL format from wiremock: "http://127.0.0.1:PORT"
-        let host_port = url.trim_start_matches("http://").trim_start_matches("https://");
+        let host_port = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
         let (ip, port): (String, i64) = if let Some(colon) = host_port.rfind(':') {
             let ip = host_port[..colon].to_string();
             let port: i64 = host_port[colon + 1..].parse().unwrap_or(80);
@@ -89,7 +101,9 @@ async fn seed_enrollment_scenario(
             "INSERT INTO enrollment_device_pushes (id, enrollment_id, device_id, status) \
              VALUES (?1, ?2, ?3, 'pending')",
             libsql::params![push_id, enr_id.clone(), dev_id.clone()],
-        ).await.expect("seed push row");
+        )
+        .await
+        .expect("seed push row");
 
         devices.push(cronometrix_api::devices::models::DeviceWithPlaintext {
             id: dev_id,
@@ -122,8 +136,7 @@ async fn test_joinset_fans_out_to_all_active_devices_concurrently() {
     let conn = db.connect().expect("connect");
 
     let urls = vec![s1.uri(), s2.uri(), s3.uri()];
-    let (emp_id, face_id, enr_id, devices) =
-        seed_enrollment_scenario(&conn, 3, &urls).await;
+    let (emp_id, face_id, enr_id, devices) = seed_enrollment_scenario(&conn, 3, &urls).await;
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
 
@@ -145,19 +158,37 @@ async fn test_joinset_fans_out_to_all_active_devices_concurrently() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // All 3 mock servers should have received UserInfo/Record POST.
-    assert_eq!(s1.received_requests().await.unwrap().len(), 2, "server 1: expected UserInfo + FaceData");
-    assert_eq!(s2.received_requests().await.unwrap().len(), 2, "server 2: expected UserInfo + FaceData");
-    assert_eq!(s3.received_requests().await.unwrap().len(), 2, "server 3: expected UserInfo + FaceData");
+    assert_eq!(
+        s1.received_requests().await.unwrap().len(),
+        2,
+        "server 1: expected UserInfo + FaceData"
+    );
+    assert_eq!(
+        s2.received_requests().await.unwrap().len(),
+        2,
+        "server 2: expected UserInfo + FaceData"
+    );
+    assert_eq!(
+        s3.received_requests().await.unwrap().len(),
+        2,
+        "server 3: expected UserInfo + FaceData"
+    );
 
     // Enrollment should be finalized as 'success'.
     let conn2 = state.db.connect().expect("connect");
-    let mut rows = conn2.query(
-        "SELECT status FROM enrollments WHERE id = ?1",
-        libsql::params![enr_id.clone()],
-    ).await.expect("query");
+    let mut rows = conn2
+        .query(
+            "SELECT status FROM enrollments WHERE id = ?1",
+            libsql::params![enr_id.clone()],
+        )
+        .await
+        .expect("query");
     let row = rows.next().await.expect("next").expect("has row");
     let status: String = row.get(0).expect("status col");
-    assert_eq!(status, "success", "enrollment should be success when all 3 push to mock servers");
+    assert_eq!(
+        status, "success",
+        "enrollment should be success when all 3 push to mock servers"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -166,8 +197,8 @@ async fn test_joinset_fans_out_to_all_active_devices_concurrently() {
 
 #[tokio::test]
 async fn test_partial_failure_sets_enrollment_status_partial() {
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // s1 = success, s2 = failure (500 on both endpoints).
     let s1 = common::mock_hikvision_server().await;
@@ -182,8 +213,7 @@ async fn test_partial_failure_sets_enrollment_status_partial() {
     let conn = db.connect().expect("connect");
 
     let urls = vec![s1.uri(), s2_fail.uri()];
-    let (_emp_id, face_id, enr_id, devices) =
-        seed_enrollment_scenario(&conn, 2, &urls).await;
+    let (_emp_id, face_id, enr_id, devices) = seed_enrollment_scenario(&conn, 2, &urls).await;
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
     let (state, _tmp) = build_test_state(db);
@@ -200,10 +230,13 @@ async fn test_partial_failure_sets_enrollment_status_partial() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let conn2 = state.db.connect().expect("connect");
-    let mut rows = conn2.query(
-        "SELECT status FROM enrollments WHERE id = ?1",
-        libsql::params![enr_id.clone()],
-    ).await.expect("query");
+    let mut rows = conn2
+        .query(
+            "SELECT status FROM enrollments WHERE id = ?1",
+            libsql::params![enr_id.clone()],
+        )
+        .await
+        .expect("query");
     let row = rows.next().await.expect("next").expect("has row");
     let status: String = row.get(0).expect("status col");
     assert_eq!(status, "partial", "1 success + 1 failure = partial");
@@ -215,8 +248,8 @@ async fn test_partial_failure_sets_enrollment_status_partial() {
 
 #[tokio::test]
 async fn test_zero_devices_succeed_sets_failed() {
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let s1_fail = MockServer::start().await;
     Mock::given(method("POST"))
@@ -229,8 +262,7 @@ async fn test_zero_devices_succeed_sets_failed() {
     let conn = db.connect().expect("connect");
 
     let urls = vec![s1_fail.uri()];
-    let (_emp_id, face_id, enr_id, devices) =
-        seed_enrollment_scenario(&conn, 1, &urls).await;
+    let (_emp_id, face_id, enr_id, devices) = seed_enrollment_scenario(&conn, 1, &urls).await;
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
     let (state, _tmp) = build_test_state(db);
@@ -247,10 +279,13 @@ async fn test_zero_devices_succeed_sets_failed() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let conn2 = state.db.connect().expect("connect");
-    let mut rows = conn2.query(
-        "SELECT status FROM enrollments WHERE id = ?1",
-        libsql::params![enr_id.clone()],
-    ).await.expect("query");
+    let mut rows = conn2
+        .query(
+            "SELECT status FROM enrollments WHERE id = ?1",
+            libsql::params![enr_id.clone()],
+        )
+        .await
+        .expect("query");
     let row = rows.next().await.expect("next").expect("has row");
     let status: String = row.get(0).expect("status col");
     assert_eq!(status, "failed", "all failures = failed");
@@ -269,8 +304,7 @@ async fn test_all_devices_succeed_sets_success() {
     let conn = db.connect().expect("connect");
 
     let urls = vec![s1.uri(), s2.uri()];
-    let (_emp_id, face_id, enr_id, devices) =
-        seed_enrollment_scenario(&conn, 2, &urls).await;
+    let (_emp_id, face_id, enr_id, devices) = seed_enrollment_scenario(&conn, 2, &urls).await;
 
     let photo_bytes = Arc::new(common::sample_face_jpeg_50kb());
     let (state, _tmp) = build_test_state(db);
@@ -287,10 +321,13 @@ async fn test_all_devices_succeed_sets_success() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     let conn2 = state.db.connect().expect("connect");
-    let mut rows = conn2.query(
-        "SELECT status FROM enrollments WHERE id = ?1",
-        libsql::params![enr_id.clone()],
-    ).await.expect("query");
+    let mut rows = conn2
+        .query(
+            "SELECT status FROM enrollments WHERE id = ?1",
+            libsql::params![enr_id.clone()],
+        )
+        .await
+        .expect("query");
     let row = rows.next().await.expect("next").expect("has row");
     let status: String = row.get(0).expect("status col");
     assert_eq!(status, "success", "all success = success");
@@ -317,9 +354,7 @@ async fn test_backfill_respects_semaphore_4_max_in_flight() {
 /// returned TempDir to a local that outlives every assertion (Pitfall 1 in
 /// 08-RESEARCH.md). Drives off the same shared helper as every other
 /// integration test in this crate.
-fn build_test_state(
-    db: libsql::Database,
-) -> (cronometrix_api::state::AppState, tempfile::TempDir) {
+fn build_test_state(db: libsql::Database) -> (cronometrix_api::state::AppState, tempfile::TempDir) {
     let config = Arc::new(cronometrix_api::config::Config {
         database_path: String::new(),
         turso_url: String::new(),

@@ -67,17 +67,20 @@ impl Supervisor {
     pub async fn run(self, mut lifecycle_rx: mpsc::UnboundedReceiver<DeviceLifecycleEvent>) {
         // Bootstrap: spawn a task for every currently-active device.
         match self.state.db.connect() {
-            Ok(conn) => match devices_service::list_active(&conn, &self.state.config.device_creds_key).await {
-                Ok(devices) => {
-                    tracing::info!(count = devices.len(), "supervisor bootstrapping");
-                    for dev in devices {
-                        self.spawn_device(dev).await;
+            Ok(conn) => {
+                match devices_service::list_active(&conn, &self.state.config.device_creds_key).await
+                {
+                    Ok(devices) => {
+                        tracing::info!(count = devices.len(), "supervisor bootstrapping");
+                        for dev in devices {
+                            self.spawn_device(dev).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(err = %e, "supervisor failed to list active devices on bootstrap");
                     }
                 }
-                Err(e) => {
-                    tracing::error!(err = %e, "supervisor failed to list active devices on bootstrap");
-                }
-            },
+            }
             Err(e) => {
                 tracing::error!(err = %e, "supervisor failed to acquire DB connection on bootstrap");
             }
@@ -154,9 +157,17 @@ impl Supervisor {
             DeviceLifecycleEvent::Start(id) => {
                 // Re-read from DB (the handler has already committed).
                 match self.state.db.connect() {
-                    Ok(conn) => match devices_service::get_decrypted(&conn, &id, &self.state.config.device_creds_key).await {
+                    Ok(conn) => match devices_service::get_decrypted(
+                        &conn,
+                        &id,
+                        &self.state.config.device_creds_key,
+                    )
+                    .await
+                    {
                         Ok(dev) => self.spawn_device(dev).await,
-                        Err(e) => tracing::warn!(device_id = %id, err = %e, "Start: device not loadable, skipping spawn"),
+                        Err(e) => {
+                            tracing::warn!(device_id = %id, err = %e, "Start: device not loadable, skipping spawn")
+                        }
                     },
                     Err(e) => tracing::error!(err = %e, "Start: DB connect failed"),
                 }
@@ -167,9 +178,17 @@ impl Supervisor {
             DeviceLifecycleEvent::Restart(id) => {
                 self.stop_device(&id).await;
                 match self.state.db.connect() {
-                    Ok(conn) => match devices_service::get_decrypted(&conn, &id, &self.state.config.device_creds_key).await {
+                    Ok(conn) => match devices_service::get_decrypted(
+                        &conn,
+                        &id,
+                        &self.state.config.device_creds_key,
+                    )
+                    .await
+                    {
                         Ok(dev) => self.spawn_device(dev).await,
-                        Err(e) => tracing::warn!(device_id = %id, err = %e, "Restart: device not loadable, not respawning"),
+                        Err(e) => {
+                            tracing::warn!(device_id = %id, err = %e, "Restart: device not loadable, not respawning")
+                        }
                     },
                     Err(e) => tracing::error!(err = %e, "Restart: DB connect failed"),
                 }

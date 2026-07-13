@@ -79,7 +79,11 @@ async fn seed_device(conn: &libsql::Connection, id: &str) {
     .unwrap();
 }
 
-async fn seed_event_with_photo(conn: &libsql::Connection, device_id: &str, photo_path: &str) -> String {
+async fn seed_event_with_photo(
+    conn: &libsql::Connection,
+    device_id: &str,
+    photo_path: &str,
+) -> String {
     let id = Uuid::new_v4().to_string();
     let captured_at: i64 = 1_700_000_000;
     let bucket = captured_at / 30;

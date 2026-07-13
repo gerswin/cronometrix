@@ -20,8 +20,8 @@ pub struct AnomalyListQuery {
     pub offset: Option<i64>,
     pub code: Option<String>,
     pub employee_id: Option<String>,
-    pub from_date: Option<String>,  // YYYY-MM-DD
-    pub to_date: Option<String>,    // YYYY-MM-DD
+    pub from_date: Option<String>, // YYYY-MM-DD
+    pub to_date: Option<String>,   // YYYY-MM-DD
 }
 
 #[derive(Debug, Serialize)]
@@ -32,7 +32,7 @@ pub struct AnomalyResponse {
     pub anchor_date: String,
     pub code: String,
     pub detail: Option<String>,
-    pub created_at: String,  // ISO 8601
+    pub created_at: String, // ISO 8601
 }
 
 /// GET /api/v1/anomalies — supervisor queue. Mirrors events/service.rs list

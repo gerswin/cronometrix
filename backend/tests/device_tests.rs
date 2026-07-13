@@ -61,7 +61,10 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
         .route("/devices/{id}", patch(devices::handlers::update_device))
-        .route("/devices/{id}", delete(devices::handlers::deactivate_device))
+        .route(
+            "/devices/{id}",
+            delete(devices::handlers::deactivate_device),
+        )
         .route(
             "/devices/{id}/commands",
             post(devices::handlers::dispatch_command),
@@ -72,10 +75,7 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         ));
 
     let app = Router::new()
-        .nest(
-            "/api/v1",
-            viewer_routes.merge(admin_routes),
-        )
+        .nest("/api/v1", viewer_routes.merge(admin_routes))
         .with_state(state);
     (app, tmp)
 }
@@ -126,7 +126,11 @@ async fn register_device(
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "POST /devices should 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "POST /devices should 201"
+    );
     body_to_json(resp.into_body()).await
 }
 
@@ -390,7 +394,9 @@ async fn setup_mock_device(
     let url = mock.uri();
     // `url` is like "http://127.0.0.1:12345". Parse it minimally.
     let without_scheme = url.strip_prefix("http://").expect("mock uri has http://");
-    let (host, port_str) = without_scheme.split_once(':').expect("mock uri has host:port");
+    let (host, port_str) = without_scheme
+        .split_once(':')
+        .expect("mock uri has host:port");
     let port: u16 = port_str.parse().expect("port is numeric");
     let device = register_device(app, admin_token, "MockDev", host, port, "http").await;
 
@@ -446,7 +452,10 @@ async fn dispatch_door_open_writes_audit() {
     let admin_routes = Router::new()
         .route("/devices", post(devices::handlers::create_device))
         .route("/devices/{id}", patch(devices::handlers::update_device))
-        .route("/devices/{id}", delete(devices::handlers::deactivate_device))
+        .route(
+            "/devices/{id}",
+            delete(devices::handlers::deactivate_device),
+        )
         .route(
             "/devices/{id}/commands",
             post(devices::handlers::dispatch_command),
@@ -468,27 +477,23 @@ async fn dispatch_door_open_writes_audit() {
     // answer both the challenge AND the authed request.
     Mock::given(wm_method("PUT"))
         .and(wm_path("/ISAPI/AccessControl/RemoteControl/door/1"))
-        .respond_with(
-            ResponseTemplate::new(401).insert_header(
-                "WWW-Authenticate",
-                "Digest realm=\"test\",qop=\"auth\",nonce=\"abc\",opaque=\"xyz\"",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(401).insert_header(
+            "WWW-Authenticate",
+            "Digest realm=\"test\",qop=\"auth\",nonce=\"abc\",opaque=\"xyz\"",
+        ))
         .up_to_n_times(1)
         .mount(&mock)
         .await;
     Mock::given(wm_method("PUT"))
         .and(wm_path("/ISAPI/AccessControl/RemoteControl/door/1"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_string(
-                "<ResponseStatus><statusCode>1</statusCode></ResponseStatus>",
-            ),
+            ResponseTemplate::new(200)
+                .set_body_string("<ResponseStatus><statusCode>1</statusCode></ResponseStatus>"),
         )
         .mount(&mock)
         .await;
 
-    let device_id =
-        setup_mock_device(&app, &token, &admin_id, &db_arc, &mock).await;
+    let device_id = setup_mock_device(&app, &token, &admin_id, &db_arc, &mock).await;
 
     let dispatch_req = Request::builder()
         .method(Method::POST)
@@ -515,7 +520,12 @@ async fn dispatch_door_open_writes_audit() {
     while let Some(row) = rows.next().await.unwrap() {
         outcomes.push(row.get(0).unwrap());
     }
-    assert_eq!(outcomes.len(), 1, "expected 1 audit row, got {:?}", outcomes);
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "expected 1 audit row, got {:?}",
+        outcomes
+    );
     assert_eq!(outcomes[0], "ok");
 }
 
@@ -569,8 +579,7 @@ async fn dispatch_timeout_returns_504() {
         .mount(&mock)
         .await;
 
-    let device_id =
-        setup_mock_device(&app, &token, &admin_id, &db_arc, &mock).await;
+    let device_id = setup_mock_device(&app, &token, &admin_id, &db_arc, &mock).await;
 
     let dispatch_req = Request::builder()
         .method(Method::POST)
@@ -652,8 +661,7 @@ async fn dispatch_bad_gateway_on_500() {
         .mount(&mock)
         .await;
 
-    let device_id =
-        setup_mock_device(&app, &token, &admin_id, &db_arc, &mock).await;
+    let device_id = setup_mock_device(&app, &token, &admin_id, &db_arc, &mock).await;
 
     let dispatch_req = Request::builder()
         .method(Method::POST)
@@ -713,8 +721,7 @@ async fn dispatch_supervisor_forbidden() {
     let device = register_device(&app, &admin_tok, "S", "10.0.3.2", 8443, "https").await;
     let device_id = device["id"].as_str().unwrap().to_string();
 
-    let supervisor_tok =
-        common::test_access_token(&uuid::Uuid::new_v4().to_string(), "supervisor");
+    let supervisor_tok = common::test_access_token(&uuid::Uuid::new_v4().to_string(), "supervisor");
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/api/v1/devices/{}/commands", device_id))
@@ -852,11 +859,13 @@ async fn patch_updates_password_and_reencrypts() {
         let row = rows.next().await.unwrap().expect("row exists");
         row.get(0).unwrap()
     };
-    assert_ne!(ct_before, ct_after, "encrypted_password must change after PATCH");
+    assert_ne!(
+        ct_before, ct_after,
+        "encrypted_password must change after PATCH"
+    );
 
     let key = common::test_device_creds_key();
-    let pt =
-        cronometrix_api::devices::crypto::decrypt_password(&ct_after, &key).unwrap();
+    let pt = cronometrix_api::devices::crypto::decrypt_password(&ct_after, &key).unwrap();
     assert_eq!(pt, "new-password-42");
 }
 

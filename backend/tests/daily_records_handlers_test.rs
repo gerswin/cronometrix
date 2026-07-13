@@ -87,10 +87,7 @@ async fn body_to_json(body: Body) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(json!(null))
 }
 
-fn build_multipart(
-    fields: &[(&str, &str)],
-    evidence: Option<(&str, &[u8])>,
-) -> (Vec<u8>, String) {
+fn build_multipart(fields: &[(&str, &str)], evidence: Option<(&str, &[u8])>) -> (Vec<u8>, String) {
     let boundary = "MIME_boundary";
     let mut out = Vec::new();
     for (name, value) in fields {
@@ -145,10 +142,7 @@ async fn admin_user_with_token(db: &libsql::Database) -> (String, String) {
 }
 
 /// Seed (department, employee, daily_record) and return all three ids.
-async fn seed_dr(
-    db: &libsql::Database,
-    anchor_date: &str,
-) -> (String, String, String) {
+async fn seed_dr(db: &libsql::Database, anchor_date: &str) -> (String, String, String) {
     let dept_name = format!("Dept-{}", &Uuid::new_v4().to_string()[..8]);
     let dept_id =
         create_test_department_with_shift(db, &dept_name, "day", false, 480, "09:00", "17:00")
@@ -342,7 +336,10 @@ async fn create_override_401_without_token() {
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
-    let (body, ct) = build_multipart(&[("justification", "x")], Some(("application/pdf", MINI_PDF)));
+    let (body, ct) = build_multipart(
+        &[("justification", "x")],
+        Some(("application/pdf", MINI_PDF)),
+    );
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/api/v1/daily-records/{}/overrides", dr_id))
@@ -360,12 +357,18 @@ async fn create_override_403_for_supervisor() {
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
-    let (body, ct) = build_multipart(&[("justification", "x")], Some(("application/pdf", MINI_PDF)));
+    let (body, ct) = build_multipart(
+        &[("justification", "x")],
+        Some(("application/pdf", MINI_PDF)),
+    );
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/api/v1/daily-records/{}/overrides", dr_id))
         .header(header::CONTENT_TYPE, ct)
-        .header(header::AUTHORIZATION, format!("Bearer {}", supervisor_token()))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", supervisor_token()),
+        )
         .body(Body::from(body))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -379,7 +382,10 @@ async fn create_override_422_when_justification_missing() {
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
-    let (body, ct) = build_multipart(&[("override_work_minutes", "30")], Some(("application/pdf", MINI_PDF)));
+    let (body, ct) = build_multipart(
+        &[("override_work_minutes", "30")],
+        Some(("application/pdf", MINI_PDF)),
+    );
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/api/v1/daily-records/{}/overrides", dr_id))
@@ -573,7 +579,10 @@ async fn create_override_201_pdf_writes_to_overrides_root() {
     assert_eq!(b["daily_record_id"], dr_id);
     assert_eq!(b["override_work_minutes"], 420);
     let evidence = b["evidence_path"].as_str().expect("evidence_path string");
-    assert!(evidence.ends_with(".pdf"), "ext from magic bytes: {evidence}");
+    assert!(
+        evidence.ends_with(".pdf"),
+        "ext from magic bytes: {evidence}"
+    );
     let full = overrides_root.join(evidence);
     assert!(full.exists(), "evidence file must land at {:?}", full);
 }
@@ -615,10 +624,7 @@ async fn create_override_201_png_extension() {
     let overrides_root = state.paths.overrides_root.clone();
     let app = build_test_app(state);
 
-    let (body, ct) = build_multipart(
-        &[("justification", "valid")],
-        Some(("image/png", MINI_PNG)),
-    );
+    let (body, ct) = build_multipart(&[("justification", "valid")], Some(("image/png", MINI_PNG)));
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/api/v1/daily-records/{}/overrides", dr_id))

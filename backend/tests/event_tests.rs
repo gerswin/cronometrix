@@ -302,7 +302,10 @@ async fn list_events_filters_by_time_range() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp.into_body()).await;
-    assert_eq!(body["total"], 1, "only evt-2 has captured_at in [1500, 2500)");
+    assert_eq!(
+        body["total"], 1,
+        "only evt-2 has captured_at in [1500, 2500)"
+    );
 }
 
 #[tokio::test]
@@ -327,7 +330,11 @@ async fn list_events_viewer_can_read() {
         .body(Body::empty())
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "viewer must be able to list events (D-15)");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "viewer must be able to list events (D-15)"
+    );
 }
 
 #[tokio::test]
@@ -394,7 +401,11 @@ async fn get_event_photo_returns_jpeg_bytes() {
     }
     // Sanity: file must be on disk under the per-test events root.
     let expected = events_root.join("2023-11-14/evt-photo-1.jpg");
-    assert!(expected.exists(), "photo file must be on disk: {:?}", expected);
+    assert!(
+        expected.exists(),
+        "photo file must be on disk: {:?}",
+        expected
+    );
 
     let token = viewer_token();
 
@@ -424,7 +435,16 @@ async fn get_event_photo_404_if_no_photo_path() {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.6.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(&conn, &events_root, "evt-no-photo", Some("e1"), "d1", 1000, None).await;
+        seed_event(
+            &conn,
+            &events_root,
+            "evt-no-photo",
+            Some("e1"),
+            "d1",
+            1000,
+            None,
+        )
+        .await;
     }
 
     let token = viewer_token();
@@ -465,7 +485,10 @@ async fn get_event_photo_404_if_file_missing() {
     }
     // Delete the on-disk file but keep the DB row pointing at it.
     let victim = events_root.join("2023-11-14/evt-missing-file.jpg");
-    assert!(victim.exists(), "file should have been written by seed_event");
+    assert!(
+        victim.exists(),
+        "file should have been written by seed_event"
+    );
     std::fs::remove_file(&victim).expect("remove photo file");
 
     let token = viewer_token();

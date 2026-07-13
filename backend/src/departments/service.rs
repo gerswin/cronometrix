@@ -1,11 +1,13 @@
-use libsql::{Connection, params};
+use libsql::{params, Connection};
 use uuid::Uuid;
 
-use crate::state::AppState;
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::errors::AppError;
+use crate::state::AppState;
 
-use super::models::{CreateDepartmentRequest, Department, DepartmentListQuery, UpdateDepartmentRequest};
+use super::models::{
+    CreateDepartmentRequest, Department, DepartmentListQuery, UpdateDepartmentRequest,
+};
 
 /// Validate that lunch_mode is "fixed" or "punch" and that lunch_duration_min
 /// is present and positive when lunch_mode is "fixed".
@@ -25,13 +27,16 @@ fn validate_lunch(lunch_mode: &str, lunch_duration_min: Option<i64>) -> Result<(
             None | Some(0) => {
                 return Err(AppError::Validation {
                     code: "LUNCH_DURATION_REQUIRED",
-                    message: "lunch_duration_min is required and must be > 0 when lunch_mode is 'fixed'".to_string(),
+                    message:
+                        "lunch_duration_min is required and must be > 0 when lunch_mode is 'fixed'"
+                            .to_string(),
                 });
             }
             Some(d) if d <= 0 => {
                 return Err(AppError::Validation {
                     code: "LUNCH_DURATION_REQUIRED",
-                    message: "lunch_duration_min must be > 0 when lunch_mode is 'fixed'".to_string(),
+                    message: "lunch_duration_min must be > 0 when lunch_mode is 'fixed'"
+                        .to_string(),
                 });
             }
             _ => {}
@@ -142,7 +147,10 @@ pub async fn create_queued(
         Ok(_) => {}
     }
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     get_by_id(&conn, &id).await
 }
 
@@ -201,7 +209,11 @@ pub async fn list(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut data = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         data.push(row_to_department(row)?);
     }
 
@@ -308,7 +320,10 @@ pub async fn update(
 
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM departments WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM departments WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -324,7 +339,9 @@ pub async fn update(
 
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Department was modified by another request. Fetch the latest version and retry.".to_string(),
+            message:
+                "Department was modified by another request. Fetch the latest version and retry."
+                    .to_string(),
         });
     }
 
@@ -370,7 +387,10 @@ pub async fn update_queued(
     }
 
     if sets.is_empty() {
-        let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+        let conn = state
+            .db
+            .connect()
+            .map_err(|e| AppError::Internal(e.into()))?;
         return get_by_id(&conn, id).await;
     }
 
@@ -392,10 +412,16 @@ pub async fn update_queued(
         .await
         .map_err(AppError::Internal)?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM departments WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM departments WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -409,7 +435,9 @@ pub async fn update_queued(
         }
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Department was modified by another request. Fetch the latest version and retry.".to_string(),
+            message:
+                "Department was modified by another request. Fetch the latest version and retry."
+                    .to_string(),
         });
     }
     get_by_id(&conn, id).await

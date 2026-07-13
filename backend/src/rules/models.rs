@@ -8,9 +8,9 @@ pub struct GlobalRules {
     pub late_arrival_tolerance_min: i64,
     pub early_departure_tolerance_min: i64,
     pub bonus_minutes: i64,
-    pub effective_from: String,  // ISO 8601
+    pub effective_from: String, // ISO 8601
     pub version: i64,
-    pub updated_at: String,      // ISO 8601
+    pub updated_at: String, // ISO 8601
 }
 
 /// Request body for PATCH /rules. All fields optional; `version` required per D-04.

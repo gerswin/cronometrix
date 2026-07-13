@@ -168,21 +168,13 @@ async fn recompute_upsert_preserves_id_and_replaces_anomalies() {
     let db = common::test_db().await;
     ensure_global_rules(&db).await;
     let dept_id =
-        create_test_department_with_shift(&db, "DeptA", "day", false, 480, "09:00", "17:00")
-            .await;
+        create_test_department_with_shift(&db, "DeptA", "day", false, 480, "09:00", "17:00").await;
     let emp_id = seed_employee(&db, &dept_id, "E001").await;
     seed_device(&db, "dev-1").await;
 
     let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap(); // Monday
-    // Seed only an entry — will raise MISSING_EXIT.
-    seed_event(
-        &db,
-        &emp_id,
-        "dev-1",
-        "entry",
-        caracas_epoch(anchor, 9, 0),
-    )
-    .await;
+                                                                // Seed only an entry — will raise MISSING_EXIT.
+    seed_event(&db, &emp_id, "dev-1", "entry", caracas_epoch(anchor, 9, 0)).await;
 
     let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp_id, anchor)
@@ -239,28 +231,13 @@ async fn recompute_flags_recompute_after_edit_on_second_call() {
     let db = common::test_db().await;
     ensure_global_rules(&db).await;
     let dept_id =
-        create_test_department_with_shift(&db, "DeptB", "day", false, 480, "09:00", "17:00")
-            .await;
+        create_test_department_with_shift(&db, "DeptB", "day", false, 480, "09:00", "17:00").await;
     let emp_id = seed_employee(&db, &dept_id, "E002").await;
     seed_device(&db, "dev-1").await;
 
     let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
-    seed_event(
-        &db,
-        &emp_id,
-        "dev-1",
-        "entry",
-        caracas_epoch(anchor, 9, 0),
-    )
-    .await;
-    seed_event(
-        &db,
-        &emp_id,
-        "dev-1",
-        "exit",
-        caracas_epoch(anchor, 17, 0),
-    )
-    .await;
+    seed_event(&db, &emp_id, "dev-1", "entry", caracas_epoch(anchor, 9, 0)).await;
+    seed_event(&db, &emp_id, "dev-1", "exit", caracas_epoch(anchor, 17, 0)).await;
 
     let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp_id, anchor)
@@ -308,10 +285,9 @@ async fn recompute_overnight_captures_post_midnight_events() {
     ensure_global_rules(&db).await;
 
     // Overnight dept: 22:00 → 06:00, ordinary=420 (LOTTT Art. 117 night).
-    let dept_id = create_test_department_with_shift(
-        &db, "DeptNight", "night", true, 420, "22:00", "06:00",
-    )
-    .await;
+    let dept_id =
+        create_test_department_with_shift(&db, "DeptNight", "night", true, 420, "22:00", "06:00")
+            .await;
     let emp_id = seed_employee(&db, &dept_id, "E_NIGHT").await;
     seed_device(&db, "dev-night-1").await;
 
@@ -368,8 +344,14 @@ async fn recompute_overnight_captures_post_midnight_events() {
         work_minutes, 420,
         "overnight 22:00-06:00 minus 60m lunch = 420min work"
     );
-    assert_eq!(overtime_minutes, 0, "no overtime at exactly ordinary threshold");
-    assert_eq!(late_minutes, 0, "entry at exactly nominal shift start → 0 late");
+    assert_eq!(
+        overtime_minutes, 0,
+        "no overtime at exactly ordinary threshold"
+    );
+    assert_eq!(
+        late_minutes, 0,
+        "entry at exactly nominal shift start → 0 late"
+    );
     assert_eq!(
         early_departure_minutes, 0,
         "exit at exactly nominal shift end → 0 early departure"

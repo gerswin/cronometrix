@@ -1,7 +1,4 @@
-use axum::{
-    extract::State,
-    Json,
-};
+use axum::{extract::State, Json};
 use libsql::params;
 use validator::Validate;
 
@@ -25,10 +22,11 @@ fn row_to_rules(row: libsql::Row) -> Result<GlobalRules, AppError> {
 
 /// GET /api/v1/rules — Return the singleton global rules row.
 /// Accessible by any authenticated role (Viewer can read per D-09).
-pub async fn get_rules(
-    State(state): State<AppState>,
-) -> Result<Json<GlobalRules>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+pub async fn get_rules(State(state): State<AppState>) -> Result<Json<GlobalRules>, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     let row = conn
         .query(
@@ -65,12 +63,18 @@ pub async fn update_rules(
     let mut values: Vec<libsql::Value> = Vec::new();
 
     if let Some(val) = body.late_arrival_tolerance_min {
-        sets.push(format!("late_arrival_tolerance_min = ?{}", values.len() + 1));
+        sets.push(format!(
+            "late_arrival_tolerance_min = ?{}",
+            values.len() + 1
+        ));
         values.push(libsql::Value::Integer(val));
     }
 
     if let Some(val) = body.early_departure_tolerance_min {
-        sets.push(format!("early_departure_tolerance_min = ?{}", values.len() + 1));
+        sets.push(format!(
+            "early_departure_tolerance_min = ?{}",
+            values.len() + 1
+        ));
         values.push(libsql::Value::Integer(val));
     }
 
@@ -109,12 +113,16 @@ pub async fn update_rules(
         // Version conflict — singleton always exists
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Rules were modified by another request. Fetch the latest version and retry.".to_string(),
+            message: "Rules were modified by another request. Fetch the latest version and retry."
+                .to_string(),
         });
     }
 
     // Return updated singleton
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let row = conn
         .query(
             "SELECT late_arrival_tolerance_min, early_departure_tolerance_min, bonus_minutes, \
@@ -127,7 +135,11 @@ pub async fn update_rules(
         .next()
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("global_rules singleton row missing after update")))?;
+        .ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!(
+                "global_rules singleton row missing after update"
+            ))
+        })?;
 
     Ok(Json(row_to_rules(row)?))
 }

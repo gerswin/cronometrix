@@ -6,7 +6,13 @@ async fn schema_creates_all_tables() {
     let conn = db.connect().unwrap();
 
     // Verify all 5 core tables exist
-    let tables = ["users", "departments", "employees", "global_rules", "audit_log"];
+    let tables = [
+        "users",
+        "departments",
+        "employees",
+        "global_rules",
+        "audit_log",
+    ];
     for table in tables {
         let mut rows = conn
             .query(

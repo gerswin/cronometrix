@@ -117,7 +117,10 @@ fn login_request_validate_rejects_empty_username() {
     };
     let err = body.validate().expect_err("empty username must fail");
     let msg = err.to_string();
-    assert!(msg.contains("username"), "validator must mention field: {msg}");
+    assert!(
+        msg.contains("username"),
+        "validator must mention field: {msg}"
+    );
 }
 
 #[test]
@@ -128,7 +131,10 @@ fn login_request_validate_rejects_empty_password() {
     };
     let err = body.validate().expect_err("empty password must fail");
     let msg = err.to_string();
-    assert!(msg.contains("password"), "validator must mention field: {msg}");
+    assert!(
+        msg.contains("password"),
+        "validator must mention field: {msg}"
+    );
 }
 
 #[test]

@@ -13,9 +13,7 @@ use crate::errors::AppError;
 use crate::events::service::write_photo_atomic;
 use crate::state::AppState;
 
-use super::models::{
-    EnrollmentDevicePushResponse, EnrollmentResponse, EnrollmentSubmitResponse,
-};
+use super::models::{EnrollmentDevicePushResponse, EnrollmentResponse, EnrollmentSubmitResponse};
 
 // =============================================================================
 // Filesystem roots
@@ -31,8 +29,7 @@ use super::models::{
 // Row mappers
 // =============================================================================
 
-const PUSH_SELECT_COLS: &str =
-    "edp.id, edp.device_id, d.name, edp.status, edp.error_message, \
+const PUSH_SELECT_COLS: &str = "edp.id, edp.device_id, d.name, edp.status, edp.error_message, \
      edp.started_at, edp.completed_at";
 
 fn row_to_push(row: &libsql::Row) -> Result<EnrollmentDevicePushResponse, AppError> {
@@ -141,7 +138,10 @@ pub async fn start_enrollment(
     face_quality_score: Option<&str>,
     normalized_bytes: &[u8],
 ) -> Result<EnrollmentSubmitResponse, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     // Fetch all active devices once for fan-out planning.
     let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
@@ -229,11 +229,7 @@ pub async fn start_enrollment(
             "INSERT OR REPLACE INTO enrollment_device_pushes \
              (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
              VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-            params![
-                push_id.clone(),
-                enrollment_id.clone(),
-                device.id.clone(),
-            ],
+            params![push_id.clone(), enrollment_id.clone(), device.id.clone(),],
         )
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -250,8 +246,12 @@ pub async fn start_enrollment(
     }
 
     // 6. Write JPEG to disk atomically (write_photo_atomic handles create_dir_all).
-    write_photo_atomic(&state.paths.enrollments_root, &photo_relpath, normalized_bytes)
-        .map_err(AppError::Internal)?;
+    write_photo_atomic(
+        &state.paths.enrollments_root,
+        &photo_relpath,
+        normalized_bytes,
+    )
+    .map_err(AppError::Internal)?;
 
     Ok(EnrollmentSubmitResponse {
         enrollment_id,
@@ -269,7 +269,10 @@ pub async fn start_enrollment_queued(
     face_quality_score: Option<&str>,
     normalized_bytes: &[u8],
 ) -> Result<EnrollmentSubmitResponse, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
 
     let face_enrollment_id = Uuid::new_v4().to_string();
@@ -337,7 +340,10 @@ pub async fn start_enrollment_queued(
         .map_err(AppError::Internal)?;
 
     let mut fid_rows = conn
-        .query("SELECT face_id FROM employees WHERE id = ?1", params![employee_id.to_string()])
+        .query(
+            "SELECT face_id FROM employees WHERE id = ?1",
+            params![employee_id.to_string()],
+        )
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
     let fid_row = fid_rows
@@ -379,8 +385,12 @@ pub async fn start_enrollment_queued(
         });
     }
 
-    write_photo_atomic(&state.paths.enrollments_root, &photo_relpath, normalized_bytes)
-        .map_err(AppError::Internal)?;
+    write_photo_atomic(
+        &state.paths.enrollments_root,
+        &photo_relpath,
+        normalized_bytes,
+    )
+    .map_err(AppError::Internal)?;
 
     Ok(EnrollmentSubmitResponse {
         enrollment_id,
@@ -425,7 +435,9 @@ pub async fn update_push_status_queued(
              WHERE id = ?3",
             vec![
                 libsql::Value::Text(status.to_string()),
-                error_message.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
+                error_message
+                    .map(|s| libsql::Value::Text(s.to_string()))
+                    .unwrap_or(libsql::Value::Null),
                 libsql::Value::Text(push_id.to_string()),
             ],
         )
@@ -435,10 +447,7 @@ pub async fn update_push_status_queued(
 }
 
 /// Mark a push row as in_progress (records started_at).
-pub async fn mark_push_in_progress(
-    conn: &Connection,
-    push_id: &str,
-) -> Result<(), AppError> {
+pub async fn mark_push_in_progress(conn: &Connection, push_id: &str) -> Result<(), AppError> {
     conn.execute(
         "UPDATE enrollment_device_pushes \
          SET status = 'in_progress', started_at = unixepoch() \
@@ -484,7 +493,10 @@ pub async fn get_push_id(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| AppError::NotFound {
             code: "PUSH_NOT_FOUND",
-            message: format!("No push row for enrollment={} device={}", enrollment_id, device_id),
+            message: format!(
+                "No push row for enrollment={} device={}",
+                enrollment_id, device_id
+            ),
         })?;
     row.get(0).map_err(|e| AppError::Internal(e.into()))
 }
@@ -501,7 +513,11 @@ pub async fn reset_push_to_pending(
         "INSERT OR REPLACE INTO enrollment_device_pushes \
          (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
          VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-        params![push_id.clone(), enrollment_id.to_string(), device_id.to_string()],
+        params![
+            push_id.clone(),
+            enrollment_id.to_string(),
+            device_id.to_string()
+        ],
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
@@ -556,13 +572,25 @@ pub async fn finalize_enrollment_status(
         .next()
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!(
-            "no push rows for enrollment {}", enrollment_id
-        )))?;
+        .ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!(
+                "no push rows for enrollment {}",
+                enrollment_id
+            ))
+        })?;
 
-    let success: i64 = row.get::<Option<i64>>(0).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
-    let failed: i64  = row.get::<Option<i64>>(1).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
-    let total: i64   = row.get::<Option<i64>>(2).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
+    let success: i64 = row
+        .get::<Option<i64>>(0)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or(0);
+    let failed: i64 = row
+        .get::<Option<i64>>(1)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or(0);
+    let total: i64 = row
+        .get::<Option<i64>>(2)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or(0);
 
     let final_status = if total == 0 {
         "failed"
@@ -590,7 +618,10 @@ pub async fn finalize_enrollment_status_queued(
     state: &AppState,
     enrollment_id: &str,
 ) -> Result<(), AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let mut rows = conn
         .query(
             "SELECT \
@@ -607,13 +638,33 @@ pub async fn finalize_enrollment_status_queued(
         .next()
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!(
-            "no push rows for enrollment {}", enrollment_id
-        )))?;
-    let success: i64 = row.get::<Option<i64>>(0).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
-    let failed: i64 = row.get::<Option<i64>>(1).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
-    let total: i64 = row.get::<Option<i64>>(2).map_err(|e| AppError::Internal(e.into()))?.unwrap_or(0);
-    let final_status = if total == 0 { "failed" } else if success == 0 { "failed" } else if failed == 0 { "success" } else { "partial" };
+        .ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!(
+                "no push rows for enrollment {}",
+                enrollment_id
+            ))
+        })?;
+    let success: i64 = row
+        .get::<Option<i64>>(0)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or(0);
+    let failed: i64 = row
+        .get::<Option<i64>>(1)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or(0);
+    let total: i64 = row
+        .get::<Option<i64>>(2)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or(0);
+    let final_status = if total == 0 {
+        "failed"
+    } else if success == 0 {
+        "failed"
+    } else if failed == 0 {
+        "success"
+    } else {
+        "partial"
+    };
     state
         .db_write
         .execute(
@@ -696,7 +747,11 @@ pub async fn get_current_photo_path(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    if let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    if let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         let path: Option<String> = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
         Ok(path)
     } else {
@@ -723,7 +778,11 @@ pub async fn list_employees_with_face(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut out = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         let emp_id: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
         let face_id: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
         let cfe_id: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
@@ -750,7 +809,11 @@ pub async fn list_mappings_for_employee(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut out = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         let mapping_id: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
         let device_id: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
         let face_id: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
@@ -816,10 +879,7 @@ pub async fn delete_mapping_queued(state: &AppState, mapping_id: &str) -> Result
 }
 
 /// Fetch the employee's current status. Used by PurgeWorker Pitfall-10 guard.
-pub async fn get_employee_status(
-    conn: &Connection,
-    employee_id: &str,
-) -> Result<String, AppError> {
+pub async fn get_employee_status(conn: &Connection, employee_id: &str) -> Result<String, AppError> {
     let mut rows = conn
         .query(
             "SELECT status FROM employees WHERE id = ?1",
@@ -866,8 +926,8 @@ pub async fn get_enrollment_push_params(
     let employee_id: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
     let face_id: Option<String> = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
     let name: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
-    let face_id = face_id.ok_or_else(|| AppError::Internal(anyhow::anyhow!(
-        "employee {} has no face_id", employee_id
-    )))?;
+    let face_id = face_id.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("employee {} has no face_id", employee_id))
+    })?;
     Ok((employee_id, face_id, name))
 }

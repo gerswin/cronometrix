@@ -33,7 +33,9 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
          lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
          VALUES (?1, ?2, 0, '08:00', '17:00', 'fixed', 60, 'active', 1, unixepoch(), unixepoch())",
         libsql::params![dept_id.clone(), format!("Dept-{}", &dept_id[..8])],
-    ).await.expect("seed department");
+    )
+    .await
+    .expect("seed department");
 
     let emp_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
@@ -84,7 +86,10 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     ).await.expect("count audit_log");
     let row = rows.next().await.expect("next row").expect("has row");
     let count: i64 = row.get(0).expect("count col");
-    assert_eq!(count, 3, "expected 3 audit rows after 3 INSERTs, got {count}");
+    assert_eq!(
+        count, 3,
+        "expected 3 audit rows after 3 INSERTs, got {count}"
+    );
 
     // -----------------------------------------------------------------------
     // UPDATE each row -> +3 more audit rows
@@ -92,17 +97,23 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     conn.execute(
         "UPDATE enrollments SET status='success', version=version+1 WHERE id=?1",
         libsql::params![enr_id.clone()],
-    ).await.expect("update enrollment");
+    )
+    .await
+    .expect("update enrollment");
 
     conn.execute(
         "UPDATE face_enrollments SET face_quality_score='{\"face_detected\":true}' WHERE id=?1",
         libsql::params![fe_id.clone()],
-    ).await.expect("update face_enrollment");
+    )
+    .await
+    .expect("update face_enrollment");
 
     conn.execute(
         "UPDATE device_face_mappings SET state='pending_delete', version=version+1 WHERE id=?1",
         libsql::params![mapping_id.clone()],
-    ).await.expect("update device_face_mapping");
+    )
+    .await
+    .expect("update device_face_mapping");
 
     let mut rows = conn.query(
         "SELECT count(*) FROM audit_log WHERE table_name IN ('enrollments','face_enrollments','device_face_mappings')",
@@ -110,7 +121,10 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     ).await.expect("count audit_log after updates");
     let row = rows.next().await.expect("next row").expect("has row");
     let count: i64 = row.get(0).expect("count col");
-    assert_eq!(count, 6, "expected 6 audit rows after 3 INSERTs + 3 UPDATEs, got {count}");
+    assert_eq!(
+        count, 6,
+        "expected 6 audit rows after 3 INSERTs + 3 UPDATEs, got {count}"
+    );
 
     // -----------------------------------------------------------------------
     // DELETE each row -> +3 more audit rows (total 9)
@@ -118,12 +132,24 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     // delete enrollments first (references face_enrollments), then face_enrollments,
     // then device_face_mappings.
     // -----------------------------------------------------------------------
-    conn.execute("DELETE FROM enrollments WHERE id=?1", libsql::params![enr_id.clone()])
-        .await.expect("delete enrollment");
-    conn.execute("DELETE FROM face_enrollments WHERE id=?1", libsql::params![fe_id.clone()])
-        .await.expect("delete face_enrollment");
-    conn.execute("DELETE FROM device_face_mappings WHERE id=?1", libsql::params![mapping_id.clone()])
-        .await.expect("delete device_face_mapping");
+    conn.execute(
+        "DELETE FROM enrollments WHERE id=?1",
+        libsql::params![enr_id.clone()],
+    )
+    .await
+    .expect("delete enrollment");
+    conn.execute(
+        "DELETE FROM face_enrollments WHERE id=?1",
+        libsql::params![fe_id.clone()],
+    )
+    .await
+    .expect("delete face_enrollment");
+    conn.execute(
+        "DELETE FROM device_face_mappings WHERE id=?1",
+        libsql::params![mapping_id.clone()],
+    )
+    .await
+    .expect("delete device_face_mapping");
 
     let mut rows = conn.query(
         "SELECT count(*) FROM audit_log WHERE table_name IN ('enrollments','face_enrollments','device_face_mappings')",
@@ -131,7 +157,10 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     ).await.expect("count audit_log after deletes");
     let row = rows.next().await.expect("next row").expect("has row");
     let count: i64 = row.get(0).expect("count col");
-    assert_eq!(count, 9, "expected 9 audit rows (3 INSERT + 3 UPDATE + 3 DELETE), got {count}");
+    assert_eq!(
+        count, 9,
+        "expected 9 audit rows (3 INSERT + 3 UPDATE + 3 DELETE), got {count}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -35,7 +35,10 @@ pub async fn list_employees(
     State(state): State<AppState>,
     Query(query): Query<EmployeeListQuery>,
 ) -> Result<Json<PaginatedResponse<Employee>>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let result = service::list(&conn, query).await?;
 
     Ok(Json(result))
@@ -47,7 +50,10 @@ pub async fn get_employee(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Employee>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let employee = service::get_by_id(&conn, &id).await?;
 
     Ok(Json(employee))

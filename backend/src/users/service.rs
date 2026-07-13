@@ -28,7 +28,10 @@ fn validate_status(status: &str) -> Result<(), AppError> {
     } else {
         Err(AppError::Validation {
             code: "INVALID_STATUS",
-            message: format!("status must be one of {:?}, got '{}'", VALID_STATUSES, status),
+            message: format!(
+                "status must be one of {:?}, got '{}'",
+                VALID_STATUSES, status
+            ),
         })
     }
 }
@@ -85,7 +88,10 @@ pub async fn create(state: &AppState, req: CreateUserRequest) -> Result<User, Ap
         Ok(_) => {}
     }
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     get_by_id(&conn, &id).await
 }
 
@@ -143,7 +149,11 @@ pub async fn list(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut data = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         data.push(row_to_user(row)?);
     }
 
@@ -226,7 +236,10 @@ pub async fn update(
     }
 
     if sets.is_empty() {
-        let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+        let conn = state
+            .db
+            .connect()
+            .map_err(|e| AppError::Internal(e.into()))?;
         return get_by_id(&conn, id).await;
     }
 
@@ -250,10 +263,16 @@ pub async fn update(
         .await
         .map_err(AppError::Internal)?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM users WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM users WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -302,10 +321,16 @@ pub async fn deactivate(
         .await
         .map_err(AppError::Internal)?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM users WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM users WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()

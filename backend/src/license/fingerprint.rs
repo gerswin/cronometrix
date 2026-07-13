@@ -60,8 +60,8 @@ fn read_primary_mac() -> Result<String, anyhow::Error> {
 }
 
 fn read_primary_disk_serial() -> Result<String, anyhow::Error> {
-    let block_dir = fs::read_dir("/sys/block")
-        .map_err(|e| anyhow::anyhow!("read /sys/block: {}", e))?;
+    let block_dir =
+        fs::read_dir("/sys/block").map_err(|e| anyhow::anyhow!("read /sys/block: {}", e))?;
     for entry in block_dir.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") {

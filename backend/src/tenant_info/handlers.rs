@@ -9,10 +9,11 @@ use super::service;
 
 /// GET /api/v1/tenant-info — Return the singleton tenant_info row.
 /// Accessible by any authenticated role (Viewer can read per Phase 1 D-09).
-pub async fn get_tenant_info(
-    State(state): State<AppState>,
-) -> Result<Json<TenantInfo>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+pub async fn get_tenant_info(State(state): State<AppState>) -> Result<Json<TenantInfo>, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let info = service::get_tenant_info(&conn).await?;
     Ok(Json(info))
 }

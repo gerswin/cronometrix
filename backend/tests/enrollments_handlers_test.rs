@@ -84,7 +84,9 @@ fn build_app(state: AppState) -> Router {
             state.clone(),
             auth::rbac::require_admin,
         ));
-    Router::new().nest("/api/v1", admin_routes).with_state(state)
+    Router::new()
+        .nest("/api/v1", admin_routes)
+        .with_state(state)
 }
 
 async fn body_to_json(body: Body) -> Value {
@@ -123,11 +125,7 @@ async fn seed_full(db: &libsql::Database) -> (String, String, String) {
 }
 
 /// Seed an active device pointing at the wiremock URI.
-async fn seed_device_at(
-    db: &libsql::Database,
-    key: &[u8; 32],
-    base_url: &str,
-) -> String {
+async fn seed_device_at(db: &libsql::Database, key: &[u8; 32], base_url: &str) -> String {
     let parts = url_lite_split(base_url);
     let conn = db.connect().expect("connect");
     let enc = crypto::encrypt_password("device-pw", key).unwrap();
@@ -374,7 +372,11 @@ async fn create_enrollment_rejects_non_jpeg_magic_bytes() {
     let body = multipart_body(&[
         ("employee_id", emp_id.as_bytes(), None),
         ("captured_via", b"upload", None),
-        ("photo", &[0x89u8, 0x50, 0x4E, 0x47, 0x0D], Some("image/png")),
+        (
+            "photo",
+            &[0x89u8, 0x50, 0x4E, 0x47, 0x0D],
+            Some("image/png"),
+        ),
     ]);
     let req = Request::builder()
         .method(Method::POST)
@@ -569,11 +571,10 @@ async fn get_enrollment_returns_full_response() {
     let (emp_id, admin_id, token) = seed_full(&state.db).await;
 
     // Seed an enrollment via the service layer (handler-independent).
-    let resp = service::start_enrollment(
-        &state, &admin_id, &emp_id, "upload", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &admin_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     let app = build_app(state);
 
     let req = Request::builder()
@@ -627,18 +628,12 @@ async fn retry_push_404_when_employee_has_no_photo() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
     let (emp_id, admin_id, token) = seed_full(&state.db).await;
     let config = state.config.clone();
-    let device_id = seed_device_at(
-        &state.db,
-        &config.device_creds_key,
-        "http://127.0.0.1:1",
-    )
-    .await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, "http://127.0.0.1:1").await;
 
-    let resp = service::start_enrollment(
-        &state, &admin_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &admin_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
     // Unset current_face_enrollment_id so get_current_photo_path → None.
     let conn = state.db.connect().unwrap();
     conn.execute(
@@ -686,11 +681,10 @@ async fn retry_push_returns_202_when_photo_present() {
         .await;
 
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
-    let resp = service::start_enrollment(
-        &state, &admin_id, &emp_id, "device", None, None, MINI_JPEG,
-    )
-    .await
-    .unwrap();
+    let resp =
+        service::start_enrollment(&state, &admin_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
 
     // Materialise the photo on disk by re-calling the photo path (start_enrollment writes it).
     let state_for_poll = state.clone();
@@ -772,8 +766,7 @@ async fn capture_from_device_returns_202_with_capture_id() {
     let config = state.config.clone();
     // Use unreachable device — handler must still 202 with the capture_id;
     // the spawned capture task will record an error/timeout in the map.
-    let device_id =
-        seed_device_at(&state.db, &config.device_creds_key, "http://127.0.0.1:1").await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, "http://127.0.0.1:1").await;
     let state_for_poll = state.clone();
     let app = build_app(state);
 
@@ -807,7 +800,10 @@ async fn capture_from_device_returns_202_with_capture_id() {
             }
         }
     }
-    assert!(landed, "capture spawn body must transition past 'capturing'");
+    assert!(
+        landed,
+        "capture spawn body must transition past 'capturing'"
+    );
 }
 
 #[tokio::test]

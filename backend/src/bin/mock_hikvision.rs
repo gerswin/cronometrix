@@ -163,10 +163,7 @@ async fn handle_alert_stream(State(state): State<MockState>) -> Response {
 
 /// PUT /ISAPI/RemoteControl/door/0 and other command endpoints.
 /// Records the call in recv_log (B6) and returns a canned 200 XML response.
-async fn handle_recorded_put(
-    State(state): State<MockState>,
-    req: Request<Body>,
-) -> Response {
+async fn handle_recorded_put(State(state): State<MockState>, req: Request<Body>) -> Response {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
     let body_bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)

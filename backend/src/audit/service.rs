@@ -112,7 +112,11 @@ pub async fn list_audit(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut data: Vec<AuditEntry> = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         let old_data_raw: Option<String> = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
         let new_data_raw: Option<String> = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
 
@@ -152,7 +156,11 @@ pub async fn list_actors(conn: &Connection) -> Result<Vec<AuditActor>, AppError>
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
     let mut data: Vec<AuditActor> = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         data.push(AuditActor {
             actor_id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
             username: row.get(1).map_err(|e| AppError::Internal(e.into()))?,

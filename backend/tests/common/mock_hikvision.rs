@@ -159,7 +159,8 @@ pub async fn spawn_mock_hikvision_401(_username: &str) -> SocketAddr {
             let mut buf = [0u8; 4096];
             let _ = sock.read(&mut buf).await;
             // 401 with a malformed/absent challenge so diqwest gives up.
-            let resp = b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let resp =
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = sock.write_all(resp).await;
             let _ = sock.shutdown().await;
         }

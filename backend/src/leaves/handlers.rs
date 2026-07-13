@@ -62,10 +62,14 @@ pub async fn create_leave(
     let mut evidence_bytes: Option<Vec<u8>> = None;
     let mut evidence_ext: Option<&'static str> = None;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Validation {
-        code: "VALIDATION_ERROR",
-        message: format!("malformed multipart: {}", e),
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: format!("malformed multipart: {}", e),
+        })?
+    {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "employee_id" => {
@@ -121,10 +125,7 @@ pub async fn create_leave(
                 if bytes.len() > MAX_EVIDENCE_BYTES {
                     return Err(AppError::Validation {
                         code: "VALIDATION_ERROR",
-                        message: format!(
-                            "evidence file exceeds 10MB (got {} bytes)",
-                            bytes.len()
-                        ),
+                        message: format!("evidence file exceeds 10MB (got {} bytes)", bytes.len()),
                     });
                 }
                 evidence_bytes = Some(bytes.to_vec());
@@ -160,12 +161,10 @@ pub async fn create_leave(
     // 2. Write evidence to disk if present. Path is SERVER-GENERATED — user
     //    filename is discarded (T-3-15 mitigation). UUID v4 is cryptographically
     //    random so collisions require ≫ 2^122 leaves.
-    let evidence_relpath = if let (Some(bytes), Some(ext)) =
-        (evidence_bytes.as_ref(), evidence_ext)
+    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext)
     {
         let rel = format!("{}.{}", Uuid::new_v4(), ext);
-        write_photo_atomic(&state.paths.leaves_root, &rel, bytes)
-            .map_err(AppError::Internal)?;
+        write_photo_atomic(&state.paths.leaves_root, &rel, bytes).map_err(AppError::Internal)?;
         Some(rel)
     } else {
         None
@@ -298,15 +297,14 @@ pub async fn get_leave_evidence(
         });
     }
 
-    let bytes = tokio::fs::read(&canonical).await.map_err(|_| AppError::NotFound {
-        code: "LEAVE_EVIDENCE_NOT_FOUND",
-        message: "Evidence not found on disk".into(),
-    })?;
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|_| AppError::NotFound {
+            code: "LEAVE_EVIDENCE_NOT_FOUND",
+            message: "Evidence not found on disk".into(),
+        })?;
 
-    let content_type = match PathBuf::from(&relpath)
-        .extension()
-        .and_then(|s| s.to_str())
-    {
+    let content_type = match PathBuf::from(&relpath).extension().and_then(|s| s.to_str()) {
         Some("pdf") => "application/pdf",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("png") => "image/png",
