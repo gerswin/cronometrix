@@ -57,6 +57,13 @@ completed: 2026-04-29
 
 **12 Playwright tests at D-01 Full UAT depth covering login form rendering, happy path, 401 error with English copy, Zod validation, password visibility toggle, session persistence, multi-tab, Viewer RBAC, redirect param, and open-redirect sanitization (CR-02 / T-09-09)**
 
+> **2026-07-13 Phase 12 supersession:** The English strings, 12-test count,
+> commits, and results below are retained as Phase 9 historical evidence.
+> Phase 12 now makes Spanish authoritative for `/login`, locks its exact
+> labels/errors/password-toggle ARIA plus root `<html lang="es-VE">`, and adds
+> the current non-401 Spanish fallback contract. Do not use the historical
+> English table below as current operator or test guidance.
+
 ## Performance
 
 - **Duration:** 2 min

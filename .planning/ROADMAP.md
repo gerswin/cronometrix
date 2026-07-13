@@ -189,6 +189,7 @@ Plans:
 **Requirements**: E2E-TOOLING, E2E-FIXTURES, E2E-BACKEND, E2E-MOCK, E2E-LICENSE-BYPASS, E2E-TABLE-RESET, E2E-AUDIT-API, E2E-AUDIT-UI, E2E-LOGIN, E2E-DASHBOARD, E2E-CRUD-TS, E2E-CRUD-EMP, E2E-CRUD-DEV, E2E-CRUD-REP, E2E-AUDIT-SCREEN, E2E-RBAC, E2E-TZ-FREEZE, E2E-CI, E2E-DOCS, E2E-CHROMIUM-ONLY, E2E-SELECTORS
 **Depends on:** Phase 8
 **Plans:** 13 plans
+**Current login contract:** Spanish copy and `lang="es-VE"` per the 2026-07-13 Phase 12 supersession of Addendum D-19; Phase 9's English results remain historical evidence.
 
 Plans:
 - [ ] 09-01-PLAN.md — Playwright tooling install + playwright.config.ts skeleton (webServer × 3) + Makefile e2e targets + .gitignore exclusions
@@ -197,7 +198,7 @@ Plans:
 - [ ] 09-04-PLAN.md — Audit endpoint (TDD): GET /api/v1/audit paginated read + RBAC + filters; 10 integration tests (Addendum D-04)
 - [ ] 09-05-PLAN.md — Audit UI: replace placeholder with TanStack Table + DiffCell + Filters + data-testids (Addendum D-04)
 - [ ] 09-06-PLAN.md — Setup project + shared fixtures + storageState generation + globalTeardown (Wave 0 enabler for all specs)
-- [ ] 09-07-PLAN.md — login.spec.ts: 8+ tests UAT depth, English copy per Addendum D-19
+- [ ] 09-07-PLAN.md — login.spec.ts: 8+ tests UAT depth; current Spanish copy per the Phase 12 supersession of Addendum D-19
 - [ ] 09-08-PLAN.md — dashboard.spec.ts: 6+ tests; KPI/donut/ring buffer/photo/SSE; data-testids on dashboard components
 - [ ] 09-09-PLAN.md — timesheet.spec.ts + employees.spec.ts: 14+ tests; CRUD + audit assertions per mutation
 - [ ] 09-10-PLAN.md — devices.spec.ts + reports.spec.ts: 14+ tests; ISAPI dispatch via mock; XLSX + PDF content verification

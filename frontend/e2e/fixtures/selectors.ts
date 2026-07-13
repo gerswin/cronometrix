@@ -6,10 +6,13 @@ export const SEL = {
   // Layout
   topBarTitle: 'topbar-title',
 
-  // Login (English copy per D-19 Addendum — login page is English)
-  loginUsername: { role: 'textbox', name: 'Username' } as const,
-  loginPassword: { role: 'textbox', name: 'Password' } as const,
-  loginSubmit: { role: 'button', name: 'Log in' } as const,
+  // Login (Spanish copy per the 2026-07-13 Phase 12 supersession of D-19)
+  loginHeading: { role: 'heading', name: 'Iniciar Sesión' } as const,
+  loginUsername: { role: 'textbox', name: 'Usuario' } as const,
+  loginPassword: { role: 'textbox', name: 'Contraseña' } as const,
+  loginSubmit: { role: 'button', name: 'Iniciar Sesión' } as const,
+  loginShowPassword: { role: 'button', name: 'Mostrar contraseña' } as const,
+  loginHidePassword: { role: 'button', name: 'Ocultar contraseña' } as const,
 
   // Dashboard KPIs (Spanish UI per D-19)
   kpiPresentes: 'kpi-empleados-presentes',

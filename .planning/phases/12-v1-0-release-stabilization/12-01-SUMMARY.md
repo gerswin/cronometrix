@@ -148,6 +148,11 @@ English copy while the current UI renders Spanish. The decision is now closed:
 Spanish is authoritative, and 12-02 Task 3 updates the live code/tests and adds
 an explicit supersession note to Phase 9's historical D-19 evidence.
 
+**2026-07-13 Phase 12 supersession:** Task 3 implemented that decision. The
+live `/login` contract now uses exact Spanish labels, errors, password-toggle
+ARIA, required-field copy, and root `<html lang="es-VE">`; the dated notes in
+Phase 9 preserve its English results as historical evidence only.
+
 ## Risks and Handoff
 
 - `next start` emits a warning with `output: standalone`: Next recommends

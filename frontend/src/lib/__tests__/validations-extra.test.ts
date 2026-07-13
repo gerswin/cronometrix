@@ -40,8 +40,25 @@ describe('validations', () => {
   })
 
   describe('loginSchema', () => {
-    it('rejects empty username', () => {
-      expect(loginSchema.safeParse({ username: '', password: 'x' }).success).toBe(false)
+    it('returns the Spanish required-field message for an empty username', () => {
+      const result = loginSchema.safeParse({ username: '', password: 'x' })
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.flatten().fieldErrors.username).toEqual([
+          'Este campo es obligatorio.',
+        ])
+      }
+    })
+    it('returns the Spanish required-field message for an empty password', () => {
+      const result = loginSchema.safeParse({ username: 'u', password: '' })
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.flatten().fieldErrors.password).toEqual([
+          'Este campo es obligatorio.',
+        ])
+      }
     })
     it('accepts non-empty values', () => {
       expect(loginSchema.safeParse({ username: 'u', password: 'p' }).success).toBe(true)

@@ -431,6 +431,15 @@ cd frontend && npx playwright test --grep "<spec name>"  # Run a single spec
 The same commands run in CI (`.github/workflows/ci.yml::e2e-tests`), so a
 green `make e2e` locally implies a green `E2E Tests` job on PRs.
 
+### Login language contract (Phase 12)
+
+As of the **2026-07-13 Phase 12 supersession** of Phase 9 Addendum D-19,
+`/login` is Spanish-authoritative. Its E2E contract locks `Iniciar Sesión`,
+`Usuario`, `Contraseña`, `Mostrar contraseña` / `Ocultar contraseña`, both
+Spanish error messages, the Spanish required-field message, and root
+`<html lang="es-VE">`. Phase 9's English assertions remain historical
+evidence only; current tests and operator guidance must use this contract.
+
 ### Test-only env flags (DEV/TEST ONLY — must NEVER appear in prod env)
 
 | Flag | Purpose | Abort contract |
@@ -462,7 +471,7 @@ frontend/
 │   ├── setup/
 │   │   ├── 00-build-and-seed.setup.ts  # health probe + seed_e2e + reset mutable tables
 │   │   └── 01-authenticate.setup.ts    # login as 3 roles → write storageState files
-│   ├── login.spec.ts                   # D-01 UAT (English copy on login screen — Addendum D-19)
+│   ├── login.spec.ts                   # D-01 UAT (Spanish copy — Phase 12 supersedes D-19)
 │   ├── dashboard.spec.ts               # D-02 UAT (KPIs, donut, ring buffer, photo, SSE)
 │   ├── timesheet.spec.ts               # D-03 marcaciones CRUD + audit
 │   ├── employees.spec.ts               # D-03 empleados CRUD + audit

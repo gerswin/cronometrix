@@ -15,8 +15,8 @@ export const setupSchema = z
 export type SetupFormData = z.infer<typeof setupSchema>
 
 export const loginSchema = z.object({
-  username: z.string().min(1, 'This field is required.'),
-  password: z.string().min(1, 'This field is required.'),
+  username: z.string().min(1, 'Este campo es obligatorio.'),
+  password: z.string().min(1, 'Este campo es obligatorio.'),
 })
 
 export type LoginFormData = z.infer<typeof loginSchema>
