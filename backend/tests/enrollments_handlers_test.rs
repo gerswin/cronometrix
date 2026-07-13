@@ -2,11 +2,12 @@
 //!
 //! Baseline 0.94% line. Target ≥70%.
 //!
-//! All 5 handlers exercised:
-//!   * create_enrollment      (POST /enrollments)         — multipart parse, validation, JPEG magic
+//! All enrollment handlers exercised through their canonical routes:
+//!   * list_enrollments       (GET /enrollments)
+//!   * create_enrollment      (POST /enrollments) — multipart parse, validation, JPEG magic
 //!   * get_enrollment         (GET /enrollments/:id)
-//!   * retry_push             (POST /enrollments/:id/devices/:device_id/retry)
-//!   * capture_from_device    (POST /enrollments/capture-from-device)
+//!   * retry_push             (POST /enrollments/:id/pushes/:device_id/retry)
+//!   * capture_from_device    (POST /enrollments/captures)
 //!   * get_capture            (GET /enrollments/captures/:capture_id)
 
 mod common;
@@ -62,23 +63,27 @@ fn make_config() -> Arc<Config> {
     })
 }
 
-/// Build a Router with the 5 enrollment routes wired admin-only.
+/// Build a Router mirroring the canonical enrollment routes wired admin-only.
 /// Returns (Router, AppState, TempDir).
 fn build_app(state: AppState) -> Router {
     let admin_routes = Router::new()
-        .route("/enrollments", post(handlers::create_enrollment))
+        .route(
+            "/enrollments",
+            get(handlers::list_enrollments).post(handlers::create_enrollment),
+        )
         .route("/enrollments/{id}", get(handlers::get_enrollment))
         .route(
-            "/enrollments/{id}/devices/{device_id}/retry",
+            "/enrollments/{id}/pushes/{device_id}/retry",
             post(handlers::retry_push),
         )
-        .route(
-            "/enrollments/capture-from-device",
-            post(handlers::capture_from_device),
-        )
+        .route("/enrollments/captures", post(handlers::capture_from_device))
         .route(
             "/enrollments/captures/{capture_id}",
             get(handlers::get_capture),
+        )
+        .route(
+            "/enrollments/capture-from-device",
+            post(|| async { StatusCode::NOT_FOUND }),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -246,6 +251,78 @@ async fn create_enrollment_403_for_non_admin() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_enrollments_200_for_admin_with_enriched_data() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (emp_id, admin_id, token) = seed_full(&state.db).await;
+    let created =
+        service::start_enrollment(&state, &admin_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let app = build_app(state);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/enrollments?status=in_progress&limit=1&offset=0")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_to_json(resp.into_body()).await;
+    assert_eq!(json["total"], 1);
+    assert_eq!(json["limit"], 1);
+    assert_eq!(json["offset"], 0);
+    assert_eq!(json["data"][0]["id"], created.enrollment_id);
+    assert_eq!(json["data"][0]["employee_id"], emp_id);
+    assert_eq!(json["data"][0]["employee_name"], "Test Employee");
+    assert!(json["data"][0]["employee_code"]
+        .as_str()
+        .is_some_and(|code| code.starts_with("E-")));
+    assert!(json["data"][0]["device_pushes"].is_array());
+}
+
+#[tokio::test]
+async fn list_enrollments_403_for_viewer() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let app = build_app(state);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/enrollments")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token("viewer-1", "viewer")),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_enrollments_rejects_invalid_status_with_422() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (_emp_id, _admin_id, token) = seed_full(&state.db).await;
+    let app = build_app(state);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/enrollments?status=pending")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_to_json(resp.into_body()).await;
+    assert!(json["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("enrollment status")));
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +665,10 @@ async fn get_enrollment_returns_full_response() {
     let json = body_to_json(r.into_body()).await;
     assert_eq!(json["id"], resp.enrollment_id);
     assert_eq!(json["employee_id"], emp_id);
+    assert_eq!(json["employee_name"], "Test Employee");
+    assert!(json["employee_code"]
+        .as_str()
+        .is_some_and(|code| code.starts_with("E-")));
     assert_eq!(json["status"], "in_progress");
 }
 
@@ -604,7 +685,7 @@ async fn retry_push_errors_for_unknown_enrollment() {
 
     let req = Request::builder()
         .method(Method::POST)
-        .uri("/api/v1/enrollments/no-enr/devices/no-dev/retry")
+        .uri("/api/v1/enrollments/no-enr/pushes/no-dev/retry")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();
@@ -648,7 +729,7 @@ async fn retry_push_404_when_employee_has_no_photo() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!(
-            "/api/v1/enrollments/{}/devices/{}/retry",
+            "/api/v1/enrollments/{}/pushes/{}/retry",
             resp.enrollment_id, device_id
         ))
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
@@ -692,7 +773,7 @@ async fn retry_push_returns_202_when_photo_present() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!(
-            "/api/v1/enrollments/{}/devices/{}/retry",
+            "/api/v1/enrollments/{}/pushes/{}/retry",
             resp.enrollment_id, device_id
         ))
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
@@ -732,8 +813,35 @@ async fn retry_push_returns_202_when_photo_present() {
     );
 }
 
+#[tokio::test]
+async fn obsolete_capture_and_device_retry_routes_return_404() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (_emp_id, _admin_id, token) = seed_full(&state.db).await;
+    let app = build_app(state);
+
+    let obsolete_capture = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/enrollments/capture-from-device")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = app.clone().oneshot(obsolete_capture).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let obsolete_retry = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/enrollments/enr-1/devices/dev-1/retry")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(obsolete_retry).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 // ---------------------------------------------------------------------------
-// capture_from_device + get_capture
+// canonical captures collection + get_capture
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -745,7 +853,7 @@ async fn capture_from_device_404_for_unknown_device() {
 
     let req = Request::builder()
         .method(Method::POST)
-        .uri("/api/v1/enrollments/capture-from-device")
+        .uri("/api/v1/enrollments/captures")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -772,7 +880,7 @@ async fn capture_from_device_returns_202_with_capture_id() {
 
     let req = Request::builder()
         .method(Method::POST)
-        .uri("/api/v1/enrollments/capture-from-device")
+        .uri("/api/v1/enrollments/captures")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -784,6 +892,7 @@ async fn capture_from_device_returns_202_with_capture_id() {
     let json = body_to_json(r.into_body()).await;
     assert!(json.get("capture_id").is_some());
     assert_eq!(json["status"], "capturing");
+    assert_eq!(json["source_device_id"], device_id);
 
     // Wait for the detached capture spawn body in capture_from_device to land
     // in an error state (port 1 connection refused before 30s capture timeout).
@@ -795,6 +904,7 @@ async fn capture_from_device_returns_202_with_capture_id() {
         let map = state_for_poll.captures.read().await;
         if let Some(state) = map.get(&cap_id) {
             if state.status != "capturing" {
+                assert_eq!(state.source_device_id, device_id);
                 landed = true;
                 break;
             }
@@ -835,7 +945,7 @@ async fn capture_from_device_success_path_writes_jpeg_under_captures_tmp_root() 
 
     let req = Request::builder()
         .method(Method::POST)
-        .uri("/api/v1/enrollments/capture-from-device")
+        .uri("/api/v1/enrollments/captures")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -845,6 +955,7 @@ async fn capture_from_device_success_path_writes_jpeg_under_captures_tmp_root() 
     let r = app.oneshot(req).await.unwrap();
     assert_eq!(r.status(), StatusCode::ACCEPTED);
     let json = body_to_json(r.into_body()).await;
+    assert_eq!(json["source_device_id"], device_id);
     let cap_id = json["capture_id"].as_str().unwrap().to_string();
 
     // Poll for the success branch — the spawn body must write the jpeg to
@@ -855,12 +966,26 @@ async fn capture_from_device_success_path_writes_jpeg_under_captures_tmp_root() 
         let map = state_for_poll.captures.read().await;
         if let Some(s) = map.get(&cap_id) {
             if s.status == "captured" {
+                assert_eq!(s.source_device_id, device_id);
                 captured = true;
                 break;
             }
         }
     }
     assert!(captured, "wiremock-backed capture must reach 'captured'");
+
+    let app = build_app(state_for_poll);
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/api/v1/enrollments/captures/{cap_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_to_json(response.into_body()).await;
+    assert_eq!(json["status"], "captured");
+    assert_eq!(json["source_device_id"], device_id);
 }
 
 #[tokio::test]
@@ -896,6 +1021,7 @@ async fn get_capture_returns_status_capturing() {
             cap_id.clone(),
             CaptureState {
                 status: "capturing".into(),
+                source_device_id: "dev-source".into(),
                 photo_path: None,
                 error_message: None,
             },
@@ -913,6 +1039,7 @@ async fn get_capture_returns_status_capturing() {
     assert_eq!(r.status(), StatusCode::OK);
     let json = body_to_json(r.into_body()).await;
     assert_eq!(json["status"], "capturing");
+    assert_eq!(json["source_device_id"], "dev-source");
     // photo_b64 must be omitted (status != "captured").
     assert!(json.get("photo_b64").is_none());
 }
@@ -933,6 +1060,7 @@ async fn get_capture_returns_photo_b64_when_captured() {
             cap_id.clone(),
             CaptureState {
                 status: "captured".into(),
+                source_device_id: "dev-source".into(),
                 photo_path: Some(path.to_string_lossy().into_owned()),
                 error_message: None,
             },
@@ -950,6 +1078,7 @@ async fn get_capture_returns_photo_b64_when_captured() {
     assert_eq!(r.status(), StatusCode::OK);
     let json = body_to_json(r.into_body()).await;
     assert_eq!(json["status"], "captured");
+    assert_eq!(json["source_device_id"], "dev-source");
     let b64 = json["photo_b64"].as_str().expect("photo_b64 set");
     assert!(!b64.is_empty());
 }
@@ -967,6 +1096,7 @@ async fn get_capture_status_error_omits_photo_b64() {
             cap_id.clone(),
             CaptureState {
                 status: "error".into(),
+                source_device_id: "dev-source".into(),
                 photo_path: None,
                 error_message: Some("some upstream error".into()),
             },
@@ -984,6 +1114,7 @@ async fn get_capture_status_error_omits_photo_b64() {
     assert_eq!(r.status(), StatusCode::OK);
     let json = body_to_json(r.into_body()).await;
     assert_eq!(json["status"], "error");
+    assert_eq!(json["source_device_id"], "dev-source");
     assert_eq!(json["error_message"], "some upstream error");
     assert!(json.get("photo_b64").is_none());
 }
@@ -1007,6 +1138,7 @@ async fn new_captures_map_starts_empty() {
 fn capture_state_clone_and_debug() {
     let cs = CaptureState {
         status: "capturing".into(),
+        source_device_id: "dev-source".into(),
         photo_path: Some("/tmp/x.jpg".into()),
         error_message: None,
     };
@@ -1014,4 +1146,5 @@ fn capture_state_clone_and_debug() {
     let dbg = format!("{:?}", cloned);
     assert!(dbg.contains("CaptureState"));
     assert!(dbg.contains("capturing"));
+    assert_eq!(cloned.source_device_id, "dev-source");
 }

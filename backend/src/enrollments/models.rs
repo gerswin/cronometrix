@@ -21,11 +21,13 @@ pub struct EnrollmentDevicePushResponse {
     pub completed_at: Option<String>, // ISO-8601 or None
 }
 
-/// Full enrollment status — returned by GET /enrollments/:id.
+/// Enriched enrollment status shared by list and single-item reads.
 #[derive(Debug, Serialize)]
 pub struct EnrollmentResponse {
     pub id: String,
     pub employee_id: String,
+    pub employee_name: String,
+    pub employee_code: String,
     pub status: String,               // in_progress | success | partial | failed
     pub started_at: String,           // ISO-8601
     pub completed_at: Option<String>, // ISO-8601 or None
@@ -41,7 +43,7 @@ pub struct EnrollmentSubmitResponse {
     pub device_pushes: Vec<EnrollmentDevicePushResponse>,
 }
 
-/// Immediate 202 response from POST /enrollments/:id/devices/:device_id/retry.
+/// Immediate 202 response from POST /enrollments/:id/pushes/:device_id/retry.
 #[derive(Debug, Serialize)]
 pub struct RetryResponse {
     pub enrollment_id: String,
@@ -61,17 +63,19 @@ pub struct RetryResponse {
 pub struct CaptureResponse {
     pub capture_id: String,
     pub status: String, // capturing | captured | timeout | error
+    pub source_device_id: String,
     pub photo_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub photo_b64: Option<String>, // Some(base64 JPEG) iff status=="captured"
     pub error_message: Option<String>,
 }
 
-/// Immediate 202 response from POST /enrollments/capture-from-device.
+/// Immediate 202 response from POST /enrollments/captures.
 #[derive(Debug, Serialize)]
 pub struct CaptureFromDeviceResponse {
     pub capture_id: String,
     pub status: String, // always "capturing" on first response
+    pub source_device_id: String,
 }
 
 // =============================================================================
@@ -88,7 +92,15 @@ pub struct CreateEnrollmentRequest {
     pub photo_bytes: Vec<u8>,
 }
 
-/// JSON body for POST /enrollments/capture-from-device (D-02 LOCKED).
+/// Query string for GET /enrollments.
+#[derive(Debug, Deserialize, Default)]
+pub struct EnrollmentListQuery {
+    pub status: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// JSON body for POST /enrollments/captures (D-02 LOCKED).
 #[derive(Debug, Deserialize)]
 pub struct CaptureFromDeviceRequest {
     pub device_id: String,

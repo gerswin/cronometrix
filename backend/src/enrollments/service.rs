@@ -7,13 +7,16 @@
 use libsql::{params, Connection};
 use uuid::Uuid;
 
-use crate::common::{epoch_to_iso, epoch_to_iso_opt};
+use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::devices::service as devices_service;
 use crate::errors::AppError;
 use crate::events::service::write_photo_atomic;
 use crate::state::AppState;
 
-use super::models::{EnrollmentDevicePushResponse, EnrollmentResponse, EnrollmentSubmitResponse};
+use super::models::{
+    validate_enrollment_status, EnrollmentDevicePushResponse, EnrollmentListQuery,
+    EnrollmentResponse, EnrollmentSubmitResponse,
+};
 
 // =============================================================================
 // Filesystem roots
@@ -32,6 +35,9 @@ use super::models::{EnrollmentDevicePushResponse, EnrollmentResponse, Enrollment
 const PUSH_SELECT_COLS: &str = "edp.id, edp.device_id, d.name, edp.status, edp.error_message, \
      edp.started_at, edp.completed_at";
 
+const ENROLLMENT_SELECT_COLS: &str = "enr.id, enr.employee_id, emp.name, emp.employee_code, \
+     enr.status, enr.started_at, enr.completed_at, enr.version";
+
 fn row_to_push(row: &libsql::Row) -> Result<EnrollmentDevicePushResponse, AppError> {
     Ok(EnrollmentDevicePushResponse {
         id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
@@ -44,20 +50,66 @@ fn row_to_push(row: &libsql::Row) -> Result<EnrollmentDevicePushResponse, AppErr
     })
 }
 
+fn row_to_enrollment(row: &libsql::Row) -> Result<EnrollmentResponse, AppError> {
+    Ok(EnrollmentResponse {
+        id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+        employee_id: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+        employee_name: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
+        employee_code: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
+        status: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
+        started_at: epoch_to_iso(row.get(5).map_err(|e| AppError::Internal(e.into()))?),
+        completed_at: epoch_to_iso_opt(row.get(6).map_err(|e| AppError::Internal(e.into()))?),
+        version: row.get(7).map_err(|e| AppError::Internal(e.into()))?,
+        device_pushes: Vec::new(),
+    })
+}
+
+async fn list_device_pushes(
+    conn: &Connection,
+    enrollment_id: &str,
+) -> Result<Vec<EnrollmentDevicePushResponse>, AppError> {
+    let mut rows = conn
+        .query(
+            &format!(
+                "SELECT {PUSH_SELECT_COLS} \
+                 FROM enrollment_device_pushes edp \
+                 LEFT JOIN devices d ON d.id = edp.device_id \
+                 WHERE edp.enrollment_id = ?1 \
+                 ORDER BY edp.started_at ASC, edp.id ASC"
+            ),
+            params![enrollment_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut pushes = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        pushes.push(row_to_push(&row)?);
+    }
+    Ok(pushes)
+}
+
 // =============================================================================
 // Read operations
 // =============================================================================
 
-/// Fetch an enrollment + all its device push rows. Single LEFT JOIN — O(n devices).
+/// Fetch an enrollment enriched with employee identity + all device push rows.
 pub async fn get_enrollment_with_pushes(
     conn: &Connection,
     id: &str,
 ) -> Result<EnrollmentResponse, AppError> {
-    // Enrollment header
     let mut rows = conn
         .query(
-            "SELECT id, employee_id, status, started_at, completed_at, version \
-             FROM enrollments WHERE id = ?1",
+            &format!(
+                "SELECT {ENROLLMENT_SELECT_COLS} \
+                 FROM enrollments enr \
+                 JOIN employees emp ON emp.id = enr.employee_id \
+                 WHERE enr.id = ?1"
+            ),
             params![id.to_string()],
         )
         .await
@@ -72,45 +124,81 @@ pub async fn get_enrollment_with_pushes(
             message: format!("Enrollment '{}' not found", id),
         })?;
 
-    let enr_id: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-    let employee_id: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
-    let status: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
-    let started_at: i64 = row.get(3).map_err(|e| AppError::Internal(e.into()))?;
-    let completed_at: Option<i64> = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
-    let version: i64 = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
+    let mut enrollment = row_to_enrollment(&row)?;
+    drop(rows);
+    enrollment.device_pushes = list_device_pushes(conn, &enrollment.id).await?;
+    Ok(enrollment)
+}
 
-    // Device push rows
-    let mut push_rows = conn
-        .query(
-            &format!(
-                "SELECT {PUSH_SELECT_COLS} \
-                 FROM enrollment_device_pushes edp \
-                 LEFT JOIN devices d ON d.id = edp.device_id \
-                 WHERE edp.enrollment_id = ?1 \
-                 ORDER BY edp.started_at ASC"
-            ),
-            params![enr_id.clone()],
-        )
+/// List enrollment headers first, then attach all push rows for the selected page.
+pub async fn list_enrollments(
+    conn: &Connection,
+    query: EnrollmentListQuery,
+) -> Result<PaginatedResponse<EnrollmentResponse>, AppError> {
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let mut count_values: Vec<libsql::Value> = Vec::new();
+    let mut fetch_values: Vec<libsql::Value> = Vec::new();
+    let where_clause = if let Some(status) = query.status {
+        validate_enrollment_status(&status).map_err(|message| AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: message.to_string(),
+        })?;
+        count_values.push(libsql::Value::Text(status.clone()));
+        fetch_values.push(libsql::Value::Text(status));
+        "WHERE enr.status = ?1"
+    } else {
+        ""
+    };
+
+    let count_sql = format!("SELECT COUNT(*) FROM enrollments enr {where_clause}");
+    let total: i64 = conn
+        .query(&count_sql, libsql::params_from_iter(count_values))
         .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("COUNT returned no rows")))?
+        .get(0)
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let mut device_pushes = Vec::new();
-    while let Some(push_row) = push_rows
+    let fetch_sql = format!(
+        "SELECT {ENROLLMENT_SELECT_COLS} \
+         FROM enrollments enr \
+         JOIN employees emp ON emp.id = enr.employee_id \
+         {where_clause} \
+         ORDER BY enr.started_at DESC, enr.id ASC LIMIT ?{limit_param} OFFSET ?{offset_param}",
+        limit_param = fetch_values.len() + 1,
+        offset_param = fetch_values.len() + 2,
+    );
+    fetch_values.push(libsql::Value::Integer(limit));
+    fetch_values.push(libsql::Value::Integer(offset));
+
+    let mut rows = conn
+        .query(&fetch_sql, libsql::params_from_iter(fetch_values))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut data = Vec::new();
+    while let Some(row) = rows
         .next()
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     {
-        device_pushes.push(row_to_push(&push_row)?);
+        data.push(row_to_enrollment(&row)?);
+    }
+    drop(rows);
+
+    for enrollment in &mut data {
+        enrollment.device_pushes = list_device_pushes(conn, &enrollment.id).await?;
     }
 
-    Ok(EnrollmentResponse {
-        id: enr_id,
-        employee_id,
-        status,
-        started_at: epoch_to_iso(started_at),
-        completed_at: epoch_to_iso_opt(completed_at),
-        version,
-        device_pushes,
+    Ok(PaginatedResponse {
+        data,
+        total,
+        limit,
+        offset,
     })
 }
 

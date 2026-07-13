@@ -10,6 +10,7 @@ mod common;
 use std::sync::Arc;
 
 use cronometrix_api::config::Config;
+use cronometrix_api::enrollments::models::EnrollmentListQuery;
 use cronometrix_api::enrollments::service;
 use cronometrix_api::errors::AppError;
 use libsql::params;
@@ -209,7 +210,8 @@ async fn get_enrollment_with_pushes_returns_full_response() {
     let config = make_config();
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
-    let _d1 = seed_device(&state.db, &config.device_creds_key).await;
+    let d1 = seed_device(&state.db, &config.device_creds_key).await;
+    let _d2 = seed_device(&state.db, &config.device_creds_key).await;
 
     let resp =
         service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
@@ -217,15 +219,46 @@ async fn get_enrollment_with_pushes_returns_full_response() {
             .unwrap();
 
     let conn = state.db.connect().unwrap();
+    conn.execute(
+        "UPDATE enrollment_device_pushes \
+         SET status = 'failed', error_message = 'camera rejected face', \
+             started_at = 1700000000, completed_at = 1700000030 \
+         WHERE enrollment_id = ?1 AND device_id = ?2",
+        params![resp.enrollment_id.clone(), d1.clone()],
+    )
+    .await
+    .unwrap();
     let got = service::get_enrollment_with_pushes(&conn, &resp.enrollment_id)
         .await
         .unwrap();
     assert_eq!(got.id, resp.enrollment_id);
     assert_eq!(got.employee_id, emp_id);
+    assert_eq!(got.employee_name, "Test Employee");
+    assert_eq!(got.employee_code, format!("E-{}", &got.employee_id[..8]));
     assert_eq!(got.status, "in_progress");
-    assert_eq!(got.device_pushes.len(), 1);
+    assert_eq!(got.device_pushes.len(), 2);
     assert!(got.completed_at.is_none());
     assert_eq!(got.version, 1);
+
+    let failed = got
+        .device_pushes
+        .iter()
+        .find(|push| push.device_id == d1)
+        .expect("failed push row present");
+    assert!(failed.device_name.starts_with("dev-"));
+    assert_eq!(failed.status, "failed");
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("camera rejected face")
+    );
+    assert_eq!(
+        failed.started_at.as_deref(),
+        Some("2023-11-14T22:13:20+00:00")
+    );
+    assert_eq!(
+        failed.completed_at.as_deref(),
+        Some("2023-11-14T22:13:50+00:00")
+    );
 }
 
 #[tokio::test]
@@ -241,6 +274,187 @@ async fn get_enrollment_with_pushes_404_when_missing() {
     match err {
         AppError::NotFound { code, .. } => assert_eq!(code, "ENROLLMENT_NOT_FOUND"),
         other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// list_enrollments
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_enrollments_filters_orders_and_paginates_before_loading_pushes() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let d1 = seed_device(&state.db, &config.device_creds_key).await;
+    let d2 = seed_device(&state.db, &config.device_creds_key).await;
+
+    let first =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let second =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let terminal =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+
+    let conn = state.db.connect().unwrap();
+    conn.execute(
+        "UPDATE enrollments SET started_at = 1000 WHERE id IN (?1, ?2)",
+        params![first.enrollment_id.clone(), second.enrollment_id.clone()],
+    )
+    .await
+    .unwrap();
+    conn.execute(
+        "UPDATE enrollments \
+         SET status = 'failed', started_at = 2000, completed_at = 2010, version = 2 \
+         WHERE id = ?1",
+        params![terminal.enrollment_id.clone()],
+    )
+    .await
+    .unwrap();
+
+    let mut expected_in_progress = vec![first.enrollment_id.clone(), second.enrollment_id.clone()];
+    expected_in_progress.sort();
+
+    let first_page = service::list_enrollments(
+        &conn,
+        EnrollmentListQuery {
+            status: Some("in_progress".into()),
+            limit: Some(1),
+            offset: Some(0),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_page.total, 2, "push joins must not inflate total");
+    assert_eq!(first_page.limit, 1);
+    assert_eq!(first_page.offset, 0);
+    assert_eq!(first_page.data.len(), 1);
+    assert_eq!(first_page.data[0].id, expected_in_progress[0]);
+    assert_eq!(first_page.data[0].employee_name, "Test Employee");
+    assert_eq!(
+        first_page.data[0].employee_code,
+        format!("E-{}", &emp_id[..8])
+    );
+    assert_eq!(first_page.data[0].device_pushes.len(), 2);
+
+    let push_device_ids: std::collections::BTreeSet<_> = first_page.data[0]
+        .device_pushes
+        .iter()
+        .map(|push| push.device_id.as_str())
+        .collect();
+    assert_eq!(
+        push_device_ids,
+        [d1.as_str(), d2.as_str()].into_iter().collect()
+    );
+    assert!(first_page.data[0]
+        .device_pushes
+        .iter()
+        .all(|push| !push.device_name.is_empty()));
+    let push_ids: Vec<_> = first_page.data[0]
+        .device_pushes
+        .iter()
+        .map(|push| push.id.clone())
+        .collect();
+    let mut sorted_push_ids = push_ids.clone();
+    sorted_push_ids.sort();
+    assert_eq!(push_ids, sorted_push_ids, "push tie-breaker must be stable");
+
+    let second_page = service::list_enrollments(
+        &conn,
+        EnrollmentListQuery {
+            status: Some("in_progress".into()),
+            limit: Some(1),
+            offset: Some(1),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(second_page.total, 2);
+    assert_eq!(second_page.data.len(), 1);
+    assert_eq!(second_page.data[0].id, expected_in_progress[1]);
+    assert_eq!(second_page.data[0].device_pushes.len(), 2);
+
+    let all_states = service::list_enrollments(
+        &conn,
+        EnrollmentListQuery {
+            status: None,
+            limit: Some(100),
+            offset: Some(0),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(all_states.total, 3);
+    assert_eq!(all_states.data[0].id, terminal.enrollment_id);
+    assert_eq!(all_states.data[0].status, "failed");
+    assert_eq!(all_states.data[0].version, 2);
+    assert_eq!(
+        all_states.data[1..]
+            .iter()
+            .map(|enrollment| enrollment.id.clone())
+            .collect::<Vec<_>>(),
+        expected_in_progress
+    );
+}
+
+#[tokio::test]
+async fn list_enrollments_normalizes_pagination_and_rejects_invalid_status() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+
+    let default_page = service::list_enrollments(&conn, EnrollmentListQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(default_page.limit, 20);
+    assert_eq!(default_page.offset, 0);
+
+    let max_page = service::list_enrollments(
+        &conn,
+        EnrollmentListQuery {
+            status: None,
+            limit: Some(101),
+            offset: Some(-5),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(max_page.limit, 100);
+    assert_eq!(max_page.offset, 0);
+
+    let min_page = service::list_enrollments(
+        &conn,
+        EnrollmentListQuery {
+            status: None,
+            limit: Some(0),
+            offset: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(min_page.limit, 1);
+
+    let err = service::list_enrollments(
+        &conn,
+        EnrollmentListQuery {
+            status: Some("pending".into()),
+            limit: None,
+            offset: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    match err {
+        AppError::Validation { message, .. } => {
+            assert!(message.contains("enrollment status"));
+        }
+        other => panic!("expected validation error, got {other:?}"),
     }
 }
 

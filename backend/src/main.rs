@@ -314,12 +314,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Phase 7: enrollment routes (admin-only, D-18). Wrapped with a 3 MB body
     // limit (RequestBodyLimitLayer) to bound multipart photo uploads (T-7-03).
-    // capture_from_device and get_capture are read/trigger paths with small bodies
+    // Capture start/poll are read/trigger paths with small bodies
     // and are included in the same limit for simplicity.
     let enrollment_routes = Router::new()
         .route(
             "/enrollments",
-            post(enrollments::handlers::create_enrollment),
+            get(enrollments::handlers::list_enrollments)
+                .post(enrollments::handlers::create_enrollment),
         )
         .route(
             "/enrollments/{id}",
@@ -336,6 +337,12 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/enrollments/captures/{capture_id}",
             get(enrollments::handlers::get_capture),
+        )
+        // Fail closed for the obsolete capture URL. Without this narrow
+        // tombstone Axum matches `{id}` and returns 405 instead of 404.
+        .route(
+            "/enrollments/capture-from-device",
+            post(|| async { axum::http::StatusCode::NOT_FOUND }),
         )
         .route_layer(tower_http::limit::RequestBodyLimitLayer::new(
             3 * 1024 * 1024,

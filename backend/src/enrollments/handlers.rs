@@ -1,10 +1,11 @@
 //! Enrollment HTTP handlers.
 //!
-//! Five endpoints (all Admin-only via admin_routes in main.rs — D-18):
+//! Six canonical endpoints (all Admin-only via admin_routes in main.rs — D-18):
+//!   GET    /enrollments                               → list_enrollments (200)
 //!   POST   /enrollments                               → create_enrollment (202)
 //!   GET    /enrollments/:id                           → get_enrollment (200)
-//!   POST   /enrollments/:id/devices/:dev_id/retry     → retry_push (202)
-//!   POST   /enrollments/capture-from-device           → capture_from_device (202)
+//!   POST   /enrollments/:id/pushes/:dev_id/retry      → retry_push (202)
+//!   POST   /enrollments/captures                      → capture_from_device (202)
 //!   GET    /enrollments/captures/:capture_id          → get_capture (200)
 
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -22,6 +23,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
+use crate::common::PaginatedResponse;
 use crate::devices::service as devices_service;
 use crate::errors::AppError;
 use crate::isapi::client::DeviceConnection;
@@ -29,8 +31,8 @@ use crate::state::AppState;
 
 use super::image_pipeline::normalize_face_jpeg;
 use super::models::{
-    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse, EnrollmentResponse,
-    EnrollmentSubmitResponse, RetryResponse,
+    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse, EnrollmentListQuery,
+    EnrollmentResponse, EnrollmentSubmitResponse, RetryResponse,
 };
 use super::pusher::{push_one_device, spawn_enrollment_pushes};
 use super::service;
@@ -48,7 +50,8 @@ const CAPTURE_TIMEOUT_SECS: u64 = 30;
 /// In-memory capture state for a single kiosk capture session.
 #[derive(Debug, Clone)]
 pub struct CaptureState {
-    pub status: String,             // capturing | captured | timeout | error
+    pub status: String, // capturing | captured | timeout | error
+    pub source_device_id: String,
     pub photo_path: Option<String>, // set when status == "captured"
     pub error_message: Option<String>,
 }
@@ -225,11 +228,29 @@ pub async fn create_enrollment(
 }
 
 // =============================================================================
+// GET /enrollments — list_enrollments
+// =============================================================================
+
+/// Returns a resumable, enriched page of enrollment states.
+pub async fn list_enrollments(
+    State(state): State<AppState>,
+    AuthUser(_claims): AuthUser,
+    Query(query): Query<EnrollmentListQuery>,
+) -> Result<Json<PaginatedResponse<EnrollmentResponse>>, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let page = service::list_enrollments(&conn, query).await?;
+    Ok(Json(page))
+}
+
+// =============================================================================
 // GET /enrollments/:id — get_enrollment
 // =============================================================================
 
 /// Polling endpoint for per-device sync status (D-07).
-/// Returns enrollment header + device_pushes array. Single LEFT JOIN — cheap.
+/// Returns an enriched enrollment header + deterministically ordered pushes.
 pub async fn get_enrollment(
     State(state): State<AppState>,
     AuthUser(_claims): AuthUser,
@@ -244,7 +265,7 @@ pub async fn get_enrollment(
 }
 
 // =============================================================================
-// POST /enrollments/:id/devices/:device_id/retry — retry_push
+// POST /enrollments/:id/pushes/:device_id/retry — retry_push
 // =============================================================================
 
 /// Re-fire a single failed device push without re-running the full fan-out (D-08).
@@ -338,7 +359,7 @@ pub async fn retry_push(
 }
 
 // =============================================================================
-// POST /enrollments/capture-from-device — capture_from_device
+// POST /enrollments/captures — capture_from_device
 // =============================================================================
 
 /// Kiosk capture step 1 (D-02 LOCKED): spawn a device-side capture, return
@@ -349,6 +370,7 @@ pub async fn capture_from_device(
     Json(body): Json<CaptureFromDeviceRequest>,
 ) -> Result<(StatusCode, Json<CaptureFromDeviceResponse>), AppError> {
     let capture_id = Uuid::new_v4().to_string();
+    let source_device_id = body.device_id.clone();
 
     // Insert initial state into the shared map.
     {
@@ -357,6 +379,7 @@ pub async fn capture_from_device(
             capture_id.clone(),
             CaptureState {
                 status: "capturing".to_string(),
+                source_device_id: source_device_id.clone(),
                 photo_path: None,
                 error_message: None,
             },
@@ -383,6 +406,7 @@ pub async fn capture_from_device(
 
     let captures = state.captures.clone();
     let cid = capture_id.clone();
+    let source_device_id_for_task = source_device_id.clone();
 
     // Spawn capture task with 30s timeout.
     tokio::spawn(async move {
@@ -405,6 +429,7 @@ pub async fn capture_from_device(
                             cid.clone(),
                             CaptureState {
                                 status: "captured".to_string(),
+                                source_device_id: source_device_id_for_task.clone(),
                                 photo_path: Some(path.to_string_lossy().into_owned()),
                                 error_message: None,
                             },
@@ -416,6 +441,7 @@ pub async fn capture_from_device(
                             cid.clone(),
                             CaptureState {
                                 status: "error".to_string(),
+                                source_device_id: source_device_id_for_task.clone(),
                                 photo_path: None,
                                 error_message: Some(format!("failed to write capture: {e}")),
                             },
@@ -429,6 +455,7 @@ pub async fn capture_from_device(
                     cid.clone(),
                     CaptureState {
                         status: "error".to_string(),
+                        source_device_id: source_device_id_for_task.clone(),
                         photo_path: None,
                         error_message: Some(e.to_string()),
                     },
@@ -440,6 +467,7 @@ pub async fn capture_from_device(
                     cid.clone(),
                     CaptureState {
                         status: "timeout".to_string(),
+                        source_device_id: source_device_id_for_task,
                         photo_path: None,
                         error_message: Some("Device did not respond within 30 seconds".to_string()),
                     },
@@ -453,6 +481,7 @@ pub async fn capture_from_device(
         Json(CaptureFromDeviceResponse {
             capture_id,
             status: "capturing".to_string(),
+            source_device_id,
         }),
     ))
 }
@@ -502,6 +531,7 @@ pub async fn get_capture(
     Ok(Json(CaptureResponse {
         capture_id,
         status: capture_state.status,
+        source_device_id: capture_state.source_device_id,
         photo_path: capture_state.photo_path,
         photo_b64,
         error_message: capture_state.error_message,
