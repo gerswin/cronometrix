@@ -285,6 +285,7 @@ export interface RawAttendanceEvent {
 // ──────────────────────────────────────────────────────────────────────────
 
 export interface EnrollmentDevicePush {
+  id: string
   device_id: string
   device_name: string
   status: 'pending' | 'in_progress' | 'success' | 'failed'
@@ -296,17 +297,39 @@ export interface EnrollmentDevicePush {
 export interface Enrollment {
   id: string
   employee_id: string
+  employee_name: string
+  employee_code: string
   status: 'in_progress' | 'success' | 'partial' | 'failed'
   started_at: string
   completed_at: string | null
+  version: number
   device_pushes: EnrollmentDevicePush[]
+}
+
+export interface EnrollmentSubmitResponse {
+  enrollment_id: string
+  face_id: string
+  device_pushes: EnrollmentDevicePush[]
+}
+
+export interface RetryEnrollmentPushResponse {
+  enrollment_id: string
+  device_id: string
+  status: 'pending'
+}
+
+export interface CaptureStartResponse {
+  capture_id: string
+  status: 'capturing'
+  source_device_id: string
 }
 
 export interface CaptureFromDeviceState {
   capture_id: string
   status: 'capturing' | 'captured' | 'timeout' | 'error'
+  source_device_id: string
   photo_path: string | null
-  photo_b64: string | null      // base64 JPEG iff status=='captured'
+  photo_b64?: string            // base64 JPEG iff status=='captured'; omitted otherwise
   error_message: string | null
 }
 

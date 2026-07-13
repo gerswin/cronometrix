@@ -15,17 +15,19 @@ import type { Employee } from '@/types/api'
 globalThis.URL.createObjectURL = vi.fn(() => 'blob:test-extra-url')
 globalThis.URL.revokeObjectURL = vi.fn()
 
-const { toastSuccess, toastWarning, toastError, toastBase } = vi.hoisted(() => ({
+const { toastSuccess, toastWarning, toastError, toastBase, toastDismiss } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
   toastError: vi.fn(),
   toastBase: vi.fn(),
+  toastDismiss: vi.fn(),
 }))
 vi.mock('sonner', () => ({
   toast: Object.assign((msg: unknown, opts?: unknown) => toastBase(msg, opts), {
     success: toastSuccess,
     warning: toastWarning,
     error: toastError,
+    dismiss: toastDismiss,
   }),
 }))
 
@@ -37,6 +39,12 @@ vi.mock('@/lib/face-detection', () => ({
   analyzeFrame: vi.fn().mockResolvedValue({
     faceDetected: true, luminanceOk: true, sizeOk: true, luminance: 120, width: 200, height: 200,
   }),
+  analyzePhotoBlob: vi.fn().mockResolvedValue({
+    faceDetected: true, luminanceOk: true, sizeOk: true, luminance: 120, width: 200, height: 200,
+  }),
+  isAcceptableFace: vi.fn((analysis) =>
+    analysis.faceDetected && analysis.luminanceOk && analysis.sizeOk
+  ),
 }))
 
 Object.defineProperty(globalThis.navigator, 'mediaDevices', {
@@ -95,10 +103,269 @@ describe('EnrollmentModal — extra branches', () => {
     await act(async () => {
       render(<EnrollmentModal open={true} employee={EMPLOYEE} onClose={onClose} />, { wrapper: makeWrapper() })
     })
-    const closeBtn = screen.getByRole('button', { name: /Cerrar/i })
+    const closeBtn = screen.getByRole('button', { name: /^Cerrar$/ })
     await act(async () => { fireEvent.click(closeBtn) })
     expect(onClose).toHaveBeenCalled()
     expect(toastBase).not.toHaveBeenCalled()
+  })
+
+  it('closing a terminal enrollment resets to a clean session for the same employee', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-terminal-close',
+        face_id: 'face-terminal-close',
+        device_pushes: [
+          { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/enrollments/enr-terminal-close') {
+        return Promise.resolve({
+          data: {
+            id: 'enr-terminal-close', employee_id: EMPLOYEE.id,
+            employee_name: EMPLOYEE.name, employee_code: EMPLOYEE.employee_code,
+            status: 'success', started_at: '2026-04-28T12:00:00Z',
+            completed_at: '2026-04-28T12:01:00Z', version: 1,
+            device_pushes: [
+              { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'success', error_message: null, started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
+
+    const rendered = render(
+      <EnrollmentModal open employee={EMPLOYEE} onClose={() => {}} />,
+      { wrapper: makeWrapper() },
+    )
+    fireEvent.click(screen.getByText('Subir JPG'))
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Enrolar/i })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: /^Cerrar$/ }))
+    rendered.rerender(<EnrollmentModal open={false} employee={EMPLOYEE} onClose={() => {}} />)
+    rendered.rerender(<EnrollmentModal open employee={EMPLOYEE} onClose={() => {}} />)
+
+    expect(screen.getByText('Lector Hikvision')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Enrolar/i })).toBeDisabled()
+  })
+
+  it('invalidates the in-progress list exactly once when polling first observes terminal state', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-terminal-invalidate', face_id: 'face-terminal-invalidate',
+        device_pushes: [
+          { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/enrollments/enr-terminal-invalidate') {
+        return Promise.resolve({
+          data: {
+            id: 'enr-terminal-invalidate', employee_id: EMPLOYEE.id,
+            employee_name: EMPLOYEE.name, employee_code: EMPLOYEE.employee_code,
+            status: 'success', started_at: '2026-04-28T12:00:00Z',
+            completed_at: '2026-04-28T12:01:00Z', version: 1,
+            device_pushes: [
+              { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'success', error_message: null, started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    function Wrapper({ children }: { children: React.ReactNode }) {
+      return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    }
+
+    render(<EnrollmentModal open employee={EMPLOYEE} onClose={() => {}} />, { wrapper: Wrapper })
+    fireEvent.click(screen.getByText('Subir JPG'))
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Enrolar/i })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled())
+
+    const listInvalidations = invalidate.mock.calls.filter(
+      ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(['enrollments', 'in_progress']),
+    )
+    expect(listInvalidations).toHaveLength(2)
+    await act(async () => { await Promise.resolve() })
+    expect(invalidate.mock.calls.filter(
+      ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(['enrollments', 'in_progress']),
+    )).toHaveLength(2)
+  })
+
+  it('closing during submit preserves a backend-created enrollment and starts recovery when it resolves', async () => {
+    let resolveSubmit!: (value: { data: unknown }) => void
+    vi.mocked(api.post).mockReturnValueOnce(
+      new Promise((resolve) => { resolveSubmit = resolve }),
+    )
+    vi.mocked(api.get).mockReturnValue(new Promise(() => {}))
+    render(
+      <EnrollmentModal open employee={EMPLOYEE} onClose={() => {}} />,
+      { wrapper: makeWrapper() },
+    )
+    fireEvent.click(screen.getByText('Subir JPG'))
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Enrolar/i })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    await waitFor(() => expect(screen.getByText('Enviando…')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: /^Cerrar$/ }))
+    await act(async () => {
+      resolveSubmit({
+        data: {
+          enrollment_id: 'enr-after-close', face_id: 'face-after-close',
+          device_pushes: [
+            { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+          ],
+        },
+      })
+    })
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/enrollments/enr-after-close'))
+    expect(toastBase).toHaveBeenCalledWith(
+      'Enrolamiento en curso — 0/1 dispositivos',
+      { id: 'enrollment-enr-after-close', duration: Infinity },
+    )
+  })
+
+  it('closing after enrollment_id but before the first poll shows an in-flight recovery toast', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-before-poll', face_id: 'face-before-poll',
+        device_pushes: [
+          { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+          { id: 'p2', device_id: 'd2', device_name: 'Salida', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockReturnValue(new Promise(() => {}))
+    render(<EnrollmentModal open employee={EMPLOYEE} onClose={() => {}} />, {
+      wrapper: makeWrapper(),
+    })
+    fireEvent.click(screen.getByText('Subir JPG'))
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Enrolar/i })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    await waitFor(() => expect(screen.getByText(/Enrolamiento enviado/)).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: /^Cerrar$/ }))
+
+    expect(toastBase).toHaveBeenCalledWith(
+      'Enrolamiento en curso — 0/2 dispositivos',
+      { id: 'enrollment-enr-before-poll', duration: Infinity },
+    )
+  })
+
+  it('dismisses the old infinite recovery toast when changing enrollment session', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        enrollment_id: 'enr-switch', face_id: 'face-switch',
+        device_pushes: [
+          { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+        ],
+      },
+    })
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/enrollments/enr-switch') {
+        return Promise.resolve({
+          data: {
+            id: 'enr-switch', employee_id: EMPLOYEE.id,
+            employee_name: EMPLOYEE.name, employee_code: EMPLOYEE.employee_code,
+            status: 'in_progress', started_at: '2026-04-28T12:00:00Z',
+            completed_at: null, version: 1,
+            device_pushes: [
+              { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'pending', error_message: null, started_at: null, completed_at: null },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({ data: { data: [] } })
+    })
+    const rendered = render(
+      <EnrollmentModal open employee={EMPLOYEE} onClose={() => {}} />,
+      { wrapper: makeWrapper() },
+    )
+    fireEvent.click(screen.getByText('Subir JPG'))
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File([new Uint8Array(100)], 'p.jpg', { type: 'image/jpeg' })] },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Enrolar/i })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
+    await waitFor(() => expect(screen.getByText(/Enrolamiento enviado/)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /^Cerrar$/ }))
+    expect(toastBase).toHaveBeenCalled()
+
+    rendered.rerender(
+      <EnrollmentModal
+        open
+        employee={{ ...EMPLOYEE, id: 'emp-2', name: 'Luis Pérez' }}
+        onClose={() => {}}
+      />,
+    )
+
+    expect(toastDismiss).toHaveBeenCalledWith('enrollment-enr-switch')
+    expect(screen.getByText(/Luis Pérez/)).toBeTruthy()
+  })
+
+  it('does not emit a stale terminal toast with the next employee identity', async () => {
+    vi.mocked(api.get).mockReturnValue(new Promise(() => {}))
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    function Wrapper({ children }: { children: React.ReactNode }) {
+      return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    }
+    const rendered = render(
+      <EnrollmentModal
+        open
+        employee={EMPLOYEE}
+        initialEnrollmentId="enr-old-terminal"
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+
+    await act(async () => {
+      client.setQueryData(['enrollment', 'enr-old-terminal'], {
+        id: 'enr-old-terminal', employee_id: EMPLOYEE.id,
+        employee_name: EMPLOYEE.name, employee_code: EMPLOYEE.employee_code,
+        status: 'success', started_at: '2026-04-28T12:00:00Z',
+        completed_at: '2026-04-28T12:01:00Z', version: 1,
+        device_pushes: [
+          { id: 'p1', device_id: 'd1', device_name: 'Entrada', status: 'success', error_message: null, started_at: null, completed_at: null },
+        ],
+      })
+      rendered.rerender(
+        <EnrollmentModal
+          open
+          employee={{ ...EMPLOYEE, id: 'emp-2', name: 'Luis Pérez' }}
+          initialEnrollmentId={null}
+          onClose={() => {}}
+        />,
+      )
+    })
+
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(screen.getByText(/Luis Pérez/)).toBeTruthy()
   })
 
   it('submit error path triggers toast.error with the server message', async () => {
@@ -116,7 +383,7 @@ describe('EnrollmentModal — extra branches', () => {
 
     await waitFor(() => {
       const btn = screen.getByRole('button', { name: /Enrolar/i })
-      return btn.getAttribute('aria-disabled') === 'false'
+      expect(btn).not.toBeDisabled()
     })
     const enrollBtn = screen.getByRole('button', { name: /Enrolar/i })
     await act(async () => { fireEvent.click(enrollBtn) })
@@ -134,7 +401,7 @@ describe('EnrollmentModal — extra branches', () => {
     await act(async () => { fireEvent.change(input, { target: { files: [goodJpeg] } }) })
     await waitFor(() => {
       const btn = screen.getByRole('button', { name: /Enrolar/i })
-      return btn.getAttribute('aria-disabled') === 'false'
+      expect(btn).not.toBeDisabled()
     })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
@@ -142,6 +409,43 @@ describe('EnrollmentModal — extra branches', () => {
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith('No se pudo registrar el enrolamiento.')
     )
+  })
+
+  it('keeps polling an in-progress enrollment with zero device pushes', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        id: 'enr-zero',
+        employee_id: EMPLOYEE.id,
+        employee_name: EMPLOYEE.name,
+        employee_code: EMPLOYEE.employee_code,
+        status: 'in_progress',
+        started_at: '2026-04-28T12:00:00Z',
+        completed_at: null,
+        version: 1,
+        device_pushes: [],
+      },
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    function Wrapper({ children }: { children: React.ReactNode }) {
+      return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    }
+    render(
+      <EnrollmentModal
+        open
+        employee={null}
+        initialEnrollmentId="enr-zero"
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/enrollments/enr-zero'))
+
+    const query = client.getQueryCache().find({ queryKey: ['enrollment', 'enr-zero'] })
+    const interval = (query?.options as { refetchInterval?: unknown } | undefined)?.refetchInterval
+    expect(typeof interval).toBe('function')
+    expect((interval as (q: typeof query) => number | false)(query)).toBe(1500)
   })
 
   it('terminal poll all-success: fires toast.success with completed copy', async () => {
@@ -182,7 +486,7 @@ describe('EnrollmentModal — extra branches', () => {
     })
     await waitFor(() => {
       const btn = screen.getByRole('button', { name: /Enrolar/i })
-      return btn.getAttribute('aria-disabled') === 'false'
+      expect(btn).not.toBeDisabled()
     })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
@@ -228,7 +532,7 @@ describe('EnrollmentModal — extra branches', () => {
     })
     await waitFor(() => {
       const btn = screen.getByRole('button', { name: /Enrolar/i })
-      return btn.getAttribute('aria-disabled') === 'false'
+      expect(btn).not.toBeDisabled()
     })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
@@ -273,7 +577,7 @@ describe('EnrollmentModal — extra branches', () => {
     })
     await waitFor(() => {
       const btn = screen.getByRole('button', { name: /Enrolar/i })
-      return btn.getAttribute('aria-disabled') === 'false'
+      expect(btn).not.toBeDisabled()
     })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
@@ -320,7 +624,7 @@ describe('EnrollmentModal — extra branches', () => {
     })
     await waitFor(() => {
       const btn = screen.getByRole('button', { name: /Enrolar/i })
-      return btn.getAttribute('aria-disabled') === 'false'
+      expect(btn).not.toBeDisabled()
     })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Enrolar/i }))
@@ -331,7 +635,7 @@ describe('EnrollmentModal — extra branches', () => {
       { timeout: 3000 }
     )
     // Click Cerrar — sticky toast should fire (duration: Infinity)
-    const closeBtn = screen.getByRole('button', { name: /Cerrar/i })
+    const closeBtn = screen.getByRole('button', { name: /^Cerrar$/ })
     await act(async () => { fireEvent.click(closeBtn) })
 
     await waitFor(() => expect(toastBase).toHaveBeenCalled())

@@ -24,23 +24,25 @@ export interface FrameAnalysis {
   height: number
 }
 
+export type FaceImageSource = HTMLVideoElement | HTMLCanvasElement | HTMLImageElement
+
 export async function analyzeFrame(
-  video: HTMLVideoElement,
-  canvas: HTMLCanvasElement,
+  source: FaceImageSource,
+  sampleCanvas: HTMLCanvasElement,
   faceapi: typeof import('@vladmandic/face-api'),
 ): Promise<FrameAnalysis> {
   const det = await faceapi.detectSingleFace(
-    video,
+    source,
     new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 })
   )
   const faceDetected = !!det
   const sizeOk = !!det && det.box.width >= 160 && det.box.height >= 160
 
   // Luminance — sample 64×48 pixels for speed
-  canvas.width = 64
-  canvas.height = 48
-  const ctx = canvas.getContext('2d')!
-  ctx.drawImage(video, 0, 0, 64, 48)
+  sampleCanvas.width = 64
+  sampleCanvas.height = 48
+  const ctx = sampleCanvas.getContext('2d')!
+  ctx.drawImage(source, 0, 0, 64, 48)
   const px = ctx.getImageData(0, 0, 64, 48).data
   let total = 0
   for (let i = 0; i < px.length; i += 4) {
@@ -56,5 +58,25 @@ export async function analyzeFrame(
     luminance,
     width: det?.box.width ?? 0,
     height: det?.box.height ?? 0,
+  }
+}
+
+export function isAcceptableFace(analysis: FrameAnalysis): boolean {
+  return analysis.faceDetected && analysis.luminanceOk && analysis.sizeOk
+}
+
+export async function analyzePhotoBlob(blob: Blob): Promise<FrameAnalysis> {
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const nextImage = new Image()
+      nextImage.onload = () => resolve(nextImage)
+      nextImage.onerror = () => reject(new Error('Unable to decode captured photo'))
+      nextImage.src = objectUrl
+    })
+    const faceapi = await loadFaceApi()
+    return analyzeFrame(image, document.createElement('canvas'), faceapi)
+  } finally {
+    URL.revokeObjectURL(objectUrl)
   }
 }

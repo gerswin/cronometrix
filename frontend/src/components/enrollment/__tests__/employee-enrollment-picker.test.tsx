@@ -76,6 +76,18 @@ describe('EmployeeEnrollmentPicker', () => {
     expect(screen.getByText(/Luis Pérez — V-87654321/)).toBeTruthy()
   })
 
+  it('renders the canonical employee_code when the deprecated cedula alias is absent', async () => {
+    const canonicalEmployee = { ...EMPLOYEES[0] }
+    delete canonicalEmployee.cedula
+    apiGet.mockResolvedValueOnce({
+      data: { data: [canonicalEmployee], total: 1, limit: 100, offset: 0 },
+    })
+    await act(async () => {
+      render(wrap(<EmployeeEnrollmentPicker onSelect={() => {}} />))
+    })
+    expect(await screen.findByText('Ana García — V-12345678')).toBeTruthy()
+  })
+
   it('hits the active-only employees endpoint with limit=100', async () => {
     await act(async () => {
       render(wrap(<EmployeeEnrollmentPicker onSelect={() => {}} />))

@@ -1,15 +1,17 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import { Upload, AlertTriangle, X } from 'lucide-react'
+import type { CapturedPhotoCandidate } from '@/lib/enrollment-api'
 
 interface UploadCaptureTabProps {
-  onCaptured: (file: File) => void
+  onCaptured: (candidate: CapturedPhotoCandidate) => void
+  onCleared: () => void
 }
 
 const MAX_SIZE = 2 * 1024 * 1024  // 2MB
 const ERROR_MSG = 'El archivo debe ser JPG y pesar menos de 2 MB.'
 
-export function UploadCaptureTab({ onCaptured }: UploadCaptureTabProps) {
+export function UploadCaptureTab({ onCaptured, onCleared }: UploadCaptureTabProps) {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -34,6 +36,7 @@ export function UploadCaptureTab({ onCaptured }: UploadCaptureTabProps) {
       setPreviewUrl(null)
       // Reset input so same file can be re-selected after "Cambiar archivo"
       if (fileRef.current) fileRef.current.value = ''
+      onCleared()
       return
     }
 
@@ -41,7 +44,7 @@ export function UploadCaptureTab({ onCaptured }: UploadCaptureTabProps) {
     setFile(selected)
     const url = URL.createObjectURL(selected)
     setPreviewUrl(url)
-    onCaptured(selected)
+    onCaptured({ blob: selected, capturedVia: 'upload', sourceDeviceId: null })
   }
 
   function reset() {
@@ -50,6 +53,7 @@ export function UploadCaptureTab({ onCaptured }: UploadCaptureTabProps) {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
     setPreviewUrl(null)
     if (fileRef.current) fileRef.current.value = ''
+    onCleared()
   }
 
   return (
@@ -90,6 +94,8 @@ export function UploadCaptureTab({ onCaptured }: UploadCaptureTabProps) {
         <div className="space-y-2">
           <div className="relative inline-block">
             {previewUrl && (
+              // Blob-backed user preview cannot use the Next image optimizer.
+              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={previewUrl}
                 alt="Vista previa"

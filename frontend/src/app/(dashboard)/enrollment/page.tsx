@@ -11,17 +11,25 @@ import type { Employee } from '@/types/api'
 export default function EnrollmentPage() {
   const { role } = useAuth()
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null)
+  const [resumeEnrollmentId, setResumeEnrollmentId] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
 
   if (role !== 'admin') return <AccessRestricted />
 
   function handleSelect(emp: Employee) {
     setSelectedEmployee(emp)
+    setResumeEnrollmentId(null)
+    setModalOpen(true)
+  }
+
+  function handleReopen(enrollmentId: string) {
+    setSelectedEmployee(null)
+    setResumeEnrollmentId(enrollmentId)
     setModalOpen(true)
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-testid="enrollment-page">
       <TopBar title="Enrolamiento Facial" />
       <div className="p-6 space-y-4">
         <div className="flex items-center justify-between">
@@ -29,12 +37,13 @@ export default function EnrollmentPage() {
           <EmployeeEnrollmentPicker onSelect={handleSelect} />
         </div>
 
-        <InProgressList />
+        <InProgressList onReopen={handleReopen} />
       </div>
 
       <EnrollmentModal
         open={modalOpen}
         employee={selectedEmployee}
+        initialEnrollmentId={resumeEnrollmentId}
         onClose={() => setModalOpen(false)}
       />
     </div>

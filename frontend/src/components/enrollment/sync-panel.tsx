@@ -20,7 +20,7 @@ export function SyncPanel({ device_pushes, enrollmentId }: SyncPanelProps) {
       ) : (
         <div className="mt-2">
           {device_pushes.map(push => (
-            <SyncRow key={push.device_id} push={push} enrollmentId={enrollmentId} />
+            <SyncRow key={push.id} push={push} enrollmentId={enrollmentId} />
           ))}
         </div>
       )}

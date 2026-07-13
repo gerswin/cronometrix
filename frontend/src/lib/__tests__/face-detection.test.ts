@@ -41,6 +41,10 @@ function makeVideo(): HTMLVideoElement {
   return v
 }
 
+function makeImage(): HTMLImageElement {
+  return document.createElement('img')
+}
+
 function makeCanvas(samplePixels: Uint8ClampedArray): HTMLCanvasElement {
   const canvas = document.createElement('canvas')
   // Stub getContext('2d') so it returns a context with the methods we need
@@ -96,6 +100,21 @@ describe('lib/face-detection', () => {
     expect(result.height).toBe(200)
   })
 
+  it('analyzeFrame accepts a still image source and samples that exact image', async () => {
+    detectSingleFaceMock.mockResolvedValueOnce({ box: { width: 200, height: 200 } })
+    const { loadFaceApi, analyzeFrame } = await import('../face-detection')
+    const fa = await loadFaceApi()
+    const image = makeImage()
+    const canvas = makeCanvas(pixels(120))
+
+    await analyzeFrame(image, canvas, fa)
+
+    const context = vi.mocked(canvas.getContext).mock.results[0].value as unknown as {
+      drawImage: ReturnType<typeof vi.fn>
+    }
+    expect(context.drawImage).toHaveBeenCalledWith(image, 0, 0, 64, 48)
+  })
+
   it('analyzeFrame returns sizeOk=false when face box smaller than 160x160', async () => {
     detectSingleFaceMock.mockResolvedValueOnce({
       box: { width: 100, height: 100 },
@@ -136,5 +155,61 @@ describe('lib/face-detection', () => {
     const result = await analyzeFrame(makeVideo(), makeCanvas(pixels(240)), fa)
     expect(result.luminanceOk).toBe(false)
     expect(result.luminance).toBeGreaterThan(200)
+  })
+
+  it('analyzePhotoBlob analyzes the decoded image and always revokes its object URL', async () => {
+    detectSingleFaceMock.mockResolvedValueOnce({ box: { width: 200, height: 200 } })
+    const sampleCanvas = makeCanvas(pixels(120))
+    const createElement = vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+      if (tag === 'canvas') return sampleCanvas
+      return document.createElementNS('http://www.w3.org/1999/xhtml', tag)
+    }) as typeof document.createElement)
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:face-photo')
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
+    class LoadedImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      naturalWidth = 640
+      naturalHeight = 480
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.())
+      }
+    }
+    vi.stubGlobal('Image', LoadedImage)
+
+    const { analyzePhotoBlob } = await import('../face-detection')
+    const result = await analyzePhotoBlob(new Blob(['jpeg'], { type: 'image/jpeg' }))
+
+    expect(result).toMatchObject({ faceDetected: true, luminanceOk: true, sizeOk: true })
+    expect(createObjectURL).toHaveBeenCalledOnce()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:face-photo')
+
+    createElement.mockRestore()
+    createObjectURL.mockRestore()
+    revokeObjectURL.mockRestore()
+    vi.unstubAllGlobals()
+  })
+
+  it.each([
+    ['missing face', { faceDetected: false, luminanceOk: true, sizeOk: true }],
+    ['bad luminance', { faceDetected: true, luminanceOk: false, sizeOk: true }],
+    ['small face', { faceDetected: true, luminanceOk: true, sizeOk: false }],
+  ])('isAcceptableFace rejects %s', async (_label, flags) => {
+    const { isAcceptableFace } = await import('../face-detection')
+    expect(isAcceptableFace({ ...flags, luminance: 120, width: 200, height: 200 })).toBe(false)
+  })
+
+  it('isAcceptableFace accepts only the three green checks', async () => {
+    const { isAcceptableFace } = await import('../face-detection')
+    expect(isAcceptableFace({
+      faceDetected: true,
+      luminanceOk: true,
+      sizeOk: true,
+      luminance: 120,
+      width: 200,
+      height: 200,
+    })).toBe(true)
   })
 })
