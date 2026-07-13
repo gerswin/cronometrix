@@ -70,7 +70,15 @@ async fn main() -> anyhow::Result<()> {
             get(handle_alert_stream),
         )
         // Outbound commands — record in recv_log + return canned 200 XML
-        .route("/ISAPI/RemoteControl/door/0", put(handle_recorded_put))
+        .route(
+            "/ISAPI/AccessControl/RemoteControl/door/1",
+            put(handle_recorded_put),
+        )
+        .route("/ISAPI/System/reboot", put(handle_recorded_put))
+        .route(
+            "/ISAPI/AccessControl/CaptureFaceData",
+            post(handle_recorded_put),
+        )
         .route(
             "/ISAPI/AccessControl/UserInfo/Record",
             put(handle_recorded_put),
@@ -161,7 +169,7 @@ async fn handle_alert_stream(State(state): State<MockState>) -> Response {
         .unwrap()
 }
 
-/// PUT /ISAPI/RemoteControl/door/0 and other command endpoints.
+/// PUT/POST ISAPI command endpoints.
 /// Records the call in recv_log (B6) and returns a canned 200 XML response.
 async fn handle_recorded_put(State(state): State<MockState>, req: Request<Body>) -> Response {
     let method = req.method().to_string();
