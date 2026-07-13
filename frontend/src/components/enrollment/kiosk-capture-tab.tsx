@@ -105,7 +105,11 @@ export function KioskCaptureTab({ employeeId, onCaptured, onCleared }: KioskCapt
     },
     onError: (error: unknown, request) => {
       if (request.generation !== generationRef.current || request.employeeId !== employeeId) return
-      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message
+      const responseData = (error as {
+        response?: { data?: { error?: { message?: string }; message?: string } }
+      })?.response?.data
+      const message = responseData?.error?.message
+        ?? responseData?.message
         ?? 'No se pudo iniciar la captura.'
       toast.error(message)
     },

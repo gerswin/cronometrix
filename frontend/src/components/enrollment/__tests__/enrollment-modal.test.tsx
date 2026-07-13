@@ -137,6 +137,7 @@ describe('EnrollmentModal', () => {
         { wrapper: makeWrapper() }
       )
     })
+    expect(screen.getByRole('dialog', { name: 'Enrolamiento Facial' })).toBeTruthy()
     expect(screen.getByText(/Ana García/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Cerrar enrolamiento' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Cerrar$/ })).toBeTruthy()

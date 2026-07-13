@@ -240,4 +240,29 @@ describe('KioskCaptureTab', () => {
 
     expect(toastError).not.toHaveBeenCalled()
   })
+
+  it('shows the canonical API error message when capture start fails', async () => {
+    vi.mocked(api.post).mockRejectedValueOnce({
+      response: {
+        data: {
+          error: {
+            code: 'DEVICE_CAPTURE_UNAVAILABLE',
+            message: 'El dispositivo no respondió.',
+            status: 503,
+          },
+        },
+      },
+    })
+    render(
+      <KioskCaptureTab employeeId={employeeId} onCaptured={mockOnCaptured} onCleared={mockOnCleared} />,
+      { wrapper: makeWrapper() },
+    )
+    await waitFor(() => screen.getByText('Entrada Principal (127.0.0.1)'))
+    fireEvent.change(screen.getByLabelText(/Seleccionar dispositivo/i), {
+      target: { value: 'dev-entry' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Iniciar Captura/i }))
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('El dispositivo no respondió.'))
+  })
 })

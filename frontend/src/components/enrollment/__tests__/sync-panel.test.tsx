@@ -5,6 +5,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SyncPanel } from '../sync-panel'
 import type { EnrollmentDevicePush } from '@/types/api'
 
+const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }))
+vi.mock('sonner', () => ({ toast: { error: toastError } }))
+
 vi.mock('@/lib/api', () => ({
   api: {
     get: vi.fn(),
@@ -82,6 +85,32 @@ describe('SyncPanel', () => {
     await waitFor(() => {
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['enrollment', enrollmentId] })
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['enrollments', 'in_progress'] })
+    })
+  })
+
+  it('Reintentar shows the canonical API error message', async () => {
+    vi.mocked(api.post).mockRejectedValueOnce({
+      response: {
+        data: {
+          error: {
+            code: 'DEVICE_PUSH_FAILED',
+            message: 'El dispositivo sigue fuera de línea.',
+            status: 503,
+          },
+        },
+      },
+    })
+    render(
+      <SyncPanel
+        device_pushes={[makePush('dev-2', 'Salida', 'failed')]}
+        enrollmentId={enrollmentId}
+      />,
+      { wrapper },
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Reintentar/i }))
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith('El dispositivo sigue fuera de línea.')
     })
   })
 

@@ -10,7 +10,7 @@ import {
   type CapturedPhotoCandidate,
 } from '@/lib/enrollment-api'
 import { analyzePhotoBlob, isAcceptableFace } from '@/lib/face-detection'
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { PrimaryButton } from '@/components/ui/primary-button'
 import { ValidationPanel } from './validation-panel'
 import { SyncPanel } from './sync-panel'
@@ -100,7 +100,11 @@ export function EnrollmentModal({
     },
     onError: (error: unknown, request) => {
       if (request.generation !== generationRef.current) return
-      const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message
+      const responseData = (error as {
+        response?: { data?: { error?: { message?: string }; message?: string } }
+      })?.response?.data
+      const message = responseData?.error?.message
+        ?? responseData?.message
         ?? (error instanceof Error ? error.message : null)
         ?? 'No se pudo registrar el enrolamiento.'
       toast.error(message)
@@ -152,39 +156,59 @@ export function EnrollmentModal({
       terminalHandledRef.current = null
       return
     }
-    if (terminalHandledRef.current === enrollmentId) return
-    terminalHandledRef.current = enrollmentId
-    void queryClient.invalidateQueries({ queryKey: ['enrollments', 'in_progress'] })
 
-    const successCount = enrollmentStatus.device_pushes.filter(
-      (push) => push.status === 'success',
-    ).length
-    const totalCount = enrollmentStatus.device_pushes.length
-    const employeeName = employee?.name ?? enrollmentStatus.employee_name
+    if (terminalHandledRef.current !== enrollmentId) {
+      terminalHandledRef.current = enrollmentId
+      void queryClient.invalidateQueries({ queryKey: ['enrollments', 'in_progress'] })
 
-    if (successCount === totalCount) {
-      toast.success(`Enrolamiento completado para ${employeeName}.`, {
-        id: `enrollment-${enrollmentId}`,
-      })
-    } else if (successCount > 0) {
-      toast.warning(
-        `Enrolamiento parcial: ${successCount}/${totalCount}. Revisa los dispositivos fallidos.`,
-        { id: `enrollment-${enrollmentId}` },
-      )
-    } else {
-      toast.error('Enrolamiento falló en todos los dispositivos. Reintenta desde el panel.', {
-        id: `enrollment-${enrollmentId}`,
-      })
+      const successCount = enrollmentStatus.device_pushes.filter(
+        (push) => push.status === 'success',
+      ).length
+      const totalCount = enrollmentStatus.device_pushes.length
+      const employeeName = employee?.name ?? enrollmentStatus.employee_name
+
+      if (enrollmentStatus.status === 'success') {
+        toast.success(`Enrolamiento completado para ${employeeName}.`, {
+          id: `enrollment-${enrollmentId}`,
+        })
+      } else if (enrollmentStatus.status === 'partial') {
+        toast.warning(
+          `Enrolamiento parcial: ${successCount}/${totalCount}. Revisa los dispositivos fallidos.`,
+          { id: `enrollment-${enrollmentId}` },
+        )
+      } else {
+        toast.error('Enrolamiento falló en todos los dispositivos. Reintenta desde el panel.', {
+          id: `enrollment-${enrollmentId}`,
+        })
+      }
     }
-  }, [employee?.name, enrollmentId, enrollmentStatus, queryClient])
 
-  function clearCapturedPhoto() {
+    if (!open) {
+      void queryClient.cancelQueries({ queryKey: ['enrollment', enrollmentId] })
+      enrollmentIdRef.current = null
+      immediatePushesRef.current = []
+      terminalHandledRef.current = null
+      closedDuringSubmitRef.current = false
+      setEnrollmentId(null)
+      resetCapturedPhoto()
+      setTab('hikvision')
+      submitMutation.reset()
+    }
+  }, [employee?.name, enrollmentId, enrollmentStatus, open, queryClient, submitMutation])
+
+  function resetCapturedPhoto() {
     generationRef.current += 1
     setCapturedPhoto(null)
     setAnalyzing(false)
   }
 
+  function clearCapturedPhoto() {
+    if (submitMutation.isPending) return
+    resetCapturedPhoto()
+  }
+
   async function handleCandidate(candidate: CapturedPhotoCandidate) {
+    if (submitMutation.isPending) return
     const generation = ++generationRef.current
     setCapturedPhoto(null)
     setAnalyzing(true)
@@ -202,6 +226,7 @@ export function EnrollmentModal({
   }
 
   function handleTabChange(nextTab: CaptureTab) {
+    if (submitMutation.isPending) return
     if (nextTab === tab) return
     clearCapturedPhoto()
     setTab(nextTab)
@@ -280,12 +305,12 @@ export function EnrollmentModal({
         <div className="flex flex-col max-h-[88vh]">
           <div className="flex items-center justify-between px-6 py-4 border-b border-[#EEF0F2]">
             <div className="flex flex-col gap-0.5">
-              <h2
+              <DialogTitle
                 className="text-[20px] font-bold text-[#1A1A1A] leading-tight"
                 style={{ fontFamily: 'var(--font-sans)' }}
               >
                 Enrolamiento Facial
-              </h2>
+              </DialogTitle>
               {displayName && (
                 <p
                   className="text-[13px] italic text-[#666666]"
@@ -306,73 +331,76 @@ export function EnrollmentModal({
             </button>
           </div>
 
-          {!isSyncing && employee && (
-            <div className="flex items-center px-6 border-b border-[#EEF0F2]">
-              {tabs.map((nextTab) => {
-                const active = tab === nextTab.key
-                return (
-                  <button
-                    key={nextTab.key}
-                    type="button"
-                    onClick={() => handleTabChange(nextTab.key)}
-                    data-testid={`enroll-tab-${nextTab.key}`}
-                    className={`px-4 py-3 text-[13px] transition-colors border-b-2 ${
-                      active
-                        ? 'text-[#1E3FB8] font-semibold border-[#1E3FB8]'
-                        : 'text-[#666666] border-transparent hover:text-[#1A1A1A]'
-                    }`}
-                  >
-                    {nextTab.label}
-                  </button>
-                )
-              })}
-            </div>
-          )}
+          <fieldset disabled={submitMutation.isPending} className="contents">
+            {!isSyncing && employee && (
+              <div className="flex items-center px-6 border-b border-[#EEF0F2]">
+                {tabs.map((nextTab) => {
+                  const active = tab === nextTab.key
+                  return (
+                    <button
+                      key={nextTab.key}
+                      type="button"
+                      disabled={submitMutation.isPending}
+                      onClick={() => handleTabChange(nextTab.key)}
+                      data-testid={`enroll-tab-${nextTab.key}`}
+                      className={`px-4 py-3 text-[13px] transition-colors border-b-2 ${
+                        active
+                          ? 'text-[#1E3FB8] font-semibold border-[#1E3FB8]'
+                          : 'text-[#666666] border-transparent hover:text-[#1A1A1A]'
+                      }`}
+                    >
+                      {nextTab.label}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
 
-          <div className="flex-1 px-6 py-5 flex gap-6 overflow-y-auto">
-            <div className="flex-1 min-w-0">
-              {!isSyncing && employee ? (
-                <>
-                  {tab === 'hikvision' && (
-                    <KioskCaptureTab
-                      employeeId={employee.id}
-                      onCaptured={handleCandidate}
-                      onCleared={clearCapturedPhoto}
-                    />
-                  )}
-                  {tab === 'webcam' && (
-                    <WebcamCaptureTab
-                      onCaptured={handleCandidate}
-                      onCleared={clearCapturedPhoto}
-                    />
-                  )}
-                  {tab === 'upload' && (
-                    <UploadCaptureTab
-                      onCaptured={handleCandidate}
-                      onCleared={clearCapturedPhoto}
-                    />
-                  )}
-                </>
-              ) : (
-                <p className="text-[13px] text-[#666666]">
-                  Enrolamiento enviado. Monitoreando sincronización por dispositivo…
-                </p>
-              )}
-            </div>
+            <div className="flex-1 px-6 py-5 flex gap-6 overflow-y-auto">
+              <div className="flex-1 min-w-0">
+                {!isSyncing && employee ? (
+                  <>
+                    {tab === 'hikvision' && (
+                      <KioskCaptureTab
+                        employeeId={employee.id}
+                        onCaptured={handleCandidate}
+                        onCleared={clearCapturedPhoto}
+                      />
+                    )}
+                    {tab === 'webcam' && (
+                      <WebcamCaptureTab
+                        onCaptured={handleCandidate}
+                        onCleared={clearCapturedPhoto}
+                      />
+                    )}
+                    {tab === 'upload' && (
+                      <UploadCaptureTab
+                        onCaptured={handleCandidate}
+                        onCleared={clearCapturedPhoto}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[13px] text-[#666666]">
+                    Enrolamiento enviado. Monitoreando sincronización por dispositivo…
+                  </p>
+                )}
+              </div>
 
-            <div className="w-[280px] shrink-0 flex flex-col gap-5">
-              {!isSyncing && (
-                <ValidationPanel analysis={capturedPhoto?.analysis ?? null} analyzing={analyzing} />
-              )}
+              <div className="w-[280px] shrink-0 flex flex-col gap-5">
+                {!isSyncing && (
+                  <ValidationPanel analysis={capturedPhoto?.analysis ?? null} analyzing={analyzing} />
+                )}
 
-              {enrollmentId && enrollmentStatus?.id === enrollmentId && (
-                <SyncPanel
-                  device_pushes={enrollmentStatus.device_pushes}
-                  enrollmentId={enrollmentId}
-                />
-              )}
+                {enrollmentId && enrollmentStatus?.id === enrollmentId && (
+                  <SyncPanel
+                    device_pushes={enrollmentStatus.device_pushes}
+                    enrollmentId={enrollmentId}
+                  />
+                )}
+              </div>
             </div>
-          </div>
+          </fieldset>
 
           <div className="flex items-center justify-between px-6 py-3 border-t border-[#EEF0F2] bg-[#FAFBFC]">
             <p className="text-[11px] text-[#666666] flex-1 pr-4">

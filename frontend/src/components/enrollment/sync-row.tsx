@@ -48,7 +48,11 @@ export function SyncRow({ push, enrollmentId }: SyncRowProps) {
       ])
     },
     onError: (err: unknown) => {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+      const responseData = (err as {
+        response?: { data?: { error?: { message?: string }; message?: string } }
+      })?.response?.data
+      const msg = responseData?.error?.message
+        ?? responseData?.message
         ?? 'No se pudo reintentar la sincronización.'
       toast.error(msg)
     },
