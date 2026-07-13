@@ -139,7 +139,9 @@ async fn connect_and_stream_persists_one_event() {
     let body = build_multipart_fixture(&k1t341_event_xml(), Some(MINI_JPEG));
     let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
 
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
     let cfg = device_cfg("d1", addr);
 
     connect_and_stream(&cfg, &state)
@@ -181,6 +183,12 @@ async fn connect_and_stream_persists_one_event() {
     // No additional rows.
     let next = rows.next().await.unwrap();
     assert!(next.is_none(), "should persist exactly one event");
+
+    let payload = event_rx.recv().await.expect("inserted event is broadcast");
+    assert_eq!(payload.employee_id.as_deref(), Some("e1"));
+    assert_eq!(payload.employee_name.as_deref(), Some("Emp e1"));
+    assert_eq!(payload.department.as_deref(), Some("Dept e1"));
+    assert!(payload.has_photo);
 }
 
 #[tokio::test]
@@ -195,7 +203,9 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
     let body = build_multipart_fixture(&common::heartbeat_event_xml(), None);
     let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
 
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
     let cfg = device_cfg("d-hb", addr);
     connect_and_stream(&cfg, &state).await.expect("stream ok");
 
@@ -226,6 +236,13 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
     assert!(
         last_seen.is_some() && last_seen.unwrap() > 0,
         "heartbeat must refresh last_seen_at"
+    );
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "heartbeat must not publish an SSE attendance event"
     );
 }
 
@@ -280,7 +297,9 @@ async fn second_identical_event_deduplicates() {
     // Two sequential connections, each serving the same fixture. The second
     // must hit the dedup branch (same employee_id, device_id, direction, bucket_30s).
     let addr1 = spawn_mock_hikvision_plain(body.clone(), "MIME_boundary").await;
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
     let cfg1 = device_cfg("d-dup", addr1);
     connect_and_stream(&cfg1, &state)
         .await
@@ -308,6 +327,48 @@ async fn second_identical_event_deduplicates() {
     assert_eq!(
         count, 1,
         "dedup must keep row count at 1 on identical replay"
+    );
+    let first = event_rx.recv().await.expect("first insert is broadcast");
+    assert_eq!(first.employee_id.as_deref(), Some("e1"));
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "deduplicated event must not publish a second payload"
+    );
+}
+
+#[tokio::test]
+async fn failed_event_insert_does_not_broadcast() {
+    let db = common::test_db().await;
+    {
+        let conn = db.connect().unwrap();
+        seed_device(&conn, "d-fail", 0).await;
+        seed_employee(&conn, "e-fail", "EMP001").await;
+        seed_face_mapping(&conn, "d-fail", "42", "e-fail").await;
+        conn.execute("DROP TABLE attendance_events", ())
+            .await
+            .expect("force the persistence layer to fail");
+    }
+
+    let body = build_multipart_fixture(&k1t341_event_xml(), Some(MINI_JPEG));
+    let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
+
+    let result = connect_and_stream(&device_cfg("d-fail", addr), &state).await;
+    assert!(
+        result.is_err(),
+        "failed persistence must bubble to the supervisor"
+    );
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "failed persistence must not publish an SSE payload"
     );
 }
 

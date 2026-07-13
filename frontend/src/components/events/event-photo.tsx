@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { ReactNode, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -13,27 +13,29 @@ interface Props {
   hasPhoto: boolean
   className?: string
   alt?: string
+  fallback?: ReactNode
 }
 
-export function EventPhoto({ eventId, hasPhoto, className, alt }: Props) {
-  const [src, setSrc] = useState<string | null>(null)
+export function EventPhoto({ eventId, hasPhoto, className, alt, fallback }: Props) {
+  const [photo, setPhoto] = useState<{ eventId: string; src: string } | null>(null)
 
   useEffect(() => {
     if (!hasPhoto) {
-      setSrc(null)
       return
     }
     let cancelled = false
     let url: string | null = null
     api
-      .get(`/events/${eventId}/photo`, { responseType: 'blob' })
+      .get(`/events/${encodeURIComponent(eventId)}/photo`, { responseType: 'blob' })
       .then((r) => {
         if (cancelled) return
         url = URL.createObjectURL(r.data as Blob)
-        setSrc(url)
+        setPhoto({ eventId, src: url })
       })
       .catch(() => {
-        if (!cancelled) setSrc(null)
+        if (!cancelled) {
+          setPhoto((current) => current?.eventId === eventId ? null : current)
+        }
       })
     return () => {
       cancelled = true
@@ -41,10 +43,11 @@ export function EventPhoto({ eventId, hasPhoto, className, alt }: Props) {
     }
   }, [eventId, hasPhoto])
 
-  if (hasPhoto && src) {
+  if (hasPhoto && photo?.eventId === eventId) {
     return (
       <img
-        src={src}
+        data-testid="photo-img"
+        src={photo.src}
         alt={alt ?? 'evento'}
         className={cn('object-cover', className)}
       />
@@ -52,13 +55,15 @@ export function EventPhoto({ eventId, hasPhoto, className, alt }: Props) {
   }
   return (
     <div
+      data-testid="photo-fallback"
       className={cn(
-        'bg-slate-200 flex items-center justify-center text-slate-400 text-xs',
+        fallback === undefined &&
+          'bg-slate-200 flex items-center justify-center text-slate-400 text-xs',
         className,
       )}
-      aria-label="Sin foto"
+      aria-label={fallback === undefined ? 'Sin foto' : alt}
     >
-      —
+      {fallback ?? '—'}
     </div>
   )
 }

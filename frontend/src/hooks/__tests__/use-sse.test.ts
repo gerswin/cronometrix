@@ -10,13 +10,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useSSE } from '../use-sse'
 
-const { setAccessTokenMock, getAccessTokenMock } = vi.hoisted(() => ({
-  setAccessTokenMock: vi.fn(),
+const { getAccessTokenMock, onAccessTokenChangeMock } = vi.hoisted(() => ({
   getAccessTokenMock: vi.fn(),
+  onAccessTokenChangeMock: vi.fn(),
 }))
 vi.mock('@/lib/api', () => ({
-  setAccessToken: (...a: unknown[]) => setAccessTokenMock(...a),
+  API_BASE: 'https://api.example.test',
   getAccessToken: () => getAccessTokenMock(),
+  onAccessTokenChange: (listener: () => void) => onAccessTokenChangeMock(listener),
 }))
 
 interface FakeESInstance {
@@ -29,6 +30,8 @@ interface FakeESInstance {
 }
 
 let createdInstances: FakeESInstance[] = []
+let tokenListener: (() => void) | null = null
+let unsubscribeMock: ReturnType<typeof vi.fn>
 
 class FakeEventSource implements FakeESInstance {
   url: string
@@ -46,8 +49,14 @@ class FakeEventSource implements FakeESInstance {
 beforeEach(() => {
   vi.clearAllMocks()
   createdInstances = []
+  tokenListener = null
+  unsubscribeMock = vi.fn()
   ;(globalThis as unknown as { EventSource: typeof FakeEventSource }).EventSource = FakeEventSource
   getAccessTokenMock.mockReturnValue('tok-A')
+  onAccessTokenChangeMock.mockImplementation((listener: () => void) => {
+    tokenListener = listener
+    return unsubscribeMock
+  })
 })
 
 afterEach(() => {
@@ -56,7 +65,7 @@ afterEach(() => {
 
 describe('useSSE', () => {
   it('does not open a connection when token is null (logout race)', () => {
-    getAccessTokenMock.mockReturnValueOnce(null)
+    getAccessTokenMock.mockReturnValue(null)
     const onMessage = vi.fn()
     const { result } = renderHook(() => useSSE<{ x: number }>('/events/stream', onMessage))
     expect(createdInstances).toHaveLength(0)
@@ -70,6 +79,74 @@ describe('useSSE', () => {
     expect(createdInstances).toHaveLength(1)
     expect(createdInstances[0].url).toContain('/events/stream')
     expect(createdInstances[0].url).toContain('token=tok-A')
+    expect(createdInstances[0].url).toBe(
+      'https://api.example.test/api/v1/events/stream?token=tok-A',
+    )
+    expect(onAccessTokenChangeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      getAccessTokenMock.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('connects when the token transitions from null to A', () => {
+    getAccessTokenMock.mockReturnValue(null)
+    renderHook(() => useSSE('/events/stream', vi.fn()))
+    expect(createdInstances).toHaveLength(0)
+
+    getAccessTokenMock.mockReturnValue('tok-A')
+    act(() => tokenListener?.())
+
+    expect(createdInstances).toHaveLength(1)
+    expect(createdInstances[0].url).toContain('token=tok-A')
+  })
+
+  it('replaces A with B and ignores stale callbacks from A', () => {
+    vi.useFakeTimers()
+    const onMessage = vi.fn()
+    const { result } = renderHook(() => useSSE('/events/stream', onMessage))
+    const sourceA = createdInstances[0]
+
+    act(() => sourceA.onerror?.())
+
+    getAccessTokenMock.mockReturnValue('tok-B')
+    act(() => tokenListener?.())
+
+    expect(sourceA.closed).toBe(true)
+    expect(createdInstances).toHaveLength(2)
+    expect(createdInstances[1].url).toContain('token=tok-B')
+
+    act(() => {
+      sourceA.onopen?.()
+      sourceA.onmessage?.({ data: JSON.stringify({ stale: true }) })
+      sourceA.onerror?.()
+    })
+    expect(result.current.connected).toBe(false)
+    expect(result.current.reconnecting).toBe(false)
+    expect(onMessage).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(60_000))
+    expect(createdInstances).toHaveLength(2)
+  })
+
+  it('closes and cancels retry when token transitions from A to null', () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useSSE('/events/stream', vi.fn()))
+    act(() => createdInstances[0].onerror?.())
+    expect(result.current.reconnecting).toBe(true)
+
+    getAccessTokenMock.mockReturnValue(null)
+    act(() => tokenListener?.())
+    expect(createdInstances[0].closed).toBe(true)
+    expect(result.current.connected).toBe(false)
+    expect(result.current.reconnecting).toBe(false)
+
+    act(() => vi.advanceTimersByTime(60_000))
+    expect(createdInstances).toHaveLength(1)
+  })
+
+  it('treats repeated notification for the same token as a no-op', () => {
+    renderHook(() => useSSE('/events/stream', vi.fn()))
+    act(() => tokenListener?.())
+    expect(createdInstances).toHaveLength(1)
+    expect(createdInstances[0].closed).toBe(false)
   })
 
   it('on open: sets connected=true and clears reconnecting', () => {
@@ -101,7 +178,7 @@ describe('useSSE', () => {
 
   it('error: closes ES, sets reconnecting=true, schedules a retry; subsequent connect re-uses fresh token', () => {
     vi.useFakeTimers()
-    getAccessTokenMock.mockReturnValueOnce('tok-A').mockReturnValueOnce('tok-B')
+    getAccessTokenMock.mockReturnValue('tok-A')
     const onMessage = vi.fn()
     const { result } = renderHook(() => useSSE('/events/stream', onMessage))
     expect(createdInstances).toHaveLength(1)
@@ -110,10 +187,10 @@ describe('useSSE', () => {
     expect(createdInstances[0].closed).toBe(true)
     expect(result.current.reconnecting).toBe(true)
 
-    // First backoff is 1000ms — advance and verify a fresh ES was opened
+    // First backoff is 1000ms — advance and verify the same active token is used.
     act(() => { vi.advanceTimersByTime(1000) })
     expect(createdInstances).toHaveLength(2)
-    expect(createdInstances[1].url).toContain('token=tok-B')
+    expect(createdInstances[1].url).toContain('token=tok-A')
   })
 
   it('repeated errors apply progressive backoff (1s, 2s, 4s, 8s, 30s) and cap at 30s', () => {
@@ -140,6 +217,7 @@ describe('useSSE', () => {
     // pending reconnect scheduled
     unmount()
     expect(createdInstances[0].closed).toBe(true)
+    expect(unsubscribeMock).toHaveBeenCalledOnce()
     // advance past the backoff — should NOT create a new ES because the timer was cleared
     act(() => { vi.advanceTimersByTime(60000) })
     expect(createdInstances).toHaveLength(1)

@@ -7,10 +7,7 @@ use axum::{
 };
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tower_http::{
-    cors::{AllowOrigin, CorsLayer},
-    trace::TraceLayer,
-};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use cronometrix_api::anomalies;
 use cronometrix_api::audit;
@@ -24,6 +21,7 @@ use cronometrix_api::employees;
 use cronometrix_api::enrollments;
 use cronometrix_api::errors::AppError;
 use cronometrix_api::events;
+use cronometrix_api::http_trace;
 use cronometrix_api::leaves;
 use cronometrix_api::license;
 use cronometrix_api::recompute::{self, RecomputeRequest};
@@ -434,7 +432,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .nest("/api/v1", api_v1)
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(http_trace::layer())
         .layer(cors);
 
     let addr = format!("{}:{}", config.server_host, config.server_port);

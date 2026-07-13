@@ -12,6 +12,7 @@ pub mod employees;
 pub mod enrollments;
 pub mod errors;
 pub mod events;
+pub mod http_trace;
 pub mod isapi;
 pub mod leaves;
 pub mod license;

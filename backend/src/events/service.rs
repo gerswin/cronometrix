@@ -39,27 +39,88 @@ pub fn publish_recompute_if_employee(state: &AppState, event: &NewAttendanceEven
     }
 }
 
+fn base_sse_payload(event: &NewAttendanceEvent, has_photo: bool) -> AttendanceEventSSEPayload {
+    AttendanceEventSSEPayload {
+        id: event.id.clone(),
+        employee_id: event.employee_id.clone(),
+        employee_name: None,
+        department: None,
+        captured_at: epoch_to_iso(event.captured_at),
+        direction: event.direction.clone(),
+        has_photo,
+    }
+}
+
+/// Build the wire payload for a persisted event, enriching a known employee
+/// with the current display name and department name when those rows exist.
+pub async fn build_sse_payload(
+    conn: &Connection,
+    event: &NewAttendanceEvent,
+    has_photo: bool,
+) -> Result<AttendanceEventSSEPayload, AppError> {
+    let mut payload = base_sse_payload(event, has_photo);
+    let Some(employee_id) = event.employee_id.as_ref() else {
+        return Ok(payload);
+    };
+
+    let mut rows = conn
+        .query(
+            "SELECT e.name, d.name \
+             FROM employees e \
+             LEFT JOIN departments d ON d.id = e.department_id \
+             WHERE e.id = ?1",
+            params![employee_id.clone()],
+        )
+        .await
+        .map_err(|error| AppError::Internal(error.into()))?;
+    if let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| AppError::Internal(error.into()))?
+    {
+        payload.employee_name = row
+            .get(0)
+            .map_err(|error| AppError::Internal(error.into()))?;
+        payload.department = row
+            .get(1)
+            .map_err(|error| AppError::Internal(error.into()))?;
+    }
+    Ok(payload)
+}
+
 /// Broadcast a newly-inserted attendance event to all SSE stream subscribers.
-///
-/// Non-fatal: if there are no subscribers or the channel is not initialised
-/// (test setups), the send error is silently ignored.
-pub fn publish_sse_event(
+/// Enrichment is best-effort: a database read failure emits a base payload and
+/// never compensates or propagates past the already-successful insert.
+pub async fn publish_sse_event(
     state: &AppState,
     event: &NewAttendanceEvent,
     photo_path: &Option<String>,
 ) {
-    let Some(tx) = state.event_broadcast.as_ref() else {
+    // Clone before the first await so no borrow of shared state crosses it.
+    let Some(tx) = state.event_broadcast.clone() else {
         return;
     };
-    let captured_at_iso = epoch_to_iso(event.captured_at);
-    let payload = AttendanceEventSSEPayload {
-        id: event.id.clone(),
-        employee_id: event.employee_id.clone(),
-        employee_name: None, // enriched on client via employee lookup
-        department: None,
-        captured_at: captured_at_iso,
-        direction: event.direction.clone(),
-        has_photo: photo_path.is_some(),
+    let has_photo = photo_path.is_some();
+    let payload = match state.db.connect() {
+        Ok(conn) => match build_sse_payload(&conn, event, has_photo).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    event_id = %event.id,
+                    err = %error,
+                    "SSE event enrichment failed; broadcasting base payload"
+                );
+                base_sse_payload(event, has_photo)
+            }
+        },
+        Err(error) => {
+            tracing::warn!(
+                event_id = %event.id,
+                err = %error,
+                "SSE event enrichment connection failed; broadcasting base payload"
+            );
+            base_sse_payload(event, has_photo)
+        }
     };
     // Non-fatal send: broadcast::SendError means no active receivers
     let _ = tx.send(payload);

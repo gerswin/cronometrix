@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { ActivityFeed } from '../components/dashboard/activity-feed'
+import { EventPhoto } from '../components/events/event-photo'
 
 vi.mock('next/link', () => ({
   default: ({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) => (
@@ -37,7 +38,7 @@ describe('ActivityFeed (component)', () => {
     render(<ActivityFeed />)
     expect(screen.getByText(/Actividad en Vivo/)).toBeTruthy()
     const verTodo = screen.getByText('Ver todo') as HTMLAnchorElement
-    expect(verTodo.getAttribute('href')).toContain('/timesheet?from_date=')
+    expect(verTodo.getAttribute('href')).toBe('/events')
   })
 
   it('empty state shows the Spanish copy', () => {
@@ -98,10 +99,10 @@ describe('ActivityFeed (component)', () => {
     // Fallback for null employee name
     expect(screen.getByText('Empleado desconocido')).toBeTruthy()
     // Department em-dash separator: appears in 'em-dash · HH:mm'
-    expect(screen.getByText(/—/)).toBeTruthy()
+    expect(screen.getByTestId('ring-row-e2')).toHaveTextContent('—')
   })
 
-  it('photo branch: has_photo=true triggers api.get with /events/:id/photo and responseType blob', async () => {
+  it('photo branch: has_photo=true requests the encoded event photo and renders the image', async () => {
     let pushMessage: ((m: unknown) => void) | null = null
     useSSEMock.mockImplementation((_path: string, onMessage: (d: unknown) => void) => {
       pushMessage = onMessage
@@ -110,7 +111,7 @@ describe('ActivityFeed (component)', () => {
     render(<ActivityFeed />)
     await act(async () => {
       pushMessage!({
-        id: 'evt-photo',
+        id: 'evt/photo with space',
         employee_id: 'emp-3',
         employee_name: 'Iñaki Núñez',
         department: 'TI',
@@ -120,8 +121,9 @@ describe('ActivityFeed (component)', () => {
       })
     })
     await waitFor(() =>
-      expect(apiGetMock).toHaveBeenCalledWith('/events/evt-photo/photo', { responseType: 'blob' })
+      expect(apiGetMock).toHaveBeenCalledWith('/events/evt%2Fphoto%20with%20space/photo', { responseType: 'blob' })
     )
+    await waitFor(() => expect(screen.getByTestId('photo-img')).toBeTruthy())
   })
 
   it('photo branch with rejected api.get falls back to initials avatar without throwing', async () => {
@@ -144,7 +146,73 @@ describe('ActivityFeed (component)', () => {
       })
     })
     await waitFor(() => expect(apiGetMock).toHaveBeenCalled())
-    // Component still renders without crashing
-    expect(screen.getByText('Maria Lopez')).toBeTruthy()
+    expect(screen.getByTestId('photo-fallback')).toHaveTextContent('ML')
+  })
+
+  it('has_photo=false renders initials without requesting a photo', async () => {
+    let pushMessage: ((m: unknown) => void) | null = null
+    useSSEMock.mockImplementation((_path: string, onMessage: (d: unknown) => void) => {
+      pushMessage = onMessage
+      return { connected: true, reconnecting: false }
+    })
+    render(<ActivityFeed />)
+    await act(async () => {
+      pushMessage!({
+        id: 'evt-no-photo',
+        employee_id: 'emp-5',
+        employee_name: 'Ana García',
+        department: 'Ops',
+        captured_at: '2026-04-28T10:00:00-04:00',
+        direction: 'entry',
+        has_photo: false,
+      })
+    })
+
+    expect(apiGetMock).not.toHaveBeenCalled()
+    expect(screen.getByTestId('photo-fallback')).toHaveTextContent('AG')
+  })
+
+  it('renders the newest twenty of twenty-five messages in descending arrival order', async () => {
+    let pushMessage: ((m: unknown) => void) | null = null
+    useSSEMock.mockImplementation((_path: string, onMessage: (d: unknown) => void) => {
+      pushMessage = onMessage
+      return { connected: true, reconnecting: false }
+    })
+    render(<ActivityFeed />)
+
+    await act(async () => {
+      for (let index = 0; index < 25; index++) {
+        pushMessage!({
+          id: `evt-${index}`,
+          employee_id: `emp-${index}`,
+          employee_name: `Empleado ${index}`,
+          department: 'Ops',
+          captured_at: '2026-04-28T10:00:00-04:00',
+          direction: 'entry',
+          has_photo: false,
+        })
+      }
+    })
+
+    const rows = screen.getByTestId('ring-buffer').querySelectorAll('[data-testid^="ring-row-"]')
+    expect([...rows].map((row) => row.getAttribute('data-testid'))).toEqual(
+      Array.from({ length: 20 }, (_, offset) => `ring-row-evt-${24 - offset}`),
+    )
+  })
+
+  it('EventPhoto clears stale object URLs when the event changes', async () => {
+    const { rerender } = render(
+      <EventPhoto eventId="first" hasPhoto alt="Primera" fallback="AG" />,
+    )
+    await waitFor(() => expect(screen.getByTestId('photo-img')).toBeTruthy())
+
+    rerender(
+      <EventPhoto eventId="second" hasPhoto={false} alt="Segunda" fallback="LN" />,
+    )
+
+    expect(screen.queryByTestId('photo-img')).toBeNull()
+    expect(screen.getByTestId('photo-fallback')).toHaveTextContent('LN')
+    expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-feed')
+    expect(apiGetMock).toHaveBeenCalledTimes(1)
   })
 })

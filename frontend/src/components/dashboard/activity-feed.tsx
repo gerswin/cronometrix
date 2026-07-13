@@ -6,6 +6,7 @@ import { addToRingBuffer } from '@/lib/ring-buffer'
 import { SSEReconnectBanner } from './sse-reconnect-banner'
 import { fmtTime } from '@/lib/format/datetime'
 import { AttendanceEventSSEPayload } from '@/types/api'
+import { EventPhoto } from '@/components/events/event-photo'
 
 const AVATAR_PALETTE = [
   '#3B82F6',
@@ -48,7 +49,6 @@ function EventAvatar({ event }: EventAvatarProps) {
 
   return (
     <div
-      data-testid="photo-fallback"
       className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold text-white shrink-0"
       style={{ backgroundColor: bg }}
       aria-label={event.employee_name ?? 'Empleado desconocido'}
@@ -69,9 +69,6 @@ export function ActivityFeed() {
 
   const { reconnecting } = useSSE<AttendanceEventSSEPayload>('/events/stream', handleMessage)
 
-  // Show only the last 5 events from the ring buffer
-  const visibleEvents = events.slice(0, 5)
-
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -86,16 +83,16 @@ export function ActivityFeed() {
 
       {/* Event list */}
       <ul data-testid="ring-buffer" className="flex-1 overflow-y-auto">
-        {visibleEvents.length === 0 && (
+        {events.length === 0 && (
           <li className="flex items-center justify-center h-full text-[13px] text-[#666666] py-8">
             Sin actividad reciente
           </li>
         )}
-        {visibleEvents.map((event, idx) => {
+        {events.map((event, idx) => {
           // SSE payload has `department` (name string) but no device_id.
           // Show department as location context; fall back to '—'.
           const locationLabel = event.department ?? '—'
-          const isLast = idx === visibleEvents.length - 1
+          const isLast = idx === events.length - 1
 
           return (
             <li
@@ -103,7 +100,13 @@ export function ActivityFeed() {
               data-testid={`ring-row-${event.id}`}
               className={`flex items-center gap-3 px-4 py-[10px] ${isLast ? '' : 'border-b border-[#EEF0F2]'}`}
             >
-              <EventAvatar event={event} />
+              <EventPhoto
+                eventId={event.id}
+                hasPhoto={event.has_photo}
+                className="w-8 h-8 rounded-full shrink-0"
+                alt={event.employee_name ?? 'Empleado desconocido'}
+                fallback={<EventAvatar event={event} />}
+              />
 
               {/* Name + time · device */}
               <div className="flex-1 min-w-0 flex flex-col gap-0.5">
