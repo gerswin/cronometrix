@@ -1,4 +1,5 @@
-import * as fs from 'node:fs/promises'
+import * as fs from "node:fs/promises";
+import { E2E_ROOT, E2E_DB_PATH } from "./fixtures/run-context";
 
 /**
  * Playwright globalTeardown — runs once at the end of the full test suite.
@@ -12,9 +13,8 @@ import * as fs from 'node:fs/promises'
  * next run anyway. CI runners always start with a fresh FS so this is moot there.
  */
 export default async function globalTeardown(): Promise<void> {
-  const RUN_ID = process.env.GITHUB_RUN_ID ?? `local-${process.pid}`
-  const PATHS_ROOT = `/tmp/cronometrix-e2e-${RUN_ID}`
-  const DB_PATH = `${PATHS_ROOT}.db`
+  const PATHS_ROOT = E2E_ROOT;
+  const DB_PATH = E2E_DB_PATH;
 
   await Promise.all([
     // Remove the paths root directory (leaves, events, enrollments, captures-tmp, overrides)
@@ -24,5 +24,5 @@ export default async function globalTeardown(): Promise<void> {
     // Also remove WAL and SHM sidecar files that libSQL may have created
     fs.rm(`${DB_PATH}-wal`, { force: true }).catch(() => undefined),
     fs.rm(`${DB_PATH}-shm`, { force: true }).catch(() => undefined),
-  ])
+  ]);
 }
