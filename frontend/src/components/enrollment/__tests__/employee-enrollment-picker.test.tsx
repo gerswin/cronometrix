@@ -16,6 +16,7 @@ function wrap(ui: React.ReactNode) {
 const EMPLOYEES: Employee[] = [
   {
     id: 'emp-1',
+    employee_code: 'V-12345678',
     cedula: 'V-12345678',
     name: 'Ana García',
     department_id: 'd1',
@@ -25,9 +26,11 @@ const EMPLOYEES: Employee[] = [
     version: 1,
     created_at: '2023-01-01T00:00:00Z',
     updated_at: '2023-01-01T00:00:00Z',
+    base_salary_cents: 100000,
   },
   {
     id: 'emp-2',
+    employee_code: 'V-87654321',
     cedula: 'V-87654321',
     name: 'Luis Pérez',
     department_id: 'd2',
@@ -37,6 +40,7 @@ const EMPLOYEES: Employee[] = [
     version: 1,
     created_at: '2024-02-10T00:00:00Z',
     updated_at: '2024-02-10T00:00:00Z',
+    base_salary_cents: 100000,
   },
 ]
 

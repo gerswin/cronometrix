@@ -5,6 +5,7 @@ import type { Employee, Enrollment, EnrollmentDevicePush } from '@/types/api'
 
 const EMPLOYEE: Employee = {
   id: 'emp-1',
+  employee_code: 'V-1',
   cedula: 'V-1',
   name: 'Ana García',
   department_id: 'd1',
@@ -14,6 +15,7 @@ const EMPLOYEE: Employee = {
   version: 1,
   created_at: '2023-01-01T00:00:00Z',
   updated_at: '2023-01-01T00:00:00Z',
+  base_salary_cents: 100000,
 }
 
 function push(over: Partial<EnrollmentDevicePush>): EnrollmentDevicePush {

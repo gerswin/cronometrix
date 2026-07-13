@@ -151,7 +151,7 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
     // At minimum there must be a header row
     expect(rows.length).toBeGreaterThan(0)
     // Header row should contain expected column labels
-    const headerRow = rows[0] as string[]
+    const headerRow = rows[0] as unknown as string[]
     const headerStr = headerRow.join(',')
     // Verify at least one known column header from COLUMN_HEADERS in pdf.ts
     expect(headerStr).toMatch(/Nombre|Cédula|Depto|Cargo/i)

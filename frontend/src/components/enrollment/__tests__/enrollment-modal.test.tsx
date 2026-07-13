@@ -41,6 +41,7 @@ import { api } from '@/lib/api'
 
 const EMPLOYEE: Employee = {
   id: 'emp-001',
+  employee_code: 'V-12345678',
   cedula: 'V-12345678',
   name: 'Ana García',
   department_id: 'dept-1',
@@ -50,6 +51,7 @@ const EMPLOYEE: Employee = {
   version: 1,
   created_at: '2023-01-01T00:00:00Z',
   updated_at: '2023-01-01T00:00:00Z',
+  base_salary_cents: 100000,
 }
 
 function makeWrapper() {

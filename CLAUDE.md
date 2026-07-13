@@ -230,8 +230,12 @@ rustup toolchain install "$NIGHTLY" --component llvm-tools-preview
 
 # Frontend coverage tooling is already installed
 # (vitest + @vitest/coverage-v8 in frontend/package.json)
-cd frontend && npm ci
+cd frontend && nvm use 24.15.0 && npm install --global npm@11.12.1 && npm ci
 ```
+
+Frontend installs are pinned to Node `24.15.0` and npm `11.12.1` via
+`frontend/.nvmrc`, `package.json` engines, and `packageManager`. CI and the web
+image must use the same pair and `npm ci`; a lockfile mismatch is a hard failure.
 
 The pinned nightly is currently `nightly-2026-04-01`. Bump cadence is quarterly
 (or earlier if nightly introduces an ICE / strict lint that blocks CI). Bump =

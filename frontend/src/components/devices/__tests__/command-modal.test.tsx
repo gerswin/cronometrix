@@ -121,7 +121,7 @@ describe('CommandModal', () => {
   })
 
   it('button shows Enviando… while pending; remains disabled until resolution', async () => {
-    let resolveCommand: ((v: unknown) => void) | null = null
+    let resolveCommand: (v: unknown) => void = () => {}
     postMock.mockImplementationOnce(() => new Promise((r) => { resolveCommand = r }))
     render(wrap(<CommandModal open={true} device={DEVICE} onClose={() => {}} />))
     const submit = screen.getByRole('button', { name: /Enviar Comando/i }) as HTMLButtonElement
