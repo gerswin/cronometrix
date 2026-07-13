@@ -68,9 +68,11 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      - name: Validate CI file references
+        run: make -C "$GITHUB_WORKSPACE" test-ci-config
       - uses: actions/setup-node@v4
         with:
-          node-version-file: frontend/.nvmrc
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Pin npm
@@ -93,9 +95,11 @@ jobs:
       TZ: America/Caracas
     steps:
       - uses: actions/checkout@v4
+      - name: Validate CI file references
+        run: make -C "$GITHUB_WORKSPACE" test-ci-config
       - uses: actions/setup-node@v4
         with:
-          node-version-file: frontend/.nvmrc
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Pin npm

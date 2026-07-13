@@ -7,9 +7,12 @@
 # The same commands are invoked by .github/workflows/ci.yml so local and CI runs
 # produce the same numbers (within toolchain version tolerance).
 
-.PHONY: coverage coverage-backend coverage-frontend
+.PHONY: test-ci-config coverage coverage-backend coverage-frontend
 
-coverage: coverage-backend coverage-frontend
+test-ci-config:
+	bash scripts/test-ci-node-version-files.sh
+
+coverage: test-ci-config coverage-backend coverage-frontend
 	@echo "All coverage gates passed."
 
 coverage-backend:
@@ -29,7 +32,7 @@ coverage-frontend:
 e2e-install:
 	cd frontend && npm ci && npx playwright install --with-deps chromium
 
-e2e-build:
+e2e-build: test-ci-config
 	cd backend && cargo build --release --bin cronometrix
 	cd backend && cargo build --release --bin mock_hikvision --features mock-hikvision
 	cd backend && cargo build --release --bin seed_e2e --features seed-e2e
