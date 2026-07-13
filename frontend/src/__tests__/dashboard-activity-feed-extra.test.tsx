@@ -215,4 +215,31 @@ describe('ActivityFeed (component)', () => {
     expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-feed')
     expect(apiGetMock).toHaveBeenCalledTimes(1)
   })
+
+  it('EventPhoto does not reuse a revoked URL after true-false-true for the same event', async () => {
+    let resolveReload: ((value: { data: Blob }) => void) | null = null
+    apiGetMock
+      .mockResolvedValueOnce({ data: new Blob(['first']) })
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveReload = resolve
+      }))
+
+    const { rerender } = render(
+      <EventPhoto eventId="same-event" hasPhoto alt="Ana" fallback="AG" />,
+    )
+    await waitFor(() => expect(screen.getByTestId('photo-img')).toBeTruthy())
+
+    rerender(
+      <EventPhoto eventId="same-event" hasPhoto={false} alt="Ana" fallback="AG" />,
+    )
+    expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-feed')
+
+    rerender(
+      <EventPhoto eventId="same-event" hasPhoto alt="Ana" fallback="AG" />,
+    )
+    expect(apiGetMock).toHaveBeenCalledTimes(2)
+    expect(screen.queryByTestId('photo-img')).toBeNull()
+    expect(screen.getByTestId('photo-fallback')).toHaveTextContent('AG')
+    expect(resolveReload).toBeTruthy()
+  })
 })

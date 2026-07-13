@@ -104,6 +104,7 @@ test.describe('Dashboard (D-02 UAT depth)', () => {
     // Push entry events for two employees seeded by Plan 03
     const anaXml = await readEvent('ana-entrada.xml')
     const luisXml = await readEvent('luis-entrada.xml')
+    await restartEntryDevice(request)
     await pushHikvisionEvent(request, anaXml)
     await pushHikvisionEvent(request, luisXml)
 

@@ -16,43 +16,9 @@ interface Props {
   fallback?: ReactNode
 }
 
-export function EventPhoto({ eventId, hasPhoto, className, alt, fallback }: Props) {
-  const [photo, setPhoto] = useState<{ eventId: string; src: string } | null>(null)
+type PhotoViewProps = Omit<Props, 'hasPhoto'>
 
-  useEffect(() => {
-    if (!hasPhoto) {
-      return
-    }
-    let cancelled = false
-    let url: string | null = null
-    api
-      .get(`/events/${encodeURIComponent(eventId)}/photo`, { responseType: 'blob' })
-      .then((r) => {
-        if (cancelled) return
-        url = URL.createObjectURL(r.data as Blob)
-        setPhoto({ eventId, src: url })
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPhoto((current) => current?.eventId === eventId ? null : current)
-        }
-      })
-    return () => {
-      cancelled = true
-      if (url) URL.revokeObjectURL(url)
-    }
-  }, [eventId, hasPhoto])
-
-  if (hasPhoto && photo?.eventId === eventId) {
-    return (
-      <img
-        data-testid="photo-img"
-        src={photo.src}
-        alt={alt ?? 'evento'}
-        className={cn('object-cover', className)}
-      />
-    )
-  }
+function PhotoFallback({ className, alt, fallback }: Omit<PhotoViewProps, 'eventId'>) {
   return (
     <div
       data-testid="photo-fallback"
@@ -65,5 +31,55 @@ export function EventPhoto({ eventId, hasPhoto, className, alt, fallback }: Prop
     >
       {fallback ?? '—'}
     </div>
+  )
+}
+
+function LoadedEventPhoto({ eventId, className, alt, fallback }: PhotoViewProps) {
+  const [src, setSrc] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    let url: string | null = null
+    api
+      .get(`/events/${encodeURIComponent(eventId)}/photo`, { responseType: 'blob' })
+      .then((r) => {
+        if (cancelled) return
+        url = URL.createObjectURL(r.data as Blob)
+        setSrc(url)
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null)
+      })
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [eventId])
+
+  if (src) {
+    return (
+      <img
+        data-testid="photo-img"
+        src={src}
+        alt={alt ?? 'evento'}
+        className={cn('object-cover', className)}
+      />
+    )
+  }
+  return <PhotoFallback className={className} alt={alt} fallback={fallback} />
+}
+
+export function EventPhoto({ eventId, hasPhoto, className, alt, fallback }: Props) {
+  if (!hasPhoto) {
+    return <PhotoFallback className={className} alt={alt} fallback={fallback} />
+  }
+  return (
+    <LoadedEventPhoto
+      key={eventId}
+      eventId={eventId}
+      className={className}
+      alt={alt}
+      fallback={fallback}
+    />
   )
 }
