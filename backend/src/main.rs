@@ -398,12 +398,10 @@ async fn main() -> anyhow::Result<()> {
             license::middleware::require_license,
         ));
 
-    // Phase 9: __test_reset route — gated at REGISTRATION time by CRONOMETRIX_E2E=true.
-    // Defense in depth: the handler (test_reset::test_reset) ALSO re-checks the env.
-    // Both guards must hold. Without CRONOMETRIX_E2E the route does not exist at all,
-    // so clients receive 404 from the router — not from the handler. This is the
-    // strongest possible gate short of compile-time exclusion (which is not possible
-    // for a runtime env var). Locked by backend/tests/test_reset_gating.rs (T-09-02).
+    // Phase 9: __test_reset route — gated at registration time by two distinct
+    // startup-captured capabilities. The handler re-checks both as defense in
+    // depth. Without both flags the route does not exist, so clients receive
+    // 404 from the router. Locked by backend/tests/test_reset_gating.rs (T-09-02).
     let mut api_v1 = public_routes
         .merge(cookie_auth_routes)
         .merge(viewer_routes)
@@ -415,7 +413,7 @@ async fn main() -> anyhow::Result<()> {
 
     if state.e2e_enabled && state.test_reset_enabled {
         tracing::warn!(
-            "registering /__test_reset route — CRONOMETRIX_E2E=true detected; \
+            "registering /__test_reset route — E2E + test-reset capabilities enabled; \
              this route MUST NOT be reachable in production"
         );
         api_v1 = api_v1.merge(Router::new().route(

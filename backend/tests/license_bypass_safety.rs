@@ -115,6 +115,7 @@ fn bypass_with_e2e_proceeds_past_license_gate() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cronometrix"))
         .env_clear()
+        .current_dir(tmp_dir.path())
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         // Required by Config::from_env
         .env("JWT_SECRET", TEST_JWT_SECRET)
