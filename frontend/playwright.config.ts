@@ -59,6 +59,8 @@ export default defineConfig({
         SERVER_PORT: "4001",
         ...e2eEnv(),
         TZ: "America/Caracas", // D-20 backend TZ
+        CORS_ALLOWED_ORIGINS: "http://localhost:3001",
+        COOKIE_SECURE: "false",
         // Filesystem-root injection (CLAUDE.md convention):
         CRONOMETRIX_LEAVES_ROOT: `${PATHS_ROOT}/leaves`,
         CRONOMETRIX_EVENTS_ROOT: `${PATHS_ROOT}/events`,

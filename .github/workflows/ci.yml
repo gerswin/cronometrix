@@ -121,18 +121,11 @@ jobs:
       - name: Install npm deps
         working-directory: frontend
         run: npm ci
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
+      - name: Build E2E release harness
+        run: make e2e-build
       - name: Install Playwright Chromium
         working-directory: frontend
         run: npx playwright install --with-deps chromium
-      - name: Build backend release binaries (cronometrix + mock_hikvision + seed_e2e)
-        working-directory: backend
-        run: |
-          cargo build --release --bin cronometrix
-          cargo build --release --bin mock_hikvision --features mock-hikvision
-          cargo build --release --bin seed_e2e --features seed-e2e
       - name: Run Playwright tests (full E2E suite)
         working-directory: frontend
         env:
