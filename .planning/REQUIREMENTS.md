@@ -154,12 +154,12 @@
 | DATA-01 | Phase 1 | Complete |
 | DATA-02 | Phase 1 | Complete |
 | DATA-03 | Phase 1 | Complete |
-| DATA-04 | Phase 1 | Complete |
+| DATA-04 | Phase 1 / Phase 12 | Remediation — Phase 12 |
 | AUTH-01 | Phase 1 | Complete |
 | AUTH-02 | Phase 1 | Complete |
 | AUTH-03 | Phase 1 | Complete |
 | AUTH-04 | Phase 1 | Complete |
-| AUTH-05 | Phase 1 | Complete |
+| AUTH-05 | Phase 1 / Phase 12 | Remediation — Phase 12 |
 | EMP-01 | Phase 1 | Complete |
 | EMP-02 | Phase 1 | Complete |
 | EMP-03 | Phase 1 | Complete |
@@ -171,7 +171,7 @@
 | RULE-02 | Phase 1 | Complete |
 | RULE-03 | Phase 1 | Complete |
 | DEV-01 | Phase 2 | Complete |
-| DEV-02 | Phase 2 | Complete |
+| DEV-02 | Phase 2 / Phase 12 | Remediation — Phase 12 |
 | DEV-03 | Phase 2 | Complete |
 | DEV-04 | Phase 2 | Complete |
 | EVT-01 | Phase 2 | Complete |
@@ -189,9 +189,9 @@
 | LEAVE-03 | Phase 3 | Complete |
 | LEAVE-04 | Phase 3 | Complete |
 | DASH-01 | Phase 4 | Complete |
-| DASH-02 | Phase 4 | Complete |
+| DASH-02 | Phase 4 / Phase 12 | Remediation — Phase 12 |
 | DASH-03 | Phase 4 | Complete |
-| TS-01 | Phase 4 | Complete |
+| TS-01 | Phase 4 / Phase 12 | Remediation — Phase 12 |
 | TS-02 | Phase 4 | Complete |
 | TS-03 | Phase 4 | Complete |
 | TS-04 | Phase 4 | Complete |
@@ -205,15 +205,15 @@
 | LIC-03 | Phase 6 | Complete |
 | LIC-04 | Phase 6 | Complete |
 | LIC-05 | Phase 6 | Complete |
-| DEPL-01 | Phase 6 | Complete |
-| DEPL-02 | Phase 6 | Complete |
+| DEPL-01 | Phase 6 / Phase 12 | Remediation — Phase 12 |
+| DEPL-02 | Phase 6 / Phase 12 | Remediation — Phase 12 |
 | DEPL-03 | Phase 6 | Partial — accepted v1 ship (D-13 in 06-CONTEXT.md); auto-register strict reading deferred to v1.1 backlog as DEPL-03-AUTO |
 | DEPL-04 | Phase 6 | Complete |
-| ENRL-01 | Phase 7 | Complete |
+| ENRL-01 | Phase 7 / Phase 12 | Remediation — Phase 12 |
 | ENRL-02 | Phase 7 | Complete |
 | ENRL-03 | Phase 7 | Complete |
-| ENRL-04 | Phase 7 | Complete |
-| ENRL-05 | Phase 7 | Complete |
+| ENRL-04 | Phase 7 / Phase 12 | Remediation — Phase 12 |
+| ENRL-05 | Phase 7 / Phase 12 | Remediation — Phase 12 |
 
 ## v1 Cross-Cutting Meta-Requirements (Phases 8+)
 

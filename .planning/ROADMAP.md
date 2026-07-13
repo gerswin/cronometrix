@@ -20,7 +20,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 6: Licensing & Deployment** - Hardware-bound licensing, Docker Compose installer, Cloudflare tunnel
 - [ ] **Phase 7: Facial Enrollment & Sync** - Enrollment modal, multi-device profile sync
 - [ ] **Phase 10: v1.0 Documentation & Sign-off Hardening** - Post-hoc VERIFICATIONs (P1, P7), traceability refresh, /audit/actors username join, DEPL-03 decision record
-- [ ] **Phase 11: v1.0 Live Environment Validation** - Live CI green/red runs, branch protection toggle, fresh-VM installer smoke, LIC-05 cross-host clone, real Hikvision alertStream
+- [ ] **Phase 11: v1.0 Live Environment Validation** *(superseded_partial)* - Retained partial live evidence and deferrals; completed work is carried into Phase 13
+- [ ] **Phase 12: v1.0 Release Stabilization** - Reproducible harness, functional contracts, bounded persistence, private distribution, and release gates
+- [ ] **Phase 13: v1.0 Live Validation** - Candidate CI/protection, fresh-VM validation, evidence reconciliation, and release decision
 
 ## Phase Details
 

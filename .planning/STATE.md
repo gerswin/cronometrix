@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-milestone_name: Documentation & Sign-off Hardening
+milestone_name: v1.0 Release Stabilization
 status: executing
-stopped_at: Phase 11 partial — 11-01 Task 1 (scaffold) + 11-03 (deferral docs) complete; 11-01 Tasks 2/3, 11-02, 11-04, 11-05 await operator session (D-11 prereqs: GH Actions, Ubuntu 22.04 VM, CF tunnel TOKEN, DO Functions URL)
-last_updated: "2026-04-29T23:42:00.000Z"
-last_activity: 2026-04-29 -- Phase 11 partial execution: 11-01 scaffold + 11-03 deferral docs committed
+stopped_at: Phase 12 — 12-01 execution started
+last_updated: "2026-07-13T00:00:00.000Z"
+last_activity: 2026-07-13 -- Phase 12 remediation execution started from approved baseline
 progress:
-  total_phases: 10
+  total_phases: 13
   completed_phases: 10
-  total_plans: 51
-  completed_plans: 51
-  percent: 100
+  total_plans: 64
+  completed_plans: 52
+  percent: 81
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-11)
 
 **Core value:** Accurate, auditable time tracking that turns raw biometric events into payroll-ready data — with zero manual calculation and full legal traceability.
-**Current focus:** Phase 11 — v1.0 Live Environment Validation (PARTIAL)
+**Current focus:** Phase 12 — v1.0 Release Stabilization
 
 ## Current Position
 
-Phase: 11 — EXECUTING (partial)
-Plan: 11-03 complete + 11-01 Task 1 only (scaffold)
-Status: Awaiting operator for 11-01 Tasks 2/3, 11-02, 11-04, 11-05 (live infra prereqs)
-Last activity: 2026-04-29 -- 11-01 scaffold + 11-03 deferral docs committed (commits 1b0ddf0, 6a02166, 0f997ff)
+Phase: 12 — EXECUTING
+Plan: 12-01 in progress
+Status: Rebaseline and reproducible harness
+Last activity: 2026-07-13 -- 12-01 worktree created from approved remediation plans
 
-Progress: [██████████] 100%
+Progress: [████████░░] 81%
 
 ## Performance Metrics
 
@@ -196,13 +196,16 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+- Execute Phase 12 stabilization plans and record PASS summaries.
+- Execute Phase 13 live validation before declaring v1.0 released.
 
 ### Blockers/Concerns
 
 - [Phase 2]: Hikvision ISAPI XML schema varies by device model (DS-K1T341, DS-K1T342) — capture real alertStream traffic before implementation; do not rely on documentation alone
 - [Phase 3]: Venezuela / America/Caracas / LOTTT compliance — IANA timezone fixed at `America/Caracas` (UTC-4, no DST since May 2016); LOTTT Art. 117/173/178 caps confirmed via Phase 3 research. No blocking DST concern for v1.
 - [Phase 7]: ISAPI batch face profile enrollment failure behavior on partial failure (3 of 4 devices) is undocumented — requires hands-on hardware testing before designing the enrollment modal
+- [Phase 12]: Functional, persistence, release-distribution, and CI gates are remediation work in progress.
+- [Phase 13]: Real Hikvision validation and LIC-05 cross-host validation remain DEFERRED with explicit owner and due condition.
 
 ### Quick Tasks Completed
 

@@ -1,7 +1,7 @@
 # Phase 11 Evidence — v1.0 Live Environment Validation
 
-**Status:** in progress
-**Last updated:** 2026-04-29
+**Status:** superseded_partial
+**Last updated:** 2026-07-13
 
 This directory holds the auditable evidence for every live-environment
 validation item Phase 11 executes. Per D-13, ALL items must show
