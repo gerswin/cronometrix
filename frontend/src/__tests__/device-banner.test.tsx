@@ -34,6 +34,7 @@ type DeviceQueryOptions = {
   queryFn: FetchAllDevices
 }
 let capturedDevicesFetcher: FetchAllDevices | undefined
+const DEVICE_PAGE_LIMIT = 100
 
 function makeDevice(overrides: Partial<Device> = {}): Device {
   return { ...(deviceFixture as Device), ...overrides }
@@ -41,15 +42,31 @@ function makeDevice(overrides: Partial<Device> = {}): Device {
 
 async function expectBothLifecycleStates(fetchAllDevices: FetchAllDevices | undefined) {
   expect(fetchAllDevices).toBeTypeOf('function')
+  const devicesByStatus: Record<Device['status'], Device[]> = {
+    active: [
+      makeDevice({ id: 'device-active-1', status: 'active' }),
+      makeDevice({ id: 'device-active-2', status: 'active' }),
+    ],
+    inactive: [
+      makeDevice({ id: 'device-inactive-1', status: 'inactive' }),
+      makeDevice({ id: 'device-inactive-2', status: 'inactive' }),
+    ],
+  }
   apiGetMock.mockImplementation(
-    (_url: string, config?: { params?: { status?: Device['status'] } }) => {
+    (
+      _url: string,
+      config?: {
+        params?: { status?: Device['status']; limit?: number; offset?: number }
+      },
+    ) => {
       const status = config?.params?.status ?? 'active'
+      const offset = config?.params?.offset ?? 0
       return Promise.resolve({
         data: {
-          data: [makeDevice({ id: `device-${status}`, status })],
-          total: 1,
-          limit: 50,
-          offset: 0,
+          data: devicesByStatus[status].slice(offset, offset + 1),
+          total: devicesByStatus[status].length,
+          limit: 1,
+          offset,
         },
       })
     },
@@ -57,11 +74,35 @@ async function expectBothLifecycleStates(fetchAllDevices: FetchAllDevices | unde
 
   const result = await fetchAllDevices!()
 
+  expect(apiGetMock).toHaveBeenCalledTimes(4)
+  for (const status of ['active', 'inactive'] as const) {
+    expect(apiGetMock).toHaveBeenCalledWith('/devices', {
+      params: { status, limit: DEVICE_PAGE_LIMIT, offset: 0 },
+    })
+    expect(apiGetMock).toHaveBeenCalledWith('/devices', {
+      params: { status, limit: DEVICE_PAGE_LIMIT, offset: 1 },
+    })
+  }
+  expect(result.data.map(device => device.id)).toEqual([
+    'device-active-1',
+    'device-active-2',
+    'device-inactive-1',
+    'device-inactive-2',
+  ])
+  expect(result.total).toBe(4)
+}
+
+async function expectEmptyPagesStopPagination(fetchAllDevices: FetchAllDevices | undefined) {
+  apiGetMock.mockClear()
+  apiGetMock.mockResolvedValue({
+    data: { data: [], total: 2, limit: DEVICE_PAGE_LIMIT, offset: 0 },
+  })
+
+  const result = await fetchAllDevices!()
+
   expect(apiGetMock).toHaveBeenCalledTimes(2)
-  expect(apiGetMock).toHaveBeenCalledWith('/devices', { params: { status: 'active' } })
-  expect(apiGetMock).toHaveBeenCalledWith('/devices', { params: { status: 'inactive' } })
-  expect(result.data.map(device => device.status)).toEqual(['active', 'inactive'])
-  expect(result.total).toBe(2)
+  expect(result.data).toEqual([])
+  expect(result.total).toBe(0)
 }
 
 function captureDevicesQuery(options: DeviceQueryOptions): { data: undefined; isLoading: false } {
@@ -111,11 +152,13 @@ describe('DeviceStatusSummary', () => {
     const { default: DevicesPage } = await import('../app/(dashboard)/devices/page')
     render(<DevicesPage />)
     await expectBothLifecycleStates(capturedDevicesFetcher)
+    await expectEmptyPagesStopPagination(capturedDevicesFetcher)
   })
 
   it('dashboard page fetches and merges active and inactive lifecycle pages', async () => {
     const { default: DashboardPage } = await import('../app/(dashboard)/dashboard/page')
     render(<DashboardPage />)
     await expectBothLifecycleStates(capturedDevicesFetcher)
+    await expectEmptyPagesStopPagination(capturedDevicesFetcher)
   })
 })

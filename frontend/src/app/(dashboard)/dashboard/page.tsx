@@ -13,6 +13,8 @@ import { ActivityFeed } from '@/components/dashboard/activity-feed'
 import { DeptChart } from '@/components/dashboard/dept-chart'
 import type { PaginatedResponse, DailyRecord, Device, Department, RawAttendanceEvent } from '@/types/api'
 
+const DEVICE_PAGE_LIMIT = 100
+
 // ── Caracas UTC-4 (no DST) epoch helpers ────────────────────────────────────
 function getTodayCaracasEpochs(): { from: number; to: number } {
   const today = format(new Date(), 'yyyy-MM-dd') // date-fns uses local TZ (set to America/Caracas)
@@ -21,18 +23,37 @@ function getTodayCaracasEpochs(): { from: number; to: number } {
   return { from, to }
 }
 
+async function fetchDevicesByStatus(status: Device['status']): Promise<Device[]> {
+  const devices: Device[] = []
+  let offset = 0
+  let total: number | undefined
+
+  while (total === undefined || offset < total) {
+    const page = await api
+      .get('/devices', { params: { status, limit: DEVICE_PAGE_LIMIT, offset } })
+      .then(r => r.data as PaginatedResponse<Device>)
+
+    total = page.total
+    if (page.data.length === 0) break
+
+    devices.push(...page.data)
+    offset += page.data.length
+  }
+
+  return devices
+}
+
 async function fetchAllDevices(): Promise<PaginatedResponse<Device>> {
   const [active, inactive] = await Promise.all([
-    api.get('/devices', { params: { status: 'active' } })
-      .then(r => r.data as PaginatedResponse<Device>),
-    api.get('/devices', { params: { status: 'inactive' } })
-      .then(r => r.data as PaginatedResponse<Device>),
+    fetchDevicesByStatus('active'),
+    fetchDevicesByStatus('inactive'),
   ])
+  const data = [...active, ...inactive]
 
   return {
-    data: [...active.data, ...inactive.data],
-    total: active.total + inactive.total,
-    limit: active.limit + inactive.limit,
+    data,
+    total: data.length,
+    limit: data.length,
     offset: 0,
   }
 }
