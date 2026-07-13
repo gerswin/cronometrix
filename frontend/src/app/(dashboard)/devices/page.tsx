@@ -11,6 +11,22 @@ import { CreateDeviceModal } from '@/components/devices/create-device-modal'
 import { PrimaryButton } from '@/components/ui/primary-button'
 import type { PaginatedResponse, Device } from '@/types/api'
 
+async function fetchAllDevices(): Promise<PaginatedResponse<Device>> {
+  const [active, inactive] = await Promise.all([
+    api.get('/devices', { params: { status: 'active' } })
+      .then(r => r.data as PaginatedResponse<Device>),
+    api.get('/devices', { params: { status: 'inactive' } })
+      .then(r => r.data as PaginatedResponse<Device>),
+  ])
+
+  return {
+    data: [...active.data, ...inactive.data],
+    total: active.total + inactive.total,
+    limit: active.limit + inactive.limit,
+    offset: 0,
+  }
+}
+
 export default function DevicesPage() {
   const router = useRouter()
   const { role } = useAuth()
@@ -21,12 +37,16 @@ export default function DevicesPage() {
 
   const { data, isLoading } = useQuery<PaginatedResponse<Device>>({
     queryKey: ['devices'],
-    queryFn: () => api.get('/devices').then(r => r.data),
+    queryFn: fetchAllDevices,
     refetchInterval: 30_000,
   })
 
   const devices = data?.data ?? []
-  const onlineCount = devices.filter(d => d.status === 'online').length
+  const activeCount = devices.filter(d => d.status === 'active').length
+  const inactiveCount = devices.length - activeCount
+  const onlineCount = devices.filter(
+    d => d.status === 'active' && d.connection_state === 'online',
+  ).length
   const canEdit = role === 'admin'
 
   // ── Logout ───────────────────────────────────────────────────────────────
@@ -122,7 +142,11 @@ export default function DevicesPage() {
           >
             {isLoading
               ? 'Cargando…'
-              : `${onlineCount} de ${devices.length} dispositivos en línea`}
+              : `${onlineCount} de ${activeCount} dispositivos activos en línea${
+                inactiveCount > 0
+                  ? ` · ${inactiveCount} inactivo${inactiveCount > 1 ? 's' : ''}`
+                  : ''
+              }`}
           </p>
 
           {/* Device card grid */}

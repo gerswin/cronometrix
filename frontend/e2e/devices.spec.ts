@@ -30,7 +30,7 @@
  *   - Viewer:     cannot see Comando button; can list devices (read access is open)
  *
  * Mock endpoints (Plan 03 Task 3 / B6 contract):
- *   Public port 4400:  PUT /ISAPI/RemoteControl/door/0 → records call in recv_log
+ *   Public port 4400:  PUT /ISAPI/AccessControl/RemoteControl/door/1 → records call
  *   Admin port 4401:   GET /admin/recv-log → returns { commands: ReceivedCall[] }
  *                      POST /admin/clear-recv-log → empties recv_log
  *
@@ -58,9 +58,12 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
   // ── T-01: List renders with seeded devices ────────────────────────────────
   test('lists seeded devices with Spanish heading', async ({ page }) => {
     await page.goto('/devices')
-    await expect(page.getByText('Dispositivos')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Administración de Dispositivos' })).toBeVisible()
     await expect(page.getByText('Entrada Principal')).toBeVisible()
     await expect(page.getByText('Salida Principal')).toBeVisible()
+    const entryCard = page.getByTestId('dev-card-dev-entry')
+    await expect(entryCard.getByText('127.0.0.1')).toBeVisible()
+    await expect(entryCard.getByTestId('dev-lifecycle-dev-entry')).toHaveText('Activo')
   })
 
   // ── T-02: Connection status badge renders per device ─────────────────────
@@ -74,18 +77,18 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
     expect(['En línea', 'Offline', 'Desconocido']).toContain(text?.trim())
   })
 
-  // ── T-03: Per-row action button visible for Admin ─────────────────────────
-  test('admin sees Comando action button per device row', async ({ page }) => {
+  // ── T-03: Per-card action button visible for Admin ────────────────────────
+  test('admin sees Comandos action button per device card', async ({ page }) => {
     await page.goto('/devices')
-    await expect(page.getByTestId('dev-row-dev-entry')).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByTestId('dev-actions-dev-entry')).toBeVisible()
-    await expect(page.getByTestId('dev-actions-dev-exit')).toBeVisible()
+    await expect(page.getByTestId('dev-card-dev-entry')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('open-command-modal-dev-entry')).toBeVisible()
+    await expect(page.getByTestId('open-command-modal-dev-exit')).toBeVisible()
   })
 
   // ── T-04: Command modal opens on Comando button click ────────────────────
   test('Comando button opens command modal with door_open pre-selected', async ({ page }) => {
     await page.goto('/devices')
-    await page.getByTestId('dev-actions-dev-entry').click()
+    await page.getByTestId('open-command-modal-dev-entry').click()
     await expect(page.getByTestId('command-modal')).toBeVisible({ timeout: 5_000 })
     // Default selection is door_open
     const select = page.getByTestId('command-modal-select')
@@ -97,13 +100,13 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
 
   // ── T-05: door_open command reaches mock — NON-OPTIONAL B6 assertion ──────
   //
-  // PATH B: backend dispatches PUT /ISAPI/RemoteControl/door/0 to mock_hikvision
+  // PATH B: backend dispatches PUT /ISAPI/AccessControl/RemoteControl/door/1
   // (127.0.0.1:4400); the mock records it in recv_log; we assert via
   // GET /admin/recv-log. This is the B6 contract — assertion is non-optional and concrete.
   test('door open command reaches mock (verifiable assertion — B6 lock)', async ({ page, request }) => {
     await page.goto('/devices')
     // Open command modal for dev-entry (connected to mock public port 4400)
-    await page.getByTestId('dev-actions-dev-entry').click()
+    await page.getByTestId('open-command-modal-dev-entry').click()
     await expect(page.getByTestId('command-modal')).toBeVisible({ timeout: 5_000 })
     // door_open is already selected by default
     await expect(page.getByTestId('command-modal-select')).toHaveValue('door_open')
@@ -118,18 +121,18 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
       const body = await r.json()
       const cmds: Array<{ method: string; path: string }> = body.commands ?? []
       return cmds.some(c =>
-        c.method === 'PUT' && c.path === '/ISAPI/RemoteControl/door/0'
+        c.method === 'PUT' && c.path === '/ISAPI/AccessControl/RemoteControl/door/1'
       )
     }, {
       timeout: 15_000,
-      message: 'Mock recv-log did not record PUT /ISAPI/RemoteControl/door/0 — backend did not dispatch the door-open command to the mock device',
+      message: 'Mock recv-log did not record PUT /ISAPI/AccessControl/RemoteControl/door/1 — backend did not dispatch the door-open command to the mock device',
     }).toBe(true)
   })
 
   // ── T-06: reboot command dispatch ─────────────────────────────────────────
   test('reboot command dispatches to mock and closes modal', async ({ page, request }) => {
     await page.goto('/devices')
-    await page.getByTestId('dev-actions-dev-entry').click()
+    await page.getByTestId('open-command-modal-dev-entry').click()
     await expect(page.getByTestId('command-modal')).toBeVisible({ timeout: 5_000 })
     // Select reboot
     await page.getByTestId('command-modal-select').selectOption('reboot')
@@ -139,21 +142,22 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
     await page.getByTestId('command-modal-submit').click()
     // Modal closes on success
     await expect(page.getByTestId('command-modal')).not.toBeVisible({ timeout: 15_000 })
-    // Mock received the reboot call (UserInfo/Record is the reboot path on Hikvision)
+    // Mock received the production reboot call.
     await expect.poll(async () => {
       const r = await request.get(ADMIN_RECV_LOG)
       const body = await r.json()
       const cmds: Array<{ method: string; path: string }> = body.commands ?? []
-      // Reboot goes to /ISAPI/System/reboot or /ISAPI/AccessControl/UserInfo/Record
-      // based on backend isapi/client.rs — check any PUT reached the mock
-      return cmds.length > 0
-    }, { timeout: 15_000, message: 'Mock recv-log is empty — reboot command was not dispatched' }).toBe(true)
+      return cmds.some(c => c.method === 'PUT' && c.path === '/ISAPI/System/reboot')
+    }, {
+      timeout: 15_000,
+      message: 'Mock recv-log did not record PUT /ISAPI/System/reboot',
+    }).toBe(true)
   })
 
   // ── T-07: enrollment_mode command dispatches to mock ─────────────────────
   test('enrollment_mode command dispatches to mock', async ({ page, request }) => {
     await page.goto('/devices')
-    await page.getByTestId('dev-actions-dev-entry').click()
+    await page.getByTestId('open-command-modal-dev-entry').click()
     await expect(page.getByTestId('command-modal')).toBeVisible({ timeout: 5_000 })
     await page.getByTestId('command-modal-select').selectOption('enrollment_mode')
     await expect(page.getByTestId('command-modal-select')).toHaveValue('enrollment_mode')
@@ -163,8 +167,13 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
       const r = await request.get(ADMIN_RECV_LOG)
       const body = await r.json()
       const cmds: Array<{ method: string; path: string }> = body.commands ?? []
-      return cmds.length > 0
-    }, { timeout: 15_000, message: 'Mock recv-log is empty — enrollment_mode command was not dispatched' }).toBe(true)
+      return cmds.some(c =>
+        c.method === 'POST' && c.path === '/ISAPI/AccessControl/CaptureFaceData'
+      )
+    }, {
+      timeout: 15_000,
+      message: 'Mock recv-log did not record POST /ISAPI/AccessControl/CaptureFaceData',
+    }).toBe(true)
   })
 
   // ── T-08: Device INSERT writes audit_log entry (trigger-based audit) ──────
@@ -200,35 +209,37 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
   })
 
   // ── T-09: Viewer cannot see Comando button (RBAC UI gating) ─────────────
-  test('Viewer cannot see Comando action button (RBAC UI gating)', async ({ browser }) => {
+  test('Viewer cannot see Comandos action button (RBAC UI gating)', async ({ browser }) => {
     const ctx = await newRoleContext(browser, 'viewer')
     const page = await ctx.newPage()
     await page.goto('/devices')
     // Devices page loads (viewer can list devices — all authenticated roles can)
-    await expect(page.getByText('Dispositivos')).toBeVisible({ timeout: 10_000 })
-    // dev-actions-* (Comando button) is Admin-only — must not be visible for Viewer
-    await expect(page.getByTestId('dev-actions-dev-entry')).toHaveCount(0)
-    await expect(page.getByTestId('dev-actions-dev-exit')).toHaveCount(0)
+    await expect(
+      page.getByRole('heading', { name: 'Administración de Dispositivos' }),
+    ).toBeVisible({ timeout: 10_000 })
+    // open-command-modal-* (Comandos button) is Admin-only — must not be visible for Viewer
+    await expect(page.getByTestId('open-command-modal-dev-entry')).toHaveCount(0)
+    await expect(page.getByTestId('open-command-modal-dev-exit')).toHaveCount(0)
     // Devices are still listed — Viewer can see device names (list is not restricted)
     await expect(page.getByText('Entrada Principal')).toBeVisible()
     await ctx.close()
   })
 
   // ── T-10: Device list shows both devices by direction label ──────────────
-  // The device table renders direction column as Spanish: 'Entrada' / 'Salida'.
-  // This verifies the i18n mapping in device-table.tsx:
+  // Each device card renders direction as Spanish: 'Entrada' / 'Salida'.
+  // This verifies the i18n mapping in device-card.tsx:
   //   direction === 'entry' → 'Entrada'
   //   direction === 'exit'  → 'Salida'
-  test('device table renders direction labels in Spanish', async ({ page }) => {
+  test('device cards render direction labels in Spanish', async ({ page }) => {
     await page.goto('/devices')
-    await expect(page.getByTestId('dev-row-dev-entry')).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByTestId('dev-row-dev-exit')).toBeVisible()
+    await expect(page.getByTestId('dev-card-dev-entry')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('dev-card-dev-exit')).toBeVisible()
     // dev-entry has direction 'entry' → renders 'Entrada'
-    const entryRow = page.getByTestId('dev-row-dev-entry')
-    await expect(entryRow.getByText('Entrada')).toBeVisible()
+    const entryCard = page.getByTestId('dev-card-dev-entry')
+    await expect(entryCard.getByText('Entrada', { exact: true })).toBeVisible()
     // dev-exit has direction 'exit' → renders 'Salida'
-    const exitRow = page.getByTestId('dev-row-dev-exit')
-    await expect(exitRow.getByText('Salida')).toBeVisible()
+    const exitCard = page.getByTestId('dev-card-dev-exit')
+    await expect(exitCard.getByText('Salida', { exact: true })).toBeVisible()
   })
 
   // ── T-11: Command modal select lists all three ISAPI commands ─────────────
@@ -238,7 +249,7 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
   // the Command enum: { DoorOpen, Reboot, EnrollmentMode }.
   test('command modal select contains door_open, reboot, enrollment_mode options', async ({ page }) => {
     await page.goto('/devices')
-    await page.getByTestId('dev-actions-dev-entry').click()
+    await page.getByTestId('open-command-modal-dev-entry').click()
     await expect(page.getByTestId('command-modal')).toBeVisible({ timeout: 5_000 })
     const select = page.getByTestId('command-modal-select')
     await expect(select).toBeVisible()
@@ -250,5 +261,16 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
     expect(values).toContain('enrollment_mode')
     // Close the modal
     await page.getByRole('button', { name: /Cancelar/i }).click()
+  })
+
+  test('create form offers only entry and exit directions', async ({ page }) => {
+    await page.goto('/devices')
+    await page.getByTestId('add-device-button').click()
+    await expect(page.getByTestId('create-device-modal')).toBeVisible()
+
+    const values = await page.getByTestId('device-direction').locator('option').evaluateAll(
+      options => options.map(option => (option as HTMLOptionElement).value),
+    )
+    expect(values).toEqual(['entry', 'exit'])
   })
 })

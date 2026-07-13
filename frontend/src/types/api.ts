@@ -66,13 +66,23 @@ export interface Department {
   updated_at: string
 }
 
+export type DeviceConnectionState = 'online' | 'offline' | 'unknown'
+export type DeviceStatus = 'active' | 'inactive'
+
 export interface Device {
   id: string
   name: string
-  ip_address: string
-  direction: 'entry' | 'exit' | 'both'
-  status: 'online' | 'offline' | 'unknown'
+  ip: string
+  port: number
+  scheme: 'http' | 'https'
+  username: string
+  direction: 'entry' | 'exit'
+  allow_insecure_tls: boolean
+  connection_state: DeviceConnectionState
   last_seen_at: string | null
+  status: DeviceStatus
+  deleted_at: string | null
+  version: number
   created_at: string
   updated_at: string
 }

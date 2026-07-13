@@ -130,7 +130,6 @@ export function CreateDeviceModal({ open, onClose }: CreateDeviceModalProps) {
                   >
                     <option value="entry">Entrada</option>
                     <option value="exit">Salida</option>
-                    <option value="both">Ambos</option>
                   </select>
                 </Field>
               </Row>

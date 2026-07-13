@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { KioskCaptureTab } from '../kiosk-capture-tab'
+import deviceFixture from '../../devices/__tests__/fixtures/device.json'
 
 // Stub URL methods
 globalThis.URL.createObjectURL = vi.fn(() => 'blob:test-kiosk-url')
@@ -27,7 +28,7 @@ function makeWrapper() {
   }
 }
 
-const DEVICE = { id: 'dev-1', name: 'Entrada Principal', ip_address: '192.168.1.10', status: 'active' }
+const DEVICE = deviceFixture
 
 describe('KioskCaptureTab', () => {
   const mockOnCaptured = vi.fn()
@@ -67,11 +68,11 @@ describe('KioskCaptureTab', () => {
     })
 
     // Wait for device options to appear
-    await waitFor(() => screen.getByText('Entrada Principal (192.168.1.10)'))
+    await waitFor(() => screen.getByText('Entrada Principal (127.0.0.1)'))
 
     // Select device then click
     const select = screen.getByLabelText(/Seleccionar dispositivo/i) as HTMLSelectElement
-    await act(async () => { fireEvent.change(select, { target: { value: 'dev-1' } }) })
+    await act(async () => { fireEvent.change(select, { target: { value: 'dev-entry' } }) })
 
     // Button should now be enabled — find it and click
     const btn = screen.getByRole('button', { name: /Iniciar Captura/i })
@@ -80,7 +81,7 @@ describe('KioskCaptureTab', () => {
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith(
         '/enrollments/capture-from-device',
-        { device_id: 'dev-1', employee_id: employeeId }
+        { device_id: 'dev-entry', employee_id: employeeId }
       )
     })
   })
@@ -103,10 +104,10 @@ describe('KioskCaptureTab', () => {
       render(<KioskCaptureTab employeeId={employeeId} onCaptured={mockOnCaptured} />, { wrapper: makeWrapper() })
     })
 
-    await waitFor(() => screen.getByText('Entrada Principal (192.168.1.10)'))
+    await waitFor(() => screen.getByText('Entrada Principal (127.0.0.1)'))
 
     const select = screen.getByLabelText(/Seleccionar dispositivo/i) as HTMLSelectElement
-    await act(async () => { fireEvent.change(select, { target: { value: 'dev-1' } }) })
+    await act(async () => { fireEvent.change(select, { target: { value: 'dev-entry' } }) })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Iniciar Captura/i })) })
 
     // Wait for mutation + poll to resolve → captured state → Aceptar visible
@@ -136,10 +137,10 @@ describe('KioskCaptureTab', () => {
       render(<KioskCaptureTab employeeId={employeeId} onCaptured={mockOnCaptured} />, { wrapper: makeWrapper() })
     })
 
-    await waitFor(() => screen.getByText('Entrada Principal (192.168.1.10)'))
+    await waitFor(() => screen.getByText('Entrada Principal (127.0.0.1)'))
 
     const select = screen.getByLabelText(/Seleccionar dispositivo/i) as HTMLSelectElement
-    await act(async () => { fireEvent.change(select, { target: { value: 'dev-1' } }) })
+    await act(async () => { fireEvent.change(select, { target: { value: 'dev-entry' } }) })
 
     // Wait for button to become enabled (device selected, not disabled)
     const btn = await waitFor(() => {

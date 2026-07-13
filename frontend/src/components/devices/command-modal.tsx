@@ -46,7 +46,7 @@ export function CommandModal({ open, device, onClose }: CommandModalProps) {
         </DialogHeader>
         <div className="space-y-4">
           <p className="text-sm text-slate-600">
-            Dispositivo: <strong>{device?.name}</strong> ({device?.ip_address})
+            Dispositivo: <strong>{device?.name}</strong> ({device?.ip})
           </p>
           <div>
             <label className="text-xs text-slate-500 font-medium uppercase tracking-wide">Comando</label>

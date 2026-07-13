@@ -157,7 +157,7 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
               <option value="">Selecciona un dispositivo…</option>
               {devices.map(d => (
                 <option key={d.id} value={d.id}>
-                  {d.name} ({d.ip_address})
+                  {d.name} ({d.ip})
                 </option>
               ))}
             </select>

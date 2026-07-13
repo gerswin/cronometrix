@@ -21,6 +21,22 @@ function getTodayCaracasEpochs(): { from: number; to: number } {
   return { from, to }
 }
 
+async function fetchAllDevices(): Promise<PaginatedResponse<Device>> {
+  const [active, inactive] = await Promise.all([
+    api.get('/devices', { params: { status: 'active' } })
+      .then(r => r.data as PaginatedResponse<Device>),
+    api.get('/devices', { params: { status: 'inactive' } })
+      .then(r => r.data as PaginatedResponse<Device>),
+  ])
+
+  return {
+    data: [...active.data, ...inactive.data],
+    total: active.total + inactive.total,
+    limit: active.limit + inactive.limit,
+    offset: 0,
+  }
+}
+
 export default function DashboardPage() {
   const today = format(new Date(), 'yyyy-MM-dd')
   const { from: epochFrom, to: epochTo } = getTodayCaracasEpochs()
@@ -40,7 +56,7 @@ export default function DashboardPage() {
 
   const { data: devicesData } = useQuery<PaginatedResponse<Device>>({
     queryKey: ['devices'],
-    queryFn: () => api.get('/devices').then(r => r.data),
+    queryFn: fetchAllDevices,
     refetchInterval: 30_000,
   })
 
@@ -81,16 +97,27 @@ export default function DashboardPage() {
     ? `de ${totalActiveEmployees} registrados`
     : 'de — registrados'
 
-  const onlineCount = devices.filter(d => d.status !== 'offline').length
+  const activeDevices = devices.filter(d => d.status === 'active')
+  const inactiveCount = devices.length - activeDevices.length
+  const onlineCount = activeDevices.filter(d => d.connection_state === 'online').length
+  const activeProblemCount = activeDevices.length - onlineCount
   const deviceValueColor =
-    devices.length === 0         ? '#1A1A1A' :
-    onlineCount === devices.length ? '#22C55E' :
+    activeDevices.length === 0     ? '#1A1A1A' :
+    onlineCount === activeDevices.length ? '#22C55E' :
     onlineCount === 0             ? '#EF4444' :
     '#F59E0B'
   const deviceSub =
-    devices.length === 0          ? 'sin dispositivos' :
-    onlineCount === devices.length ? 'todos operativos' :
-    `${devices.length - onlineCount} con problemas`
+    devices.length === 0 ? 'sin dispositivos' :
+    activeDevices.length === 0 ? `${inactiveCount} inactivo${inactiveCount > 1 ? 's' : ''}` :
+    activeProblemCount === 0 && inactiveCount === 0 ? 'todos operativos' :
+    [
+      activeProblemCount > 0
+        ? `${activeProblemCount} activo${activeProblemCount > 1 ? 's' : ''} con problemas`
+        : null,
+      inactiveCount > 0
+        ? `${inactiveCount} inactivo${inactiveCount > 1 ? 's' : ''}`
+        : null,
+    ].filter(Boolean).join(' · ')
 
   const unknownCount = unknownEventsData?.data.filter(e => e.is_unknown).length ?? 0
 
@@ -205,7 +232,7 @@ export default function DashboardPage() {
           <KPITile
             testId="kpi-dispositivos-activos"
             title="Dispositivos Activos"
-            value={`${onlineCount}/${devices.length}`}
+            value={`${onlineCount}/${activeDevices.length}`}
             valueColor={deviceValueColor}
             sub={deviceSub}
           />

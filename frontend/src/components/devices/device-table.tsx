@@ -4,7 +4,13 @@ import { Terminal } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import type { Device } from '@/types/api'
 
-function StatusBadge({ status, deviceId }: { status: Device['status']; deviceId: string }) {
+function StatusBadge({
+  state,
+  deviceId,
+}: {
+  state: Device['connection_state']
+  deviceId: string
+}) {
   const map = {
     online: 'bg-green-100 text-green-700',
     offline: 'bg-red-100 text-red-700',
@@ -13,10 +19,25 @@ function StatusBadge({ status, deviceId }: { status: Device['status']; deviceId:
   const labels = { online: 'En línea', offline: 'Offline', unknown: 'Desconocido' }
   return (
     <span
-      className={`px-2 py-0.5 rounded-full text-xs font-medium ${map[status]}`}
+      className={`px-2 py-0.5 rounded-full text-xs font-medium ${map[state]}`}
       data-testid={`dev-status-${deviceId}`}
     >
-      {labels[status]}
+      {labels[state]}
+    </span>
+  )
+}
+
+function LifecycleBadge({ status, deviceId }: { status: Device['status']; deviceId: string }) {
+  return (
+    <span
+      className={
+        status === 'active'
+          ? 'px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700'
+          : 'px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600'
+      }
+      data-testid={`dev-lifecycle-${deviceId}`}
+    >
+      {status === 'active' ? 'Activo' : 'Inactivo'}
     </span>
   )
 }
@@ -48,12 +69,15 @@ export function DeviceTable({ devices, onCommandClick }: DeviceTableProps) {
             data-testid={`dev-row-${device.id}`}
           >
             <td className="px-3 py-3 font-medium text-slate-800">{device.name}</td>
-            <td className="px-3 py-3 text-slate-600 font-mono text-xs">{device.ip_address}</td>
+            <td className="px-3 py-3 text-slate-600 font-mono text-xs">{device.ip}</td>
             <td className="px-3 py-3 text-slate-600 capitalize">
-              {device.direction === 'entry' ? 'Entrada' : device.direction === 'exit' ? 'Salida' : 'Ambos'}
+              {device.direction === 'entry' ? 'Entrada' : 'Salida'}
             </td>
             <td className="px-3 py-3">
-              <StatusBadge status={device.status} deviceId={device.id} />
+              <div className="flex items-center gap-2">
+                <StatusBadge state={device.connection_state} deviceId={device.id} />
+                <LifecycleBadge status={device.status} deviceId={device.id} />
+              </div>
             </td>
             <td className="px-3 py-3 text-xs text-slate-500">
               {device.last_seen_at
@@ -62,7 +86,7 @@ export function DeviceTable({ devices, onCommandClick }: DeviceTableProps) {
             </td>
             <td className="px-3 py-3">
               {/* D-14: ISAPI command buttons — Admin only, hidden for Supervisor/Viewer */}
-              {role === 'admin' && (
+              {role === 'admin' && device.status === 'active' && (
                 <button
                   onClick={() => onCommandClick(device)}
                   className="flex items-center gap-1.5 px-3 py-1 text-xs rounded border border-slate-200 hover:bg-slate-50 text-slate-600"

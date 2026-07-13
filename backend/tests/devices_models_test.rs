@@ -4,7 +4,7 @@
 
 use cronometrix_api::devices::models::{
     validate_direction, validate_ip, validate_scheme, validate_status, Command, CommandRequest,
-    CreateDeviceRequest, DeviceWithPlaintext, UpdateDeviceRequest,
+    CreateDeviceRequest, DeviceResponse, DeviceWithPlaintext, UpdateDeviceRequest,
 };
 use validator::Validate;
 
@@ -71,6 +71,60 @@ fn validate_ip_rejects_garbage() {
     assert!(validate_ip("999.999.999.999").is_err());
     assert!(validate_ip("").is_err());
     assert!(validate_ip("hostname.example.com").is_err());
+}
+
+#[test]
+fn device_response_serializes_the_canonical_public_contract() {
+    let response = DeviceResponse {
+        id: "dev-entry".into(),
+        name: "Entrada Principal".into(),
+        ip: "127.0.0.1".into(),
+        port: 4400,
+        scheme: "http".into(),
+        username: "admin".into(),
+        direction: "entry".into(),
+        allow_insecure_tls: false,
+        connection_state: "online".into(),
+        last_seen_at: None,
+        status: "active".into(),
+        deleted_at: None,
+        version: 1,
+        created_at: "2026-04-15T12:00:00Z".into(),
+        updated_at: "2026-04-15T12:00:00Z".into(),
+    };
+
+    let value = serde_json::to_value(response).expect("DeviceResponse must serialize");
+    let object = value
+        .as_object()
+        .expect("device response must be an object");
+    let expected_keys = [
+        "id",
+        "name",
+        "ip",
+        "port",
+        "scheme",
+        "username",
+        "direction",
+        "allow_insecure_tls",
+        "connection_state",
+        "last_seen_at",
+        "status",
+        "deleted_at",
+        "version",
+        "created_at",
+        "updated_at",
+    ];
+
+    assert_eq!(object.len(), expected_keys.len());
+    for key in expected_keys {
+        assert!(object.contains_key(key), "missing canonical key: {key}");
+    }
+    assert_eq!(object["ip"], "127.0.0.1");
+    assert_eq!(object["connection_state"], "online");
+    assert_eq!(object["status"], "active");
+    assert!(!object.contains_key("password"));
+    assert!(!object.contains_key("encrypted_password"));
+    assert!(!object.contains_key("ip_address"));
 }
 
 // =============================================================================

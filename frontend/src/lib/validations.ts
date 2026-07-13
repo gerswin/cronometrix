@@ -217,7 +217,7 @@ export const createDeviceFormSchema = z.object({
   scheme: z.enum(['http', 'https'], { error: 'Esquema inválido' }),
   username: z.string().min(1, 'Usuario es requerido').max(100, 'Máximo 100 caracteres'),
   password: z.string().min(1, 'Contraseña es requerida').max(200, 'Máximo 200 caracteres'),
-  direction: z.enum(['entry', 'exit', 'both'], { error: 'Función inválida' }),
+  direction: z.enum(['entry', 'exit'], { error: 'Función inválida' }),
   allow_insecure_tls: z.boolean(),
 })
 export type CreateDeviceFormValues = z.infer<typeof createDeviceFormSchema>

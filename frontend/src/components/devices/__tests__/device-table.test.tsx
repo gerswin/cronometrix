@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { DeviceTable } from '../device-table'
+import { DeviceCard } from '../device-card'
 import type { Device } from '@/types/api'
+import { createDeviceFormSchema } from '@/lib/validations'
+import deviceFixture from './fixtures/device.json'
 
 const { useAuthMock } = vi.hoisted(() => ({ useAuthMock: vi.fn() }))
 vi.mock('@/hooks/use-auth', () => ({
@@ -10,14 +13,7 @@ vi.mock('@/hooks/use-auth', () => ({
 
 function makeDevice(over: Partial<Device> = {}): Device {
   return {
-    id: 'dev-1',
-    name: 'Entrada Principal',
-    ip_address: '10.0.0.10',
-    direction: 'entry',
-    status: 'online',
-    last_seen_at: '2026-04-28T12:00:00Z',
-    created_at: '2026-04-01T00:00:00Z',
-    updated_at: '2026-04-01T00:00:00Z',
+    ...(deviceFixture as Device),
     ...over,
   }
 }
@@ -44,9 +40,8 @@ describe('DeviceTable', () => {
     render(
       <DeviceTable
         devices={[
-          makeDevice({ id: 'a', name: 'Lector A', direction: 'entry', status: 'online' }),
-          makeDevice({ id: 'b', name: 'Lector B', direction: 'exit', status: 'offline', ip_address: '10.0.0.11' }),
-          makeDevice({ id: 'c', name: 'Recepción', direction: 'both', status: 'unknown', ip_address: '10.0.0.12' }),
+          makeDevice({ id: 'a', name: 'Lector A', direction: 'entry' }),
+          makeDevice({ id: 'b', name: 'Lector B', direction: 'exit', ip: '10.0.0.11' }),
         ]}
         onCommandClick={() => {}}
       />
@@ -56,25 +51,49 @@ describe('DeviceTable', () => {
     // Direction translations rendered in their own cells
     expect(screen.getByText('Entrada')).toBeTruthy()
     expect(screen.getByText('Salida')).toBeTruthy()
-    expect(screen.getByText('Ambos')).toBeTruthy()
-    expect(screen.getByText('10.0.0.10')).toBeTruthy()
+    expect(screen.queryByText('Ambos')).toBeNull()
+    expect(screen.getByText('127.0.0.1')).toBeTruthy()
     expect(screen.getByText('10.0.0.11')).toBeTruthy()
   })
 
-  it('renders status badges with the Spanish labels for each status', () => {
+  it('renders connectivity badges from connection_state with stable device testids', () => {
     render(
       <DeviceTable
         devices={[
-          makeDevice({ id: 'a', name: 'A', status: 'online' }),
-          makeDevice({ id: 'b', name: 'B', status: 'offline' }),
-          makeDevice({ id: 'c', name: 'C', status: 'unknown' }),
+          makeDevice({ id: 'a', name: 'A', connection_state: 'online' }),
+          makeDevice({ id: 'b', name: 'B', connection_state: 'offline' }),
+          makeDevice({ id: 'c', name: 'C', connection_state: 'unknown' }),
         ]}
         onCommandClick={() => {}}
       />
     )
-    expect(screen.getByText('En línea')).toBeTruthy()
-    expect(screen.getByText('Offline')).toBeTruthy()
-    expect(screen.getByText('Desconocido')).toBeTruthy()
+    expect(screen.getByTestId('dev-status-a').textContent).toBe('En línea')
+    expect(screen.getByTestId('dev-status-b').textContent).toBe('Offline')
+    expect(screen.getByTestId('dev-status-c').textContent).toBe('Desconocido')
+  })
+
+  it('shows inactive lifecycle separately from online connectivity', () => {
+    render(
+      <DeviceTable
+        devices={[makeDevice({ id: 'inactive', status: 'inactive', connection_state: 'online' })]}
+        onCommandClick={() => {}}
+      />
+    )
+    expect(screen.getByTestId('dev-status-inactive').textContent).toBe('En línea')
+    expect(screen.getByText('Inactivo')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Enviar comando/i })).toBeNull()
+  })
+
+  it('does not expose card commands for inactive devices', () => {
+    render(
+      <DeviceCard
+        device={makeDevice({ id: 'inactive-card', status: 'inactive' })}
+        canEdit={true}
+        onCommandClick={() => {}}
+      />
+    )
+    expect(screen.getByTestId('dev-lifecycle-inactive-card').textContent).toBe('Inactivo')
+    expect(screen.queryByRole('button', { name: /Enviar comando/i })).toBeNull()
   })
 
   it('shows em-dash for last_seen_at when null', () => {
@@ -106,5 +125,21 @@ describe('DeviceTable', () => {
     useAuthMock.mockReturnValue({ role: 'viewer', sub: 'u1', claims: null })
     render(<DeviceTable devices={[makeDevice()]} onCommandClick={() => {}} />)
     expect(screen.queryByRole('button', { name: /Enviar comando/i })).toBeNull()
+  })
+
+  it('accepts only entry or exit when creating a device', () => {
+    const request = {
+      name: 'Entrada Principal',
+      ip: '127.0.0.1',
+      port: 4400,
+      scheme: 'http' as const,
+      username: 'admin',
+      password: 'secret',
+      allow_insecure_tls: false,
+    }
+
+    expect(createDeviceFormSchema.safeParse({ ...request, direction: 'entry' }).success).toBe(true)
+    expect(createDeviceFormSchema.safeParse({ ...request, direction: 'exit' }).success).toBe(true)
+    expect(createDeviceFormSchema.safeParse({ ...request, direction: 'both' }).success).toBe(false)
   })
 })
