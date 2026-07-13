@@ -10,6 +10,7 @@
 .PHONY: test-ci-config coverage coverage-backend coverage-frontend
 
 test-ci-config:
+	bash scripts/tests/test-ci-node-version-files.sh
 	bash scripts/test-ci-node-version-files.sh
 
 coverage: test-ci-config coverage-backend coverage-frontend

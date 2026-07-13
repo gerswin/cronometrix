@@ -24,10 +24,13 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - name: Install nightly Rust (--branch is unstable)
+      - name: Install pinned Rust toolchain (--branch is unstable)
         run: |
-          rustup toolchain install nightly --component llvm-tools-preview
-          rustup default nightly
+          PINNED_RUST="$(sed -n 's/^channel = "\(.*\)"/\1/p' ../rust-toolchain.toml)"
+          test -n "$PINNED_RUST"
+          rustup toolchain install "$PINNED_RUST" --profile minimal \
+            --component llvm-tools-preview --component rustfmt --component clippy
+          rustup show active-toolchain | grep -F "$PINNED_RUST"
           rustc --version
       - uses: Swatinem/rust-cache@v2
         with:
@@ -104,11 +107,13 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Pin npm
         run: npm install --global npm@11.12.1
-      - name: Install stable Rust toolchain (mirrors Phase 8 backend-coverage pattern)
+      - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install stable
-          rustup default stable
-          rustup component add clippy
+          PINNED_RUST="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$PINNED_RUST"
+          rustup toolchain install "$PINNED_RUST" --profile minimal \
+            --component llvm-tools-preview --component rustfmt --component clippy
+          rustup show active-toolchain | grep -F "$PINNED_RUST"
           rustc --version
       - uses: Swatinem/rust-cache@v2
         with:
