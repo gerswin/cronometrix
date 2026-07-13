@@ -1,7 +1,7 @@
 # .github/workflows/ci.yml
-# Phase 8 quality gate: backend + frontend coverage on every push + PR to main.
-# Hard-fails on threshold miss (D-13). HTML artifacts uploaded for triage (D-04).
-# Two parallel jobs (D-05); both required via GitHub branch protection (manual UI step).
+# Coverage and E2E gates run on every push and PR to main.
+# Threshold misses hard-fail; HTML/test artifacts are uploaded for triage.
+# Phase 13 applies and proves required-check branch protection on main.
 name: CI
 
 on:

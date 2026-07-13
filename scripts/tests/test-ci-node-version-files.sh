@@ -73,6 +73,16 @@ jobs:
 test "$(run_guard "$missing_root" "$tmp_root/missing.log")" -ne 0
 rg -q 'references missing node-version-file: frontend/.nvmrc' "$tmp_root/missing.log"
 
+escape_root="$(write_repo escape 'name: CI
+jobs:
+  test:
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ../outside/.nvmrc')"
+test "$(run_guard "$escape_root" "$tmp_root/escape.log")" -ne 0
+rg -q 'escapes the repository: ../outside/.nvmrc' "$tmp_root/escape.log"
+
 no_setup_root="$(write_repo no-setup 'name: CI
 jobs:
   test:
