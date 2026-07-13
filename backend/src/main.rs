@@ -84,6 +84,8 @@ async fn main() -> anyhow::Result<()> {
     // The exit code 2 contract is locked by backend/tests/license_bypass_safety.rs.
     let license_valid = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let e2e = std::env::var("CRONOMETRIX_E2E").as_deref() == Ok("true");
+    let test_reset_enabled =
+        e2e && std::env::var("CRONOMETRIX_TEST_RESET_ENABLED").as_deref() == Ok("true");
     let bypass = std::env::var("CRONOMETRIX_LICENSE_BYPASS").as_deref() == Ok("true");
     match license::service::evaluate_bypass(e2e, bypass) {
         license::service::BypassDecision::AbortMisconfigured => {
@@ -132,6 +134,8 @@ async fn main() -> anyhow::Result<()> {
         purge_tx: Some(purge_tx),
         backfill_tx: Some(backfill_tx),
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
+        e2e_enabled: e2e,
+        test_reset_enabled,
     };
 
     // Start the supervisor: one tokio task per active device for alertStream
@@ -409,7 +413,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(admin_routes)
         .merge(enrollment_routes);
 
-    if std::env::var("CRONOMETRIX_E2E").as_deref() == Ok("true") {
+    if state.e2e_enabled && state.test_reset_enabled {
         tracing::warn!(
             "registering /__test_reset route — CRONOMETRIX_E2E=true detected; \
              this route MUST NOT be reachable in production"

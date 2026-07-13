@@ -30,7 +30,7 @@ pub async fn test_reset(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // Defense in depth: refuse to execute unless flag is still set.
     // Prevents configuration drift if main.rs guard is somehow bypassed.
-    if std::env::var("CRONOMETRIX_E2E").as_deref() != Ok("true") {
+    if !state.e2e_enabled || !state.test_reset_enabled {
         return Err(StatusCode::NOT_FOUND);
     }
 

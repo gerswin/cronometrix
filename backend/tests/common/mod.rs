@@ -513,6 +513,8 @@ pub fn test_state(
         backfill_tx: None,
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
         db_write: cronometrix_api::db::write_queue::DbWriteQueue::new(db_write_tx),
+        e2e_enabled: false,
+        test_reset_enabled: false,
     }
 }
 

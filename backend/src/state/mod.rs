@@ -79,4 +79,8 @@ pub struct AppState {
     /// Phase 7: in-memory kiosk-capture session state (D-02).
     /// Shared across capture_from_device + get_capture handlers.
     pub captures: CapturesMap,
+    /// Startup-captured test capability; use only for E2E license bypass.
+    pub e2e_enabled: bool,
+    /// Separate startup-captured capability for the destructive reset route.
+    pub test_reset_enabled: bool,
 }
