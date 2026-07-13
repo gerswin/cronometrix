@@ -29,10 +29,8 @@
  *   All mutations use the e2e_admin user (actor_id = 'e2e-admin-id')
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, newRoleContext } from './fixtures/auth'
 import { resetMutableTables, getAudit, API_BASE } from './fixtures/api'
-
-test.use({ storageState: 'e2e/.auth/admin.json' })
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -82,7 +80,7 @@ test.describe('Audit log page (D-04 UAT)', () => {
     page,
     request,
   }) => {
-    // Seed a mutation as the e2e_admin (default storageState role)
+    // Seed a mutation as the e2e_admin (default fixture role)
     await request.post(`${API_BASE}/employees`, {
       data: { name: 'Admin Made', employee_code: 'ADM001', department_id: 'dept-prod' },
     })
@@ -177,7 +175,7 @@ test.describe('Audit log page (D-04 UAT)', () => {
   test('Viewer is denied access (AccessRestricted renders; audit-page absent)', async ({
     browser,
   }) => {
-    const ctx = await browser.newContext({ storageState: 'e2e/.auth/viewer.json' })
+    const ctx = await newRoleContext(browser, 'viewer')
     const page = await ctx.newPage()
     await page.goto('/audit')
 

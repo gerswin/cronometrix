@@ -4,13 +4,8 @@ import { E2E_ROOT, E2E_DB_PATH } from "./fixtures/run-context";
 /**
  * Playwright globalTeardown — runs once at the end of the full test suite.
  *
- * Removes per-run ephemeral state from /tmp so disk doesn't accumulate across runs:
- * - /tmp/cronometrix-e2e-{RUN_ID}/  (filesystem roots: leaves, events, enrollments, …)
- * - /tmp/cronometrix-e2e-{RUN_ID}.db (SQLite DB file + WAL/SHM siblings)
- *
- * .auth/{role}.json files are intentionally LEFT in place between local runs —
- * Playwright treats them as a cache and the setup project regenerates them on the
- * next run anyway. CI runners always start with a fresh FS so this is moot there.
+ * Removes per-run ephemeral state from /tmp so disk doesn't accumulate across runs.
+ * Auth state is not persisted; every test creates a fresh role context.
  */
 export default async function globalTeardown(): Promise<void> {
   const PATHS_ROOT = E2E_ROOT;

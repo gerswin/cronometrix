@@ -4,6 +4,7 @@ import { E2E_ROOT, e2eEnv } from "./e2e/fixtures/run-context";
 
 const PATHS_ROOT = E2E_ROOT;
 fs.mkdirSync(PATHS_ROOT, { recursive: true });
+const isE2ERelease = process.env.CRONOMETRIX_E2E_RELEASE === "true";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -44,7 +45,7 @@ export default defineConfig({
   webServer: [
     {
       // Pre-built binary (CI builds in a separate step; local dev runs `cargo build` first).
-      command: process.env.CI
+      command: isE2ERelease
         ? "../backend/target/release/cronometrix"
         : "../backend/target/debug/cronometrix",
       url: "http://127.0.0.1:4001/api/v1/health",
@@ -71,7 +72,7 @@ export default defineConfig({
       },
     },
     {
-      command: process.env.CI
+      command: isE2ERelease
         ? "../backend/target/release/mock_hikvision"
         : "../backend/target/debug/mock_hikvision",
       url: "http://127.0.0.1:4400/ISAPI/System/status",
@@ -87,7 +88,7 @@ export default defineConfig({
       },
     },
     {
-      command: process.env.CI
+      command: isE2ERelease
         ? "next start --port 3001"
         : "next dev --port 3001",
       url: "http://localhost:3001/login",

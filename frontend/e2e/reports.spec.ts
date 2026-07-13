@@ -23,11 +23,11 @@
  *   emp-luis  / Luis García  / dept-prod (Producción)
  *   emp-maria / María López  / dept-admin (Administración)
  *
- * All tests use the pre-authenticated admin session except the RBAC test.
+ * Authenticated tests use a fresh admin context except the explicit RBAC test.
  * test.beforeEach resets mutable tables for determinism (D-12).
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, newRoleContext } from './fixtures/auth'
 import * as XLSX from 'xlsx'
 import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
@@ -86,8 +86,6 @@ const TO_DATE   = `${YEAR}-${MONTH}-${DAY}`    // today
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
-
-test.use({ storageState: 'e2e/.auth/admin.json' })
 
 test.describe('Reports (Reportes) — D-03 export verification', () => {
   test.beforeEach(async ({ request }) => {
@@ -257,7 +255,7 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
   // Per Phase 5 D-20: Admin + Supervisor only. canExport = role === 'admin' || role === 'supervisor'.
   // Viewer role sees neither the Emitir Reporte button nor ExportButtons.
   test('Viewer cannot see Emitir Reporte or ExportButtons (RBAC D-20)', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: 'e2e/.auth/viewer.json' })
+    const ctx = await newRoleContext(browser, 'viewer')
     const page = await ctx.newPage()
     await page.goto('/reports')
     // Page may redirect or show access-restricted — in either case, no export buttons

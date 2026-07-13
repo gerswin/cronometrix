@@ -34,8 +34,8 @@ setup("seed e2e database (idempotent)", async () => {
   // Prefer a pre-built binary over `cargo run` (faster + avoids swallowing build errors).
   // In CI, the binary is pre-built by the workflow step before Playwright starts.
   // In local dev, run `make e2e-build` once after pulling the branch.
-  const isCi = !!process.env.CI;
-  const buildProfile = isCi ? "release" : "debug";
+  const isRelease = process.env.CRONOMETRIX_E2E_RELEASE === "true";
+  const buildProfile = isRelease ? "release" : "debug";
   const prebuiltPath = path.join(
     BACKEND_DIR,
     "target",
@@ -50,7 +50,7 @@ setup("seed e2e database (idempotent)", async () => {
   } else {
     // Fallback: build + run via cargo. Normalize whitespace so releaseFlag="" in dev
     // doesn't produce a double-space ("cargo run  --bin …") that some shells reject.
-    const releaseFlag = isCi ? "--release" : "";
+    const releaseFlag = isRelease ? "--release" : "";
     seedCmd =
       `cargo run ${releaseFlag} --bin seed_e2e --features seed-e2e --quiet`
         .replace(/\s+/g, " ")
@@ -62,6 +62,38 @@ setup("seed e2e database (idempotent)", async () => {
     env: seedEnv,
     stdio: "inherit",
   });
+});
+
+setup("verify backend sees seeded database", async ({ request }) => {
+  expect(e2eEnv().CRONOMETRIX_DB_PATH).toBe(E2E_DB_PATH);
+  expect(e2eEnv().LICENSE_JWT_PATH).toBe(path.join(E2E_ROOT, "license.jwt"));
+
+  const login = await request.post(`${API_BASE}/auth/login`, {
+    data: { username: "e2e_admin", password: "e2e-admin-pass" },
+  });
+  expect(login.status()).toBe(200);
+  const loginBody = await login.json();
+  expect(loginBody.access_token).toBeTruthy();
+
+  const employees = await request.get(`${API_BASE}/employees?limit=100`, {
+    headers: { Authorization: `Bearer ${loginBody.access_token}` },
+  });
+  expect(employees.status()).toBe(200);
+  const employeesBody = await employees.json();
+  const ids = (employeesBody.data ?? employeesBody.items ?? employeesBody).map(
+    (employee: { id: string }) => employee.id,
+  );
+
+  expect(ids).toEqual(
+    expect.arrayContaining([
+      "emp-ana",
+      "emp-luis",
+      "emp-maria",
+      "emp-pedro",
+      "emp-carmen",
+      "emp-jose",
+    ]),
+  );
 });
 
 setup("reset mutable tables (clean slate per run)", async ({ request }) => {

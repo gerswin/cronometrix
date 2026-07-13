@@ -59,7 +59,15 @@
 //   enrollment_routes (require_admin):
 //     POST /enrollments, GET /enrollments/{id}, POST /enrollments/captures, …
 
-import { test, expect } from '@playwright/test'
+import { type Browser } from '@playwright/test'
+import {
+  test,
+  expect,
+  newAuthenticatedRequest,
+  newRoleSession,
+  type E2ERole,
+  type E2ERequestFactory,
+} from './fixtures/auth'
 import { API_BASE } from './fixtures/api'
 import { SEL } from './fixtures/selectors'
 
@@ -67,16 +75,21 @@ import { SEL } from './fixtures/selectors'
 // Helper
 // ---------------------------------------------------------------------------
 
-// Storage state files used by this helper:
-//   e2e/.auth/admin.json
-//   e2e/.auth/supervisor.json
-//   e2e/.auth/viewer.json
 async function withRole(
-  browser: import('@playwright/test').Browser,
-  role: 'admin' | 'supervisor' | 'viewer'
+  playwright: E2ERequestFactory,
+  browser: Browser,
+  role: E2ERole,
 ) {
-  const ctx = await browser.newContext({ storageState: `e2e/.auth/${role}.json` })
-  return { ctx, request: ctx.request }
+  const { context: ctx, accessToken } = await newRoleSession(browser, role)
+  const request = await newAuthenticatedRequest(playwright, accessToken)
+  return {
+    ctx,
+    request,
+    close: async () => {
+      await request.dispose()
+      await ctx.close()
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,47 +98,53 @@ async function withRole(
 
 test.describe('RBAC cross-cut (D-01 + cross-stack)', () => {
   // ── T-01: Viewer read — GET /employees is in viewer_routes (all auth allowed) ──
-  test('viewer: GET /employees → 200 (read allowed per viewer_routes)', async ({ browser }) => {
-    const { ctx, request } = await withRole(browser, 'viewer')
+  test('viewer: GET /employees → 200 (read allowed per viewer_routes)', async ({ playwright, browser }) => {
+    const session = await withRole(playwright, browser, 'viewer')
+    const { request } = session
     const r = await request.get(`${API_BASE}/employees`)
     // viewer_routes includes GET /employees via require_auth (any authenticated role)
     expect(r.status()).toBe(200)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-02: Viewer negative — POST /employees is in supervisor_routes (supervisor+) ──
   test('viewer: POST /employees → 403 (supervisor_routes, supervisor+ only)', async ({
+    playwright,
     browser,
   }) => {
     // main.rs: POST /employees is in supervisor_routes behind require_supervisor_or_above.
     // Viewer token is valid but role === Viewer → rbac.rs returns AppError::Forbidden → 403.
-    const { ctx, request } = await withRole(browser, 'viewer')
+    const session = await withRole(playwright, browser, 'viewer')
+    const { request } = session
     const r = await request.post(`${API_BASE}/employees`, {
       data: { name: 'should not work', employee_code: 'X1', department_id: 'dept-prod' },
     })
     expect(r.status()).toBe(403)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-03: Viewer negative — POST /devices/{id}/commands is in admin_routes ────
   test('viewer: POST /devices/{id}/commands → 403 (admin_routes, admin only)', async ({
+    playwright,
     browser,
   }) => {
     // main.rs: POST /devices/{id}/commands is in admin_routes behind require_admin.
     // Viewer is not Admin → 403. (Supervisor is also 403 — see T-08.)
-    const { ctx, request } = await withRole(browser, 'viewer')
+    const session = await withRole(playwright, browser, 'viewer')
+    const { request } = session
     const r = await request.post(`${API_BASE}/devices/dev-entry/commands`, {
       data: { command: 'door_open' },
     })
     expect(r.status()).toBe(403)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-04: Viewer negative — POST /leaves is in admin_routes (admin only) ──────
-  test('viewer: POST /leaves → 403 (admin_routes, admin only)', async ({ browser }) => {
+  test('viewer: POST /leaves → 403 (admin_routes, admin only)', async ({ playwright, browser }) => {
     // main.rs: POST /leaves is in admin_routes behind require_admin.
     // Viewer is not Admin → 403. (Supervisor is also 403 — see T-08 pattern.)
-    const { ctx, request } = await withRole(browser, 'viewer')
+    const session = await withRole(playwright, browser, 'viewer')
+    const { request } = session
     const r = await request.post(`${API_BASE}/leaves`, {
       data: {
         employee_id: 'emp-ana',
@@ -136,28 +155,32 @@ test.describe('RBAC cross-cut (D-01 + cross-stack)', () => {
       },
     })
     expect(r.status()).toBe(403)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-05: Viewer negative — GET /audit is in supervisor_read_routes ───────────
   test('viewer: GET /audit → 403 (supervisor_read_routes, supervisor+ only)', async ({
+    playwright,
     browser,
   }) => {
     // main.rs: GET /audit is in supervisor_read_routes behind require_supervisor_or_above.
     // Viewer role → rbac.rs returns AppError::Forbidden → 403.
-    const { ctx, request } = await withRole(browser, 'viewer')
+    const session = await withRole(playwright, browser, 'viewer')
+    const { request } = session
     const r = await request.get(`${API_BASE}/audit`)
     expect(r.status()).toBe(403)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-06: Supervisor positive — POST /employees (supervisor_routes) ──────────
   test('supervisor: POST /employees → not 403 (supervisor_routes allows create)', async ({
+    playwright,
     browser,
   }) => {
     // main.rs: POST /employees is in supervisor_routes (require_supervisor_or_above).
     // Supervisor role passes the check → 200/201 (created) or 422 (validation) — NOT 403.
-    const { ctx, request } = await withRole(browser, 'supervisor')
+    const session = await withRole(playwright, browser, 'supervisor')
+    const { request } = session
     const r = await request.post(`${API_BASE}/employees`, {
       data: {
         name: 'Supervisor Created',
@@ -168,40 +191,46 @@ test.describe('RBAC cross-cut (D-01 + cross-stack)', () => {
     // Any non-403 response is acceptable: 200/201 means created; 422 means validation error.
     // The important contract is that role enforcement did NOT fire (no 403).
     expect(r.status()).not.toBe(403)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-07: Supervisor negative — DELETE /employees/{id} is in admin_routes ────
   test('supervisor: DELETE /employees/{id} → 403 (admin_routes, admin only)', async ({
+    playwright,
     browser,
   }) => {
     // main.rs: DELETE /employees/{id} is in admin_routes behind require_admin.
     // Supervisor role is not Admin → rbac.rs returns AppError::Forbidden → 403.
-    const { ctx, request } = await withRole(browser, 'supervisor')
+    const session = await withRole(playwright, browser, 'supervisor')
+    const { request } = session
     const r = await request.delete(`${API_BASE}/employees/emp-ana`)
     expect(r.status()).toBe(403)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-08: Supervisor negative — POST /devices/{id}/commands is in admin_routes ─
   test('supervisor: POST /devices/{id}/commands → 403 (admin_routes, admin only)', async ({
+    playwright,
     browser,
   }) => {
     // main.rs: POST /devices/{id}/commands is in admin_routes (require_admin).
     // Supervisor cannot dispatch device commands — admin only per D-14.
-    const { ctx, request } = await withRole(browser, 'supervisor')
+    const session = await withRole(playwright, browser, 'supervisor')
+    const { request } = session
     const r = await request.post(`${API_BASE}/devices/dev-entry/commands`, {
       data: { command: 'door_open' },
     })
     expect(r.status()).toBe(403)
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-09: Admin positive — POST + DELETE /employees (full access) ────────────
   test('admin: full access — POST /employees + DELETE /employees/{id}', async ({
+    playwright,
     browser,
   }) => {
-    const { ctx, request } = await withRole(browser, 'admin')
+    const session = await withRole(playwright, browser, 'admin')
+    const { request } = session
 
     // Create an employee as admin
     const create = await request.post(`${API_BASE}/employees`, {
@@ -220,7 +249,7 @@ test.describe('RBAC cross-cut (D-01 + cross-stack)', () => {
       expect([200, 204]).toContain(del.status())
     }
 
-    await ctx.close()
+    await session.close()
   })
 
   // ── T-10: Unauthenticated — no token → 401 (require_auth fires) ──────────────
@@ -239,7 +268,7 @@ test.describe('RBAC cross-cut (D-01 + cross-stack)', () => {
   }) => {
     // Frontend conditionally renders the new-employee-button only for admin/supervisor.
     // This is defense-in-depth — backend enforcement (T-02) is authoritative.
-    const ctx = await browser.newContext({ storageState: 'e2e/.auth/viewer.json' })
+    const { context: ctx } = await newRoleSession(browser, 'viewer')
     const page = await ctx.newPage()
     await page.goto('/employees')
     // new-employee-button must not be present in DOM for Viewer (not just hidden — absent)

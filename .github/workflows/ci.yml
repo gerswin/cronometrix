@@ -112,6 +112,9 @@ jobs:
       - name: Install npm deps
         working-directory: frontend
         run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
       - name: Install Playwright Chromium
         working-directory: frontend
         run: npx playwright install --with-deps chromium
@@ -125,6 +128,8 @@ jobs:
         working-directory: frontend
         env:
           CI: 'true'
+          CRONOMETRIX_E2E_RELEASE: 'true'
+          CRONOMETRIX_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           TZ: America/Caracas
         run: npx playwright test
       - name: Upload HTML report

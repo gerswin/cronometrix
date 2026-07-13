@@ -13,15 +13,13 @@
  *   emp-carmen/ Carmen Silva / dept-rrhh (Recursos Humanos)
  *   emp-jose  / José Hernández/ dept-rrhh (Recursos Humanos)
  *
- * All tests use the pre-authenticated admin session except the RBAC test.
+ * Authenticated tests use a fresh admin context except the explicit RBAC test.
  * test.beforeEach resets mutable tables for determinism (D-12).
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, newRoleContext } from './fixtures/auth'
 import { resetMutableTables, getAudit } from './fixtures/api'
 import { SEL } from './fixtures/selectors'
-
-test.use({ storageState: 'e2e/.auth/admin.json' })
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -191,7 +189,7 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
 
   // ── T-09: RBAC — Viewer cannot see Nuevo Empleado button ─────────────────
   test('Viewer cannot see Nuevo Empleado button', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: 'e2e/.auth/viewer.json' })
+    const ctx = await newRoleContext(browser, 'viewer')
     const page = await ctx.newPage()
     await page.goto('/employees')
     // Viewer role: new-employee-button must not be present in DOM

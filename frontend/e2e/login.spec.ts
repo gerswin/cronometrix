@@ -2,7 +2,7 @@
  * Login E2E spec — Plan 09-07 (D-01 Full UAT depth)
  *
  * This is the ONLY spec that uses UI-driven login (D-06 hybrid auth).
- * Every other spec reuses storageState from Plan 06 (01-authenticate.setup.ts).
+ * Every other spec uses fresh API-authenticated contexts from fixtures/auth.ts.
  *
  * Language: English copy per Addendum D-19 (login page is English despite global es-VE locale).
  * Strings asserted: "Username", "Password", "Log in", "Invalid username or password.",

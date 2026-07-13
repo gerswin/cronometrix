@@ -34,17 +34,15 @@
  *   Admin port 4401:   GET /admin/recv-log → returns { commands: ReceivedCall[] }
  *                      POST /admin/clear-recv-log → empties recv_log
  *
- * All tests use the pre-authenticated admin session except the RBAC test.
+ * Authenticated tests use a fresh admin context except the explicit RBAC test.
  * test.beforeEach resets mutable tables + clears recv_log for determinism (D-12).
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, newRoleContext } from './fixtures/auth'
 import { resetMutableTables, getAudit } from './fixtures/api'
 
 const ADMIN_RECV_LOG = 'http://127.0.0.1:4401/admin/recv-log'
 const ADMIN_CLEAR_RECV_LOG = 'http://127.0.0.1:4401/admin/clear-recv-log'
-
-test.use({ storageState: 'e2e/.auth/admin.json' })
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -203,7 +201,7 @@ test.describe('Devices (Dispositivos) — D-03 CRUD UAT + ISAPI dispatch', () =>
 
   // ── T-09: Viewer cannot see Comando button (RBAC UI gating) ─────────────
   test('Viewer cannot see Comando action button (RBAC UI gating)', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: 'e2e/.auth/viewer.json' })
+    const ctx = await newRoleContext(browser, 'viewer')
     const page = await ctx.newPage()
     await page.goto('/devices')
     // Devices page loads (viewer can list devices — all authenticated roles can)

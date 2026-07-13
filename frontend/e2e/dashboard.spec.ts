@@ -4,7 +4,7 @@
  * Covers: KPI tiles (4), donut chart, ring buffer 20-event cap, photo fallback,
  * SSE disconnect banner DOM attachment, empty state.
  *
- * All tests use the pre-authenticated admin session (Plan 06 setup).
+ * Authenticated tests use a fresh admin context per test.
  * test.beforeEach resets mutable tables for determinism (D-12).
  *
  * SSE banner: per RESEARCH §Pitfall 5, we assert DOM attachment only.
@@ -13,13 +13,11 @@
  * Language: Spanish copy per D-19 (dashboard is Spanish locale).
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect } from './fixtures/auth'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { resetMutableTables, pushHikvisionEvent } from './fixtures/api'
 import { SEL } from './fixtures/selectors'
-
-test.use({ storageState: 'e2e/.auth/admin.json' })
 
 // ---------------------------------------------------------------------------
 // Helpers

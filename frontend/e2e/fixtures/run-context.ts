@@ -2,8 +2,10 @@ import path from "node:path";
 
 export const E2E_RUN_ID =
   process.env.CRONOMETRIX_E2E_RUN_ID ?? process.env.GITHUB_RUN_ID ?? "local";
+process.env.CRONOMETRIX_E2E_RUN_ID = E2E_RUN_ID;
+
 export const E2E_ROOT = `/tmp/cronometrix-e2e-${E2E_RUN_ID}`;
-export const E2E_DB_PATH = path.join(E2E_ROOT, "cronometrix.db");
+export const E2E_DB_PATH = `${E2E_ROOT}.db`;
 export const E2E_DEVICE_CREDS_KEY =
   "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 export function e2eEnv(): NodeJS.ProcessEnv {

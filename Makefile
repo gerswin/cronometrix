@@ -33,7 +33,8 @@ e2e-build:
 	cd backend && cargo build --release --bin cronometrix
 	cd backend && cargo build --release --bin mock_hikvision --features mock-hikvision
 	cd backend && cargo build --release --bin seed_e2e --features seed-e2e
+	cd frontend && npm run build
 
 e2e: e2e-build
-	cd frontend && npx playwright test
+	cd frontend && CRONOMETRIX_E2E_RELEASE=true CRONOMETRIX_E2E_RUN_ID=$${CRONOMETRIX_E2E_RUN_ID:-local-$$(date +%s)} npx playwright test
 	@echo "E2E HTML: frontend/playwright-report/index.html"
