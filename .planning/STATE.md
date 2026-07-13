@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: v1.0 Release Stabilization
 status: executing
-stopped_at: Phase 12 — 12-01 execution started
-last_updated: "2026-07-13T00:00:00.000Z"
-last_activity: 2026-07-13 -- Phase 12 remediation execution started from approved baseline
+stopped_at: Phase 12 — 12-01 complete; 12-02 ready
+last_updated: "2026-07-13T19:54:57.000Z"
+last_activity: 2026-07-13 -- 12-01 CI per-step association, pinned toolchain, and repository path containment verified; 12-02 execution plan reconciled
 progress:
   total_phases: 13
   completed_phases: 10
   total_plans: 64
-  completed_plans: 52
-  percent: 81
+  completed_plans: 53
+  percent: 83
 ---
 
 # Project State
@@ -26,17 +26,17 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 ## Current Position
 
 Phase: 12 — EXECUTING
-Plan: 12-01 in progress
-Status: Rebaseline and reproducible harness
-Last activity: 2026-07-13 -- 12-01 worktree created from approved remediation plans
+Plan: 12-02 ready
+Status: 12-01 PASS after CI association/toolchain follow-up; functional remediation next
+Last activity: 2026-07-13 -- root `.nvmrc` CI contract guarded and downstream plans made executable
 
-Progress: [████████░░] 81%
+Progress: [████████░░] 83%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 16
+- Total plans completed: 53
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -193,10 +193,13 @@ Recent decisions affecting current work:
 - ENRL-* checkboxes remain [x] (correct); traceability column now also says Complete — inconsistency D-07 resolved
 - v1.1 Backlog section deliberately NOT added — owned by plan 10-05 to avoid merge conflict (per RESEARCH Area 9)
 - DEPL-03 deferral locked as DEPL-03-AUTO in v1.1 Backlog — not a bug; scope boundary accepted at v1.0 with cloudflared CLI vs Go SDK evaluation question for v1.1 planning
+- Phase 12 CI follow-up: `actions/setup-node` resolves `node-version-file` from the repository root; root `.nvmrc` is the single source and `make test-ci-config` guards every Node setup reference.
+- Phase 12 CI association follow-up: the guard validates exactly one literal version file inside each individual setup-node step, and both Rust jobs install the exact `rust-toolchain.toml` channel.
+- Phase 12 login decision: Spanish is authoritative for `/login`; 12-02 supersedes Phase 9's English-copy D-19 addendum while retaining its historical evidence.
 
 ### Pending Todos
 
-- Execute Phase 12 stabilization plans and record PASS summaries.
+- Execute Phase 12 plans 12-02 through 12-05 and record PASS summaries.
 - Execute Phase 13 live validation before declaring v1.0 released.
 
 ### Blockers/Concerns
@@ -204,7 +207,7 @@ Recent decisions affecting current work:
 - [Phase 2]: Hikvision ISAPI XML schema varies by device model (DS-K1T341, DS-K1T342) — capture real alertStream traffic before implementation; do not rely on documentation alone
 - [Phase 3]: Venezuela / America/Caracas / LOTTT compliance — IANA timezone fixed at `America/Caracas` (UTC-4, no DST since May 2016); LOTTT Art. 117/173/178 caps confirmed via Phase 3 research. No blocking DST concern for v1.
 - [Phase 7]: ISAPI batch face profile enrollment failure behavior on partial failure (3 of 4 devices) is undocumented — requires hands-on hardware testing before designing the enrollment modal
-- [Phase 12]: Functional, persistence, release-distribution, and CI gates are remediation work in progress.
+- [Phase 12]: 12-01 is complete; functional, persistence, release-distribution, and final CI gates remain in 12-02 through 12-05.
 - [Phase 13]: Real Hikvision validation and LIC-05 cross-host validation remain DEFERRED with explicit owner and due condition.
 
 ### Quick Tasks Completed
@@ -215,8 +218,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-04-29T23:42:00.000Z
-Stopped at: Phase 11 partial — 11-01 Task 1 scaffold + 11-03 fully complete. Remaining 4 plans (11-01 Tasks 2/3, 11-02, 11-04, 11-05) require operator session with GH Actions billing budget, fresh Ubuntu 22.04 VM, valid Cloudflare tunnel TOKEN, valid DO Functions URL, CLIENT_SLUG, local Rust nightly + Node 20 + Playwright chromium. Resume by re-invoking /gsd-execute-phase 11 once D-11 prereqs ready.
-Resume file: .planning/phases/11-v1-0-live-environment-validation/11-CONTEXT.md (D-11 prerequisite checklist)
-
-**Planned Phase:** 9 (E2E Playwright test suite) — 13 plans — 2026-04-29T01:09:39.584Z
+Last session: 2026-07-13T19:54:57.000Z
+Stopped at: Phase 12 Plan 12-01 PASS after follow-up commit `eb7f8d6`; Plan 12-02 is reconciled into ten sequential TDD/review tasks and is ready for an isolated worktree after the plan-doc commit.
+Resume file: .planning/phases/12-v1-0-release-stabilization/12-02-PLAN.md
