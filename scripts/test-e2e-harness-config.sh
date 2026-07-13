@@ -12,7 +12,19 @@ EXPECTED_API_DEFAULT = "NEXT_PUBLIC_API_URL ?= http://localhost:4001"
 EXPECTED_BUILD_LINE = (
     '\tcd frontend && NEXT_PUBLIC_API_URL="$(NEXT_PUBLIC_API_URL)" npm run build'
 )
+EXPECTED_E2E_RECIPE = [
+    "\tcd backend && cargo build --release --bin cronometrix",
+    "\tcd backend && cargo build --release --bin mock_hikvision --features mock-hikvision",
+    "\tcd backend && cargo build --release --bin seed_e2e --features seed-e2e",
+    EXPECTED_BUILD_LINE,
+]
 EXPECTED_CI_BUILD = 'make -C "$GITHUB_WORKSPACE" e2e-build'
+EXPECTED_BACKEND_COMMAND = [
+    "      command: isE2ERelease",
+    '        ? "../backend/target/release/cronometrix"',
+    '        : "../backend/target/debug/cronometrix",',
+]
+EXPECTED_BACKEND_URL = '      url: "http://127.0.0.1:4001/api/v1/health",'
 EXPECTED_BACKEND_ENV = {
     "CORS_ALLOWED_ORIGINS": '        CORS_ALLOWED_ORIGINS: "http://localhost:3001",',
     "COOKIE_SECURE": '        COOKIE_SECURE: "false",',
@@ -33,6 +45,15 @@ def yaml_field(line: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2) or ""
 
 
+def make_rule_targets(line: str) -> list[str]:
+    if not line or line[0].isspace() or line.startswith("#"):
+        return []
+    match = re.match(r"^([^:=#]+?)(?:::|:)(?=[ \t]|$)", line)
+    if match is None:
+        return []
+    return match.group(1).split()
+
+
 def validate_makefile(makefile: str) -> list[str]:
     errors: list[str] = []
     assignments = re.findall(
@@ -48,7 +69,7 @@ def validate_makefile(makefile: str) -> list[str]:
     rule_indexes = [
         index
         for index, line in enumerate(lines)
-        if re.match(r"^e2e-build[ \t]*:", line) is not None
+        if "e2e-build" in make_rule_targets(line)
     ]
     if len(rule_indexes) != 1:
         errors.append(
@@ -85,6 +106,11 @@ def validate_makefile(makefile: str) -> list[str]:
         errors.append(
             "the sole e2e-build frontend build must be exactly "
             "`cd frontend && NEXT_PUBLIC_API_URL=\"$(NEXT_PUBLIC_API_URL)\" npm run build`"
+        )
+    if effective_recipe != EXPECTED_E2E_RECIPE:
+        errors.append(
+            "the entire effective e2e-build recipe must be exactly the four permitted "
+            "backend/frontend build commands"
         )
     return errors
 
@@ -136,6 +162,37 @@ def validate_playwright(playwright: str) -> list[str]:
         )
         return errors
 
+    direct_command_indexes = [
+        index
+        for index in range(first_server_start + 1, first_server_end)
+        if indentation(lines[index]) == 6
+        and re.match(r"^command[ \t]*:", lines[index].strip()) is not None
+    ]
+    command_is_exact = (
+        len(direct_command_indexes) == 1
+        and lines[
+            direct_command_indexes[0] : direct_command_indexes[0]
+            + len(EXPECTED_BACKEND_COMMAND)
+        ]
+        == EXPECTED_BACKEND_COMMAND
+    )
+    if not command_is_exact:
+        errors.append(
+            "frontend/playwright.config.ts first webServer must use the exact "
+            "release/debug cronometrix command"
+        )
+
+    direct_urls = [
+        lines[index]
+        for index in range(first_server_start + 1, first_server_end)
+        if indentation(lines[index]) == 6
+        and re.match(r"^url[ \t]*:", lines[index].strip()) is not None
+    ]
+    if direct_urls != [EXPECTED_BACKEND_URL]:
+        errors.append(
+            "frontend/playwright.config.ts first webServer must use the exact Axum health URL"
+        )
+
     env_starts = [
         index
         for index in range(first_server_start + 1, first_server_end)
@@ -167,6 +224,7 @@ def validate_playwright(playwright: str) -> list[str]:
         return errors
 
     env_indexes = set(range(env_start + 1, env_end))
+    required_assignment_indexes: list[int] = []
     for key, expected_line in EXPECTED_BACKEND_ENV.items():
         assignment_indexes = [
             index
@@ -176,6 +234,9 @@ def validate_playwright(playwright: str) -> list[str]:
         inside_assignments = [
             lines[index] for index in assignment_indexes if index in env_indexes
         ]
+        inside_assignment_indexes = [
+            index for index in assignment_indexes if index in env_indexes
+        ]
         outside_assignments = [
             index for index in assignment_indexes if index not in env_indexes
         ]
@@ -184,9 +245,24 @@ def validate_playwright(playwright: str) -> list[str]:
                 "frontend/playwright.config.ts first webServer env must set exactly "
                 f"`{expected_line.strip()}`"
             )
+        else:
+            required_assignment_indexes.extend(inside_assignment_indexes)
         if outside_assignments:
             errors.append(
                 f"frontend/playwright.config.ts first webServer must not assign {key} outside env"
+            )
+    if len(required_assignment_indexes) == len(EXPECTED_BACKEND_ENV):
+        first_required_assignment = min(required_assignment_indexes)
+        late_spreads = [
+            index
+            for index in env_indexes
+            if index > first_required_assignment
+            and lines[index].strip().startswith("...")
+        ]
+        if late_spreads:
+            errors.append(
+                "frontend/playwright.config.ts first webServer env must not contain a "
+                "spread after CORS/cookie assignments"
             )
     return errors
 
@@ -287,8 +363,16 @@ def validate_workflow(workflow: str) -> list[str]:
         )
     else:
         _, build_fields = direct_build_runs[0]
+        run_values = [value for key, value in build_fields if key == "run"]
+        if run_values != [EXPECTED_CI_BUILD]:
+            errors.append(
+                "the E2E build step must define exactly one direct run field equal to "
+                f"`{EXPECTED_CI_BUILD}`"
+            )
         if any(key == "if" for key, _ in build_fields):
             errors.append("the E2E build step must not define `if:` and risk being disabled")
+        if any(key == "continue-on-error" for key, _ in build_fields):
+            errors.append("the E2E build step must not define `continue-on-error:`")
 
     if all_build_run_indexes != direct_build_run_indexes:
         errors.append(
@@ -311,6 +395,8 @@ VALID_MAKEFILE = '''NEXT_PUBLIC_API_URL ?= http://localhost:4001
 
 e2e-build: test-ci-config
 \tcd backend && cargo build --release --bin cronometrix
+\tcd backend && cargo build --release --bin mock_hikvision --features mock-hikvision
+\tcd backend && cargo build --release --bin seed_e2e --features seed-e2e
 \tcd frontend && NEXT_PUBLIC_API_URL="$(NEXT_PUBLIC_API_URL)" npm run build
 
 e2e: e2e-build
@@ -320,7 +406,10 @@ e2e: e2e-build
 VALID_PLAYWRIGHT = '''export default defineConfig({
   webServer: [
     {
-      command: "../backend/target/release/cronometrix",
+      command: isE2ERelease
+        ? "../backend/target/release/cronometrix"
+        : "../backend/target/debug/cronometrix",
+      url: "http://127.0.0.1:4001/api/v1/health",
       env: {
         SERVER_PORT: "4001",
         CORS_ALLOWED_ORIGINS: "http://localhost:3001",
@@ -394,8 +483,51 @@ def run_self_tests() -> int:
         ),
         "exactly one effective `npm run build`",
     )
+    expect_invalid(
+        "make-multi-target-duplicate-rule",
+        validate_makefile,
+        VALID_MAKEFILE + "\nhelper e2e-build:\n\t@true\n",
+        "exactly one e2e-build rule",
+    )
+    expect_invalid(
+        "make-extra-effective-command",
+        validate_makefile,
+        VALID_MAKEFILE.replace(
+            EXPECTED_BUILD_LINE,
+            EXPECTED_BUILD_LINE + "\n\t$(EXTRA_BUILD)",
+            1,
+        ),
+        "entire effective e2e-build recipe",
+    )
 
     expect_valid("playwright-valid", validate_playwright, VALID_PLAYWRIGHT)
+    backend_identity = (
+        '      command: isE2ERelease\n'
+        '        ? "../backend/target/release/cronometrix"\n'
+        '        : "../backend/target/debug/cronometrix",\n'
+        '      url: "http://127.0.0.1:4001/api/v1/health",\n'
+    )
+    expect_invalid(
+        "playwright-next-first-server",
+        validate_playwright,
+        VALID_PLAYWRIGHT.replace(
+            backend_identity,
+            '      command: "next start --port 3001",\n'
+            '      url: "http://localhost:3001/login",\n',
+            1,
+        ),
+        "exact release/debug cronometrix command",
+    )
+    expect_invalid(
+        "playwright-late-env-spread",
+        validate_playwright,
+        VALID_PLAYWRIGHT.replace(
+            '        COOKIE_SECURE: "false",\n',
+            '        COOKIE_SECURE: "false",\n        ...process.env,\n',
+            1,
+        ),
+        "spread after CORS/cookie assignments",
+    )
     env_assignments = "\n".join(EXPECTED_BACKEND_ENV.values()) + "\n"
     playwright_outside_only = VALID_PLAYWRIGHT.replace(env_assignments, "", 1)
     playwright_outside_only = playwright_outside_only.replace(
@@ -425,6 +557,26 @@ def run_self_tests() -> int:
     build_step = (
         "      - name: Build E2E release harness\n"
         f"        run: {EXPECTED_CI_BUILD}\n"
+    )
+    expect_invalid(
+        "workflow-duplicate-direct-run",
+        validate_workflow,
+        VALID_WORKFLOW.replace(
+            build_step,
+            build_step + "        run: echo bypass\n",
+            1,
+        ),
+        "exactly one direct run field",
+    )
+    expect_invalid(
+        "workflow-continue-on-error",
+        validate_workflow,
+        VALID_WORKFLOW.replace(
+            build_step,
+            build_step + "        continue-on-error: true\n",
+            1,
+        ),
+        "must not define `continue-on-error:`",
     )
     expect_invalid(
         "workflow-command-outside-step",
