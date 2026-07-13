@@ -48,7 +48,8 @@ export default defineConfig({
         ? "../backend/target/release/cronometrix"
         : "../backend/target/debug/cronometrix",
       url: "http://127.0.0.1:4001/api/v1/health",
-      reuseExistingServer: !process.env.CI,
+      // E2E must never attach to a stale backend from another run.
+      reuseExistingServer: false,
       timeout: 60_000,
       stdout: "pipe",
       stderr: "pipe",
@@ -74,7 +75,7 @@ export default defineConfig({
         ? "../backend/target/release/mock_hikvision"
         : "../backend/target/debug/mock_hikvision",
       url: "http://127.0.0.1:4400/ISAPI/System/status",
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 30_000,
       stdout: "pipe",
       stderr: "pipe",
@@ -90,7 +91,7 @@ export default defineConfig({
         ? "next start --port 3001"
         : "next dev --port 3001",
       url: "http://localhost:3001/login",
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
       env: {
         NEXT_PUBLIC_API_URL: "http://localhost:4001",
