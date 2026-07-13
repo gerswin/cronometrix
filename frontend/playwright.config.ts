@@ -1,7 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
+import fs from "node:fs";
 import { E2E_ROOT, e2eEnv } from "./e2e/fixtures/run-context";
 
 const PATHS_ROOT = E2E_ROOT;
+fs.mkdirSync(PATHS_ROOT, { recursive: true });
 
 export default defineConfig({
   testDir: "./e2e",
