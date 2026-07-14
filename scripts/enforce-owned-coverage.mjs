@@ -250,8 +250,17 @@ function frontendMetric(metrics, metric, file, errors) {
     && counts.covered <= counts.total
     && counts.skipped <= counts.total
     && counts.covered + counts.skipped <= counts.total) {
+    // Vitest's V8 json-summary reporter emits pct=0 for a fully empty module,
+    // but pct=100 for an empty metric (commonly branches) in a nonempty file.
+    // Those are the producer's only valid zero-denominator encodings.
+    if (counts.total === 0 && value !== 0 && value !== 100) {
+      errors.push(
+        `frontend ${metric} pct ${value.toFixed(2)} is inconsistent with zero total for ${file}; expected 0 or 100`,
+      )
+      return undefined
+    }
     const expectedPct = counts.total === 0
-      ? 100
+      ? value
       : Math.floor((counts.covered / counts.total) * 10_000) / 100
     if (value !== expectedPct) {
       errors.push(

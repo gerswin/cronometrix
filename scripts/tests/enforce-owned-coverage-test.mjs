@@ -64,10 +64,10 @@ function artifactSourcePath(root, relativePath, side, style) {
 function writeFrontendSummary(root, files, style = 'absolute') {
   const summary = {
     total: frontendMetrics({
-      statements: { total: 0, covered: 0, skipped: 0, pct: 100 },
-      branches: { total: 0, covered: 0, skipped: 0, pct: 100 },
-      functions: { total: 0, covered: 0, skipped: 0, pct: 100 },
-      lines: { total: 0, covered: 0, skipped: 0, pct: 100 },
+      statements: { total: 0, covered: 0, skipped: 0, pct: 0 },
+      branches: { total: 0, covered: 0, skipped: 0, pct: 0 },
+      functions: { total: 0, covered: 0, skipped: 0, pct: 0 },
+      lines: { total: 0, covered: 0, skipped: 0, pct: 0 },
     }),
   }
   for (const [relativePath, metrics] of Object.entries(files)) {
@@ -593,6 +593,60 @@ test('allows an artifact for an empty side when it contains no relevant changed 
     manifest: manifest(baseSha),
     frontendSummary,
   }), 0, 0)
+})
+
+test('accepts Vitest JSON-summary zero-total metrics reported as zero percent', () => {
+  const ownedFile = 'frontend/src/lib/api.ts'
+  const emptyFile = 'frontend/src/hooks/use-auth.ts'
+  const { root, baseSha } = makeRepo([ownedFile], [emptyFile])
+  const zeroTotalMetrics = {
+    statements: { total: 0, covered: 0, skipped: 0, pct: 0 },
+    branches: { total: 0, covered: 0, skipped: 0, pct: 0 },
+    functions: { total: 0, covered: 0, skipped: 0, pct: 0 },
+    lines: { total: 0, covered: 0, skipped: 0, pct: 0 },
+  }
+  const frontendSummary = writeFrontendSummary(root, {
+    [ownedFile]: frontendMetrics(),
+    [emptyFile]: zeroTotalMetrics,
+  })
+
+  expectPass(runChecker({
+    root,
+    manifest: manifest(baseSha, { frontend: [ownedFile] }),
+    frontendSummary,
+  }), 0, 1)
+})
+
+test('accepts Vitest JSON-summary zero branches reported as 100 percent', () => {
+  const ownedFile = 'frontend/src/lib/daily-record-key.ts'
+  const { root, baseSha } = makeRepo([ownedFile])
+  const frontendSummary = writeFrontendSummary(root, {
+    [ownedFile]: frontendMetrics({
+      branches: { total: 0, covered: 0, skipped: 0, pct: 100 },
+    }),
+  })
+
+  expectPass(runChecker({
+    root,
+    manifest: manifest(baseSha, { frontend: [ownedFile] }),
+    frontendSummary,
+  }), 0, 1)
+})
+
+test('rejects a zero-total frontend metric with an unsupported percentage', () => {
+  const ownedFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([ownedFile])
+  const frontendSummary = writeFrontendSummary(root, {
+    [ownedFile]: frontendMetrics({
+      branches: { total: 0, covered: 0, skipped: 0, pct: 50 },
+    }),
+  })
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha, { frontend: [ownedFile] }),
+    frontendSummary,
+  }), /FAIL:.*frontend branches.*inconsistent with zero total.*expected 0 or 100/i)
 })
 
 test('treats zero measured backend branches as 100 percent', () => {
