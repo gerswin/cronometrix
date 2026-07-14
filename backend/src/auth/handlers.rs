@@ -206,12 +206,17 @@ pub async fn logout(
 
     let secret = state.config.jwt_secret.as_bytes();
     let claims = service::verify_refresh_token(&refresh_token, secret)?;
+    let token_hash = service::hash_token(&refresh_token);
 
     state
         .db_write
         .execute(
-            "UPDATE users SET refresh_token_hash = NULL, updated_at = unixepoch() WHERE id = ?1",
-            vec![libsql::Value::Text(claims.sub)],
+            "UPDATE users SET refresh_token_hash = NULL, updated_at = unixepoch() \
+             WHERE id = ?1 AND refresh_token_hash = ?2",
+            vec![
+                libsql::Value::Text(claims.sub),
+                libsql::Value::Text(token_hash),
+            ],
         )
         .await
         .map_err(AppError::Internal)?;

@@ -133,6 +133,16 @@ async fn refresh_with_cookie(app: &Router, cookie: &str) -> axum::response::Resp
     app.clone().oneshot(request).await.unwrap()
 }
 
+async fn logout_with_cookie(app: &Router, cookie: &str) -> axum::response::Response {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/auth/logout")
+        .header(header::COOKIE, cookie)
+        .body(Body::empty())
+        .unwrap();
+    app.clone().oneshot(request).await.unwrap()
+}
+
 #[tokio::test]
 async fn password_hashing_uses_argon2id() {
     let hash = cronometrix_api::auth::service::hash_password("testpass").unwrap();
@@ -242,6 +252,23 @@ async fn jwt_refresh_rotates_tokens() {
         .unwrap()
         .trim()
         .to_string();
+    let replacement_refresh_value = replacement_refresh_cookie
+        .strip_prefix("refresh_token=")
+        .expect("refresh winner must set the refresh_token cookie");
+    assert!(
+        !replacement_refresh_value.is_empty(),
+        "refresh winner cookie must carry a new token value"
+    );
+    assert!(
+        !refresh_response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0"),
+        "refresh winner must not emit a deletion cookie"
+    );
     let body = body_to_json(refresh_response.into_body()).await;
     let replacement_access_token = body["access_token"]
         .as_str()
@@ -253,6 +280,44 @@ async fn jwt_refresh_rotates_tokens() {
     assert_ne!(
         replacement_refresh_cookie, login_refresh_cookie,
         "immediate refresh must mint a different refresh cookie"
+    );
+}
+
+#[tokio::test]
+async fn stale_logout_expires_its_cookie_without_invalidating_refresh_winner() {
+    let db = common::test_db().await;
+    seed_auth_user(&db, "logout-race", "Logout Race", "password123").await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_, old_refresh_cookie) = login_tokens(&app, "logout-race", "password123").await;
+
+    let winner_response = refresh_with_cookie(&app, &old_refresh_cookie).await;
+    assert_eq!(winner_response.status(), StatusCode::OK);
+    let winner_cookie = winner_response
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("refresh winner must set its replacement cookie")
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let stale_logout = logout_with_cookie(&app, &old_refresh_cookie).await;
+    assert_eq!(stale_logout.status(), StatusCode::OK);
+    assert!(stale_logout
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("stale logout must expire the caller cookie")
+        .to_str()
+        .unwrap()
+        .contains("Max-Age=0"));
+
+    let current_refresh = refresh_with_cookie(&app, &winner_cookie).await;
+    assert_eq!(
+        current_refresh.status(),
+        StatusCode::OK,
+        "stale logout must not clear the stored hash for the refresh winner"
     );
 }
 

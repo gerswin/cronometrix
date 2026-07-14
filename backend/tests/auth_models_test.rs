@@ -144,7 +144,12 @@ fn token_issuers_emit_non_empty_uuid_jtis() {
             .as_str()
             .expect("every issued token must carry a string jti");
         assert!(!jti.is_empty(), "issued jti must not be empty");
-        uuid::Uuid::parse_str(jti).expect("issued jti must be a UUID");
+        let parsed = uuid::Uuid::parse_str(jti).expect("issued jti must be a UUID");
+        assert_eq!(
+            parsed.get_version(),
+            Some(uuid::Version::Random),
+            "issued jti must specifically be UUID v4"
+        );
     }
 }
 
