@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, RefreshCw, LogOut } from 'lucide-react'
-import { api, setAccessToken } from '@/lib/api'
+import { api, logoutCurrentSession } from '@/lib/api'
 import { useAuth } from '@/hooks/use-auth'
 import { DeviceCard } from '@/components/devices/device-card'
 import { CommandModal } from '@/components/devices/command-modal'
@@ -76,9 +76,8 @@ export default function DevicesPage() {
     if (isLoggingOut) return
     setIsLoggingOut(true)
     try {
-      await api.post('/auth/logout').catch(() => undefined)
+      await logoutCurrentSession()
     } finally {
-      setAccessToken(null)
       router.push('/login')
     }
   }

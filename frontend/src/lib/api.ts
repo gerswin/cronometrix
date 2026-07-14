@@ -27,8 +27,10 @@ let accessToken: string | null = null
 let requestTimeExpiryHandled = false
 let requestTimeExpiryRedirectTimer: ReturnType<typeof setTimeout> | null = null
 let refreshPromise: Promise<string> | null = null
+let logoutPromise: Promise<void> | null = null
 let sessionGeneration = 0
 let loginGeneration: number | null = null
+let refreshAdmissionClosed = false
 
 class SessionSupersededError extends Error {
   constructor() {
@@ -49,6 +51,7 @@ const tokenListeners = new Set<Listener>()
 export function setAccessToken(token: string | null) {
   accessToken = token
   if (token !== null) {
+    refreshAdmissionClosed = false
     requestTimeExpiryHandled = false
     if (requestTimeExpiryRedirectTimer !== null) {
       clearTimeout(requestTimeExpiryRedirectTimer)
@@ -79,7 +82,7 @@ export function onAccessTokenChange(listener: Listener): () => void {
  * decide whether the asynchronous result is still current before applying it.
  */
 export function refreshAccessToken(): Promise<string> {
-  if (loginGeneration !== null) {
+  if (loginGeneration !== null || refreshAdmissionClosed) {
     return Promise.reject(new SessionSupersededError())
   }
   if (!refreshPromise) {
@@ -125,6 +128,7 @@ export async function loginWithCredentials(
 ): Promise<LoginResult> {
   const generation = ++sessionGeneration
   loginGeneration = generation
+  refreshAdmissionClosed = false
   const pendingRefresh = refreshPromise
 
   try {
@@ -140,11 +144,46 @@ export async function loginWithCredentials(
     setAccessToken(data.access_token)
     return data
   } catch (error) {
-    if (generation === sessionGeneration) setAccessToken(null)
+    if (generation === sessionGeneration) {
+      refreshAdmissionClosed = true
+      setAccessToken(null)
+    }
     throw error
   } finally {
     if (loginGeneration === generation) loginGeneration = null
   }
+}
+
+/**
+ * Close the current browser session without allowing an in-flight refresh to
+ * restore it. The refresh response must settle first because its Set-Cookie
+ * header is applied before JavaScript observes the result; logout can then
+ * invalidate the cookie that actually won that race.
+ */
+export function logoutCurrentSession(): Promise<void> {
+  if (logoutPromise !== null) return logoutPromise
+
+  const generation = ++sessionGeneration
+  refreshAdmissionClosed = true
+  const pendingRefresh = refreshPromise
+  const operation = (async () => {
+    try {
+      await pendingRefresh?.catch(() => undefined)
+      if (generation !== sessionGeneration) return
+      await axios.post(
+        `${API_BASE}/api/v1/auth/logout`,
+        {},
+        { withCredentials: true },
+      ).catch(() => undefined)
+    } finally {
+      if (generation === sessionGeneration) setAccessToken(null)
+    }
+  })()
+
+  logoutPromise = operation.finally(() => {
+    logoutPromise = null
+  })
+  return logoutPromise
 }
 
 api.interceptors.request.use((config) => {
@@ -178,19 +217,24 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401 && !error.config._retry) {
-      if (loginGeneration !== null) return Promise.reject(error)
+      if (loginGeneration !== null || refreshAdmissionClosed) return Promise.reject(error)
       error.config._retry = true
       const refreshGeneration = sessionGeneration
       let token: string
       try {
         token = await refreshAccessToken()
-      } catch {
-        if (refreshGeneration === sessionGeneration && loginGeneration === null) {
+      } catch (refreshError) {
+        if (!isSessionSupersededError(refreshError)
+          && refreshGeneration === sessionGeneration
+          && loginGeneration === null
+          && !refreshAdmissionClosed) {
           handleRequestTimeExpiry()
         }
         return Promise.reject(error)
       }
-      if (refreshGeneration !== sessionGeneration || loginGeneration !== null) {
+      if (refreshGeneration !== sessionGeneration
+        || loginGeneration !== null
+        || refreshAdmissionClosed) {
         return Promise.reject(error)
       }
       setAccessToken(token)

@@ -198,6 +198,79 @@ describe('lib/api access-token state', () => {
 })
 
 describe('lib/api single-flight refresh', () => {
+  it('serializes logout after a late refresh success and keeps refresh admission closed', async () => {
+    const pendingRefresh = deferred<{ data: { access_token: string } }>()
+    const pendingLogout = deferred<{ data: Record<string, never> }>()
+    mocks.refreshPost.mockReturnValueOnce(pendingRefresh.promise)
+    mocks.loginPost.mockReturnValueOnce(pendingLogout.promise)
+    const {
+      getAccessToken,
+      isSessionSupersededError,
+      logoutCurrentSession,
+      refreshAccessToken,
+      setAccessToken,
+    } = await import('../api')
+    setAccessToken('old-token')
+    const staleRefresh = refreshAccessToken()
+
+    const logout = logoutCurrentSession()
+    await Promise.resolve()
+    expect(mocks.loginPost).not.toHaveBeenCalled()
+    await expect(refreshAccessToken()).rejects.toSatisfy(isSessionSupersededError)
+    expect(mocks.refreshPost).toHaveBeenCalledTimes(1)
+
+    pendingRefresh.resolve({ data: { access_token: 'late-refresh-token' } })
+    await expect(staleRefresh).rejects.toSatisfy(isSessionSupersededError)
+    await vi.waitFor(() => expect(mocks.loginPost).toHaveBeenCalledOnce())
+    expect(mocks.loginPost).toHaveBeenCalledWith(
+      `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/api/v1/auth/logout`,
+      {},
+      { withCredentials: true },
+    )
+    expect(mocks.refreshPost.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.loginPost.mock.invocationCallOrder[0])
+
+    pendingLogout.resolve({ data: {} })
+    await expect(logout).resolves.toBeUndefined()
+    expect(getAccessToken()).toBeNull()
+    await expect(refreshAccessToken()).rejects.toSatisfy(isSessionSupersededError)
+    expect(mocks.refreshPost).toHaveBeenCalledTimes(1)
+  })
+
+  it('still logs out after a late refresh failure and clears the token when logout fails', async () => {
+    const pendingRefresh = deferred<never>()
+    const pendingLogout = deferred<never>()
+    mocks.refreshPost.mockReturnValueOnce(pendingRefresh.promise)
+    mocks.loginPost.mockReturnValueOnce(pendingLogout.promise)
+    const {
+      getAccessToken,
+      isSessionSupersededError,
+      logoutCurrentSession,
+      refreshAccessToken,
+      setAccessToken,
+    } = await import('../api')
+    setAccessToken('old-token')
+    const staleRefresh = refreshAccessToken()
+
+    const logout = logoutCurrentSession()
+    await Promise.resolve()
+    expect(mocks.loginPost).not.toHaveBeenCalled()
+
+    pendingRefresh.reject(new Error('late refresh failure'))
+    await expect(staleRefresh).rejects.toSatisfy(isSessionSupersededError)
+    await vi.waitFor(() => expect(mocks.loginPost).toHaveBeenCalledOnce())
+    expect(mocks.refreshPost.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.loginPost.mock.invocationCallOrder[0])
+
+    pendingLogout.reject(new Error('logout network failure'))
+    await expect(logout).resolves.toBeUndefined()
+    expect(getAccessToken()).toBeNull()
+    expect(mocks.toastError).not.toHaveBeenCalled()
+    expect(mocks.redirectHref).not.toHaveBeenCalled()
+    await expect(refreshAccessToken()).rejects.toSatisfy(isSessionSupersededError)
+    expect(mocks.refreshPost).toHaveBeenCalledTimes(1)
+  })
+
   it('lets a later login win over a late refresh success without retrying the stale request', async () => {
     const pendingRefresh = deferred<{ data: { access_token: string } }>()
     const pendingLogin = deferred<{ data: { access_token: string; user: { id: string } } }>()

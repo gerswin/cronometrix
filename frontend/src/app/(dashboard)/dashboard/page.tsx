@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
 import { Bell, Settings, LogOut } from 'lucide-react'
 import { toast } from 'sonner'
-import { api, setAccessToken } from '@/lib/api'
+import { api, logoutCurrentSession } from '@/lib/api'
 import { aggregateKPIs } from '@/lib/kpi-utils'
 import { useAuth } from '@/hooks/use-auth'
 import { KPITile } from '@/components/dashboard/kpi-tile'
@@ -153,9 +153,8 @@ export default function DashboardPage() {
     if (isLoggingOut) return
     setIsLoggingOut(true)
     try {
-      await api.post('/auth/logout').catch(() => undefined)
+      await logoutCurrentSession()
     } finally {
-      setAccessToken(null)
       router.push('/login')
     }
   }
