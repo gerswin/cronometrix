@@ -27,11 +27,13 @@ use super::models::{DailyRecordListQuery, DailyRecordResponse};
 const DR_SELECT_COLS: &str = "dr.id, dr.employee_id, dr.department_id, dr.anchor_date, \
     dr.shift_type, dr.work_minutes, dr.overtime_minutes, dr.late_minutes, \
     dr.early_departure_minutes, dr.is_rest_day_worked, dr.entry_at, dr.exit_at, \
-    dr.leave_id, dr.computed_at, dr.created_at, dr.updated_at, e.name";
+    dr.leave_id, dr.computed_at, dr.created_at, dr.updated_at, e.name, d.name";
 
 /// FROM clause shared by `list` and `get_by_id`. LEFT JOIN keeps the row even if
 /// the employee was hard-deleted (name resolves to NULL → None).
-const DR_FROM: &str = "daily_records dr LEFT JOIN employees e ON e.id = dr.employee_id";
+const DR_FROM: &str = "daily_records dr \
+    LEFT JOIN employees e ON e.id = dr.employee_id \
+    LEFT JOIN departments d ON d.id = dr.department_id";
 
 /// Full recompute for a single (employee_id, anchor_date) pair.
 pub async fn recompute_for_day(
@@ -97,9 +99,7 @@ pub async fn recompute_for_day(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("global_rules singleton missing")))?;
     let rules = GlobalRulesRow {
-        late_arrival_tolerance_min: rules_row
-            .get(0)
-            .map_err(|e| AppError::Internal(e.into()))?,
+        late_arrival_tolerance_min: rules_row.get(0).map_err(|e| AppError::Internal(e.into()))?,
         early_departure_tolerance_min: rules_row
             .get(1)
             .map_err(|e| AppError::Internal(e.into()))?,
@@ -220,12 +220,9 @@ pub async fn recompute_for_day(
     //    active leave covers anchor_date; Some(LeaveRow) triggers the engine's
     //    overlay branch (work=0, overtime=0, leave_id set, EVENTS_ON_LEAVE_DAY
     //    if events are present).
-    let active_leave = crate::leaves::service::fetch_active_leave_for_date(
-        &conn,
-        employee_id,
-        anchor_date,
-    )
-    .await?;
+    let active_leave =
+        crate::leaves::service::fetch_active_leave_for_date(&conn, employee_id, anchor_date)
+            .await?;
 
     // 8. Pure engine.
     let input = EngineInput {
@@ -401,7 +398,10 @@ pub async fn reconcile_prior_day(state: &AppState, tz: Tz) -> Result<i64, AppErr
 }
 
 /// Fetch the anomaly codes for a given daily_record id, in insertion order.
-async fn fetch_anomaly_codes(conn: &Connection, daily_record_id: &str) -> Result<Vec<String>, AppError> {
+async fn fetch_anomaly_codes(
+    conn: &Connection,
+    daily_record_id: &str,
+) -> Result<Vec<String>, AppError> {
     let mut rows = conn
         .query(
             "SELECT code FROM daily_record_anomalies \
@@ -423,8 +423,7 @@ async fn fetch_anomaly_codes(conn: &Connection, daily_record_id: &str) -> Result
 }
 
 fn row_to_dr(row: libsql::Row) -> Result<DailyRecordResponse, AppError> {
-    let is_rest_day_worked_int: i64 =
-        row.get(9).map_err(|e| AppError::Internal(e.into()))?;
+    let is_rest_day_worked_int: i64 = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
     let entry_at: Option<i64> = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
     let exit_at: Option<i64> = row.get(11).map_err(|e| AppError::Internal(e.into()))?;
     Ok(DailyRecordResponse {
@@ -432,6 +431,7 @@ fn row_to_dr(row: libsql::Row) -> Result<DailyRecordResponse, AppError> {
         employee_id: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
         department_id: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
         employee_name: row.get(16).map_err(|e| AppError::Internal(e.into()))?,
+        department_name: row.get(17).map_err(|e| AppError::Internal(e.into()))?,
         anchor_date: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
         shift_type: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
         work_minutes: row.get(5).map_err(|e| AppError::Internal(e.into()))?,

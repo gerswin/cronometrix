@@ -9,11 +9,11 @@ pub struct AttendanceEventResponse {
     pub employee_id: Option<String>,
     pub device_id: String,
     pub direction: String,
-    pub captured_at: String,          // ISO 8601 (converted from epoch)
+    pub captured_at: String, // ISO 8601 (converted from epoch)
     pub is_unknown: bool,
     pub face_id: Option<String>,
     pub employee_no_string: Option<String>,
-    pub photo_path: Option<String>,   // relative path; served via /events/:id/photo
+    pub photo_path: Option<String>, // relative path; served via /events/:id/photo
     pub created_at: String,
 }
 
@@ -25,13 +25,13 @@ pub struct NewAttendanceEvent {
     pub id: String,
     pub employee_id: Option<String>,
     pub device_id: String,
-    pub direction: String,             // "entry" | "exit"
-    pub captured_at: i64,              // UTC epoch seconds
+    pub direction: String, // "entry" | "exit"
+    pub captured_at: i64,  // UTC epoch seconds
     pub is_unknown: bool,
     pub face_id: Option<String>,
     pub employee_no_string: Option<String>,
     pub raw_xml: String,
-    pub photo_bytes: Option<Vec<u8>>,  // in-memory; persist helper writes to disk on INSERT success only
+    pub photo_bytes: Option<Vec<u8>>, // in-memory; persist helper writes to disk on INSERT success only
 }
 
 /// Outcome tag returned by the persist helper. `Inserted` carries the relative

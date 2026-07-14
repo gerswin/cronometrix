@@ -17,8 +17,8 @@ use crate::state::AppState;
 use crate::supervisor::DeviceLifecycleEvent;
 
 use super::models::{
-    Command, CommandRequest, CommandResult, CreateDeviceRequest, DeviceListQuery,
-    DeviceResponse, UpdateDeviceRequest,
+    Command, CommandRequest, CommandResult, CreateDeviceRequest, DeviceListQuery, DeviceResponse,
+    UpdateDeviceRequest,
 };
 use super::service::{self, CommandAuditOutcome};
 
@@ -45,7 +45,10 @@ struct PreUpdateSnapshot {
     status: String,
 }
 
-async fn load_snapshot(conn: &libsql::Connection, id: &str) -> Result<Option<PreUpdateSnapshot>, AppError> {
+async fn load_snapshot(
+    conn: &libsql::Connection,
+    id: &str,
+) -> Result<Option<PreUpdateSnapshot>, AppError> {
     let mut rows = conn
         .query(
             "SELECT ip, port, scheme, username, encrypted_password, allow_insecure_tls, status \
@@ -54,7 +57,11 @@ async fn load_snapshot(conn: &libsql::Connection, id: &str) -> Result<Option<Pre
         )
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? else {
+    let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    else {
         return Ok(None);
     };
     let allow_int: i64 = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
@@ -101,7 +108,10 @@ pub async fn list_devices(
     State(state): State<AppState>,
     Query(q): Query<DeviceListQuery>,
 ) -> Result<Json<PaginatedResponse<DeviceResponse>>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let page = service::list(&conn, q).await?;
     Ok(Json(page))
 }
@@ -111,7 +121,10 @@ pub async fn get_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<DeviceResponse>, AppError> {
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let device = service::get_by_id(&conn, &id).await?;
     Ok(Json(device))
 }
@@ -134,7 +147,10 @@ pub async fn update_device(
         message: e.to_string(),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     let pre = load_snapshot(&conn, &id).await?;
 
     // Track whether the request itself touches a connection-affecting field.
@@ -171,8 +187,10 @@ pub async fn update_device(
                             )
                             .await
                             .map_err(|e| AppError::Internal(e.into()))?;
-                        if let Some(row) =
-                            rows.next().await.map_err(|e| AppError::Internal(e.into()))?
+                        if let Some(row) = rows
+                            .next()
+                            .await
+                            .map_err(|e| AppError::Internal(e.into()))?
                         {
                             let new_ct: String =
                                 row.get(0).map_err(|e| AppError::Internal(e.into()))?;
@@ -236,9 +254,11 @@ pub async fn dispatch_command(
         ),
     })?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
-    let device =
-        service::get_decrypted(&conn, &device_id, &state.config.device_creds_key).await?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let device = service::get_decrypted(&conn, &device_id, &state.config.device_creds_key).await?;
 
     let isapi = DeviceConnection::new(
         &device.base_url,
@@ -246,7 +266,7 @@ pub async fn dispatch_command(
         &device.password,
         device.allow_insecure_tls,
     )
-    .map_err(|e| AppError::Internal(e.into()))?;
+    .map_err(AppError::Internal)?;
 
     let dispatched_at = chrono::Utc::now().timestamp();
 
@@ -254,9 +274,7 @@ pub async fn dispatch_command(
     let result = match command {
         Command::DoorOpen => timeout(Duration::from_secs(10), isapi.door_open()).await,
         Command::Reboot => timeout(Duration::from_secs(10), isapi.reboot()).await,
-        Command::EnrollmentMode => {
-            timeout(Duration::from_secs(10), isapi.enrollment_mode()).await
-        }
+        Command::EnrollmentMode => timeout(Duration::from_secs(10), isapi.enrollment_mode()).await,
     };
 
     let completed_at = chrono::Utc::now().timestamp();

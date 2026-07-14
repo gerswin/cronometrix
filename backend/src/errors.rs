@@ -15,10 +15,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("not found")]
-    NotFound {
-        code: &'static str,
-        message: String,
-    },
+    NotFound { code: &'static str, message: String },
 
     #[error("unauthorized")]
     Unauthorized,
@@ -30,40 +27,22 @@ pub enum AppError {
     Unlicensed,
 
     #[error("conflict")]
-    Conflict {
-        code: &'static str,
-        message: String,
-    },
+    Conflict { code: &'static str, message: String },
 
     #[error("validation failed")]
-    Validation {
-        code: &'static str,
-        message: String,
-    },
+    Validation { code: &'static str, message: String },
 
     #[error("gateway timeout")]
-    Timeout {
-        code: &'static str,
-        message: String,
-    },
+    Timeout { code: &'static str, message: String },
 
     #[error("bad gateway")]
-    BadGateway {
-        code: &'static str,
-        message: String,
-    },
+    BadGateway { code: &'static str, message: String },
 
     #[error("calculation failed")]
-    CalcError {
-        code: &'static str,
-        message: String,
-    },
+    CalcError { code: &'static str, message: String },
 
     #[error("leave conflict")]
-    LeaveConflict {
-        code: &'static str,
-        message: String,
-    },
+    LeaveConflict { code: &'static str, message: String },
 
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
@@ -72,9 +51,7 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            AppError::NotFound { code, message } => {
-                (StatusCode::NOT_FOUND, *code, message.clone())
-            }
+            AppError::NotFound { code, message } => (StatusCode::NOT_FOUND, *code, message.clone()),
             AppError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "UNAUTHORIZED",
@@ -90,9 +67,7 @@ impl IntoResponse for AppError {
                 "UNLICENSED",
                 "License required".to_string(),
             ),
-            AppError::Conflict { code, message } => {
-                (StatusCode::CONFLICT, *code, message.clone())
-            }
+            AppError::Conflict { code, message } => (StatusCode::CONFLICT, *code, message.clone()),
             AppError::Validation { code, message } => {
                 (StatusCode::UNPROCESSABLE_ENTITY, *code, message.clone())
             }

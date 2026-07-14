@@ -1,11 +1,16 @@
+use axum::http::request::Parts;
 use axum::{
     extract::{FromRequestParts, Request, State},
     middleware::Next,
     response::Response,
 };
-use axum::http::request::Parts;
 
-use crate::{auth::models::{Claims, Role}, auth::service, errors::AppError, state::AppState};
+use crate::{
+    auth::models::{Claims, Role},
+    auth::service,
+    errors::AppError,
+    state::AppState,
+};
 
 /// Helper extractor that reads Claims from request extensions (set by require_auth middleware).
 pub struct AuthUser(pub Claims);

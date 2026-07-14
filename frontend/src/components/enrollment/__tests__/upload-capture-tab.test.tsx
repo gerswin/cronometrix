@@ -14,13 +14,14 @@ function makeFile(name: string, type: string, sizeBytes: number): File {
 
 describe('UploadCaptureTab', () => {
   const mockOnCaptured = vi.fn()
+  const mockOnCleared = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('rejects non-JPG file with Spanish error banner', async () => {
-    render(<UploadCaptureTab onCaptured={mockOnCaptured} />)
+    render(<UploadCaptureTab onCaptured={mockOnCaptured} onCleared={mockOnCleared} />)
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     const pngFile = makeFile('photo.png', 'image/png', 100 * 1024)
     await act(async () => {
@@ -32,7 +33,7 @@ describe('UploadCaptureTab', () => {
   })
 
   it('rejects JPEG >2MB with Spanish error banner', async () => {
-    render(<UploadCaptureTab onCaptured={mockOnCaptured} />)
+    render(<UploadCaptureTab onCaptured={mockOnCaptured} onCleared={mockOnCleared} />)
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     const bigJpeg = makeFile('big.jpg', 'image/jpeg', 3 * 1024 * 1024)
     await act(async () => {
@@ -44,18 +45,22 @@ describe('UploadCaptureTab', () => {
   })
 
   it('accepts 100KB JPEG and calls onCaptured', async () => {
-    render(<UploadCaptureTab onCaptured={mockOnCaptured} />)
+    render(<UploadCaptureTab onCaptured={mockOnCaptured} onCleared={mockOnCleared} />)
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     const goodJpeg = makeFile('photo.jpg', 'image/jpeg', 100 * 1024)
     await act(async () => {
       fireEvent.change(input, { target: { files: [goodJpeg] } })
     })
-    expect(mockOnCaptured).toHaveBeenCalledWith(goodJpeg)
+    expect(mockOnCaptured).toHaveBeenCalledWith({
+      blob: goodJpeg,
+      capturedVia: 'upload',
+      sourceDeviceId: null,
+    })
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('thumbnail preview shown after valid file selection', async () => {
-    render(<UploadCaptureTab onCaptured={mockOnCaptured} />)
+    render(<UploadCaptureTab onCaptured={mockOnCaptured} onCleared={mockOnCleared} />)
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     const goodJpeg = makeFile('photo.jpg', 'image/jpeg', 100 * 1024)
     await act(async () => {
@@ -67,7 +72,7 @@ describe('UploadCaptureTab', () => {
   })
 
   it('"Cambiar archivo" link resets state', async () => {
-    render(<UploadCaptureTab onCaptured={mockOnCaptured} />)
+    render(<UploadCaptureTab onCaptured={mockOnCaptured} onCleared={mockOnCleared} />)
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     const goodJpeg = makeFile('photo.jpg', 'image/jpeg', 100 * 1024)
     await act(async () => {
@@ -78,5 +83,20 @@ describe('UploadCaptureTab', () => {
     await act(async () => { fireEvent.click(changeLink) })
     // Drop zone should be visible again
     expect(screen.getByText(/Haz clic para seleccionar/)).toBeTruthy()
+    expect(mockOnCleared).toHaveBeenCalledOnce()
+  })
+
+  it('Quitar imagen clears the current parent candidate and revokes its preview URL', async () => {
+    render(<UploadCaptureTab onCaptured={mockOnCaptured} onCleared={mockOnCleared} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const goodJpeg = makeFile('photo.jpg', 'image/jpeg', 100 * 1024)
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [goodJpeg] } })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar imagen' }))
+
+    expect(mockOnCleared).toHaveBeenCalledOnce()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-url')
   })
 })

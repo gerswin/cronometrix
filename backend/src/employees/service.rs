@@ -1,9 +1,9 @@
-use libsql::{Connection, params};
+use libsql::{params, Connection};
 use uuid::Uuid;
 
-use crate::state::AppState;
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::errors::AppError;
+use crate::state::AppState;
 
 use super::models::{CreateEmployeeRequest, Employee, EmployeeListQuery, UpdateEmployeeRequest};
 
@@ -66,10 +66,7 @@ fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
 /// Create a new employee, validating that the referenced department exists and is active.
 /// Returns Conflict with EMPLOYEE_CODE_EXISTS if employee_code is not unique.
 /// Returns NotFound with DEPARTMENT_NOT_FOUND if department does not exist or is inactive.
-pub async fn create(
-    conn: &Connection,
-    req: CreateEmployeeRequest,
-) -> Result<Employee, AppError> {
+pub async fn create(conn: &Connection, req: CreateEmployeeRequest) -> Result<Employee, AppError> {
     // EMP-04: Validate department exists and is active
     let dept_check = conn
         .query(
@@ -85,7 +82,10 @@ pub async fn create(
     if dept_check.is_none() {
         return Err(AppError::NotFound {
             code: "DEPARTMENT_NOT_FOUND",
-            message: format!("Department '{}' not found or is inactive", req.department_id),
+            message: format!(
+                "Department '{}' not found or is inactive",
+                req.department_id
+            ),
         });
     }
 
@@ -116,18 +116,15 @@ pub async fn create(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
-                return Err(AppError::Conflict {
-                    code: "EMPLOYEE_CODE_EXISTS",
-                    message: format!("Employee code '{}' is already in use", req.employee_code),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
+            return Err(AppError::Conflict {
+                code: "EMPLOYEE_CODE_EXISTS",
+                message: format!("Employee code '{}' is already in use", req.employee_code),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e.into()));
     }
 
     get_by_id(conn, &id).await
@@ -154,7 +151,10 @@ pub async fn create_queued(
     if dept_check.is_none() {
         return Err(AppError::NotFound {
             code: "DEPARTMENT_NOT_FOUND",
-            message: format!("Department '{}' not found or is inactive", req.department_id),
+            message: format!(
+                "Department '{}' not found or is inactive",
+                req.department_id
+            ),
         });
     }
 
@@ -184,21 +184,21 @@ pub async fn create_queued(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
-                return Err(AppError::Conflict {
-                    code: "EMPLOYEE_CODE_EXISTS",
-                    message: format!("Employee code '{}' is already in use", req.employee_code),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed") && msg.contains("employee_code") {
+            return Err(AppError::Conflict {
+                code: "EMPLOYEE_CODE_EXISTS",
+                message: format!("Employee code '{}' is already in use", req.employee_code),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e));
     }
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     get_by_id(&conn, &id).await
 }
 
@@ -272,7 +272,11 @@ pub async fn list(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut data = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         data.push(row_to_employee(row)?);
     }
 
@@ -357,11 +361,10 @@ pub async fn update(
         let val = if hd.is_empty() {
             libsql::Value::Null
         } else {
-            let epoch = parse_hire_date(Some(hd))?
-                .ok_or_else(|| AppError::Validation {
-                    code: "VALIDATION_ERROR",
-                    message: "hire_date must be YYYY-MM-DD".to_string(),
-                })?;
+            let epoch = parse_hire_date(Some(hd))?.ok_or_else(|| AppError::Validation {
+                code: "VALIDATION_ERROR",
+                message: "hire_date must be YYYY-MM-DD".to_string(),
+            })?;
             libsql::Value::Integer(epoch)
         };
         sets.push(format!("hire_date = ?{}", values.len() + 1));
@@ -401,7 +404,10 @@ pub async fn update(
     if rows_affected == 0 {
         // Could be version conflict or missing row — check
         let exists = conn
-            .query("SELECT id FROM employees WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM employees WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -417,7 +423,9 @@ pub async fn update(
 
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Employee was modified by another request. Fetch the latest version and retry.".to_string(),
+            message:
+                "Employee was modified by another request. Fetch the latest version and retry."
+                    .to_string(),
         });
     }
 
@@ -470,11 +478,10 @@ pub async fn update_queued(
         let val = if hd.is_empty() {
             libsql::Value::Null
         } else {
-            let epoch = parse_hire_date(Some(hd))?
-                .ok_or_else(|| AppError::Validation {
-                    code: "VALIDATION_ERROR",
-                    message: "hire_date must be YYYY-MM-DD".to_string(),
-                })?;
+            let epoch = parse_hire_date(Some(hd))?.ok_or_else(|| AppError::Validation {
+                code: "VALIDATION_ERROR",
+                message: "hire_date must be YYYY-MM-DD".to_string(),
+            })?;
             libsql::Value::Integer(epoch)
         };
         sets.push(format!("hire_date = ?{}", values.len() + 1));
@@ -486,7 +493,10 @@ pub async fn update_queued(
     }
 
     if sets.is_empty() {
-        let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+        let conn = state
+            .db
+            .connect()
+            .map_err(|e| AppError::Internal(e.into()))?;
         return get_by_id(&conn, id).await;
     }
 
@@ -508,10 +518,16 @@ pub async fn update_queued(
         .await
         .map_err(AppError::Internal)?;
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM employees WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM employees WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -525,7 +541,9 @@ pub async fn update_queued(
         }
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Employee was modified by another request. Fetch the latest version and retry.".to_string(),
+            message:
+                "Employee was modified by another request. Fetch the latest version and retry."
+                    .to_string(),
         });
     }
     get_by_id(&conn, id).await

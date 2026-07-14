@@ -53,9 +53,7 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
     let money_neg = Format::new().set_num_format("$#,##0.00;[Red]-$#,##0.00");
     let int_fmt = Format::new().set_num_format("0");
     let anomaly_tint = Format::new().set_background_color(Color::RGB(0xFEF3C7)); // amber-100 per D-16
-    let subtotal_fmt = Format::new()
-        .set_bold()
-        .set_border_top(FormatBorder::Thin);
+    let subtotal_fmt = Format::new().set_bold().set_border_top(FormatBorder::Thin);
     let subtotal_money = Format::new()
         .set_bold()
         .set_num_format("$#,##0.00")
@@ -178,22 +176,18 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
             let is_anomaly = emp.anomaly_count > 0;
             if is_anomaly {
                 // D-16: amber row tint for rows with at least one anomaly.
-                sheet
-                    .set_row_format(row, &anomaly_tint)
-                    .map_err(|e| AppError::Internal(anyhow::anyhow!("xlsx set_row_format: {}", e)))?;
+                sheet.set_row_format(row, &anomaly_tint).map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("xlsx set_row_format: {}", e))
+                })?;
             }
             write_employee_row(sheet, row, emp, &plain, &money_fmt, &money_neg, &int_fmt)?;
             row += 1;
         }
 
         // Per-dept subtotal row D-27.
-        if let Some(sub) = payload
-            .dept_subtotals
-            .iter()
-            .find(|s| s.dept_id == dept.id)
-        {
+        if let Some(sub) = payload.dept_subtotals.iter().find(|s| s.dept_id == dept.id) {
             sheet
-                .write_with_format(row, 1, &format!("Total {}", dept.name), &subtotal_fmt)
+                .write_with_format(row, 1, format!("Total {}", dept.name), &subtotal_fmt)
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("xlsx subtotal label: {}", e)))?;
             write_aggregate_row(
                 sheet,
@@ -247,9 +241,8 @@ fn write_employee_row(
             s
         }
     }
-    let map_err = |e: rust_xlsxwriter::XlsxError| {
-        AppError::Internal(anyhow::anyhow!("xlsx write: {}", e))
-    };
+    let map_err =
+        |e: rust_xlsxwriter::XlsxError| AppError::Internal(anyhow::anyhow!("xlsx write: {}", e));
 
     sheet
         .write_with_format(row, 0, to_dash(&emp.cedula), plain)
@@ -352,9 +345,8 @@ fn write_aggregate_row(
     money_fmt: &Format,
     money_neg: &Format,
 ) -> Result<(), AppError> {
-    let map_err = |e: rust_xlsxwriter::XlsxError| {
-        AppError::Internal(anyhow::anyhow!("xlsx write: {}", e))
-    };
+    let map_err =
+        |e: rust_xlsxwriter::XlsxError| AppError::Internal(anyhow::anyhow!("xlsx write: {}", e));
 
     sheet
         .write_with_format(row, 4, a.work_min as f64, int_fmt)
@@ -389,12 +381,7 @@ fn write_aggregate_row(
         )
         .map_err(map_err)?;
     sheet
-        .write_with_format(
-            row,
-            13,
-            -(a.late_deduction_cents as f64 / 100.0),
-            money_neg,
-        )
+        .write_with_format(row, 13, -(a.late_deduction_cents as f64 / 100.0), money_neg)
         .map_err(map_err)?;
     sheet
         .write_with_format(row, 14, a.total_a_pagar_cents as f64 / 100.0, money_fmt)

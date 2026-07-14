@@ -3,15 +3,21 @@ import { HardDrive, Send } from 'lucide-react'
 import { fmtDateTime } from '@/lib/format/datetime'
 import type { Device } from '@/types/api'
 
-// ── Status pill ─────────────────────────────────────────────────────────────
+// ── Connectivity + lifecycle pills ─────────────────────────────────────────
 
-function StatusPill({ status }: { status: Device['status'] }) {
+function ConnectionPill({
+  state,
+  deviceId,
+}: {
+  state: Device['connection_state']
+  deviceId: string
+}) {
   const STATUS_CONFIG = {
     online: {
       bg: '#DCFCE7',
       dot: '#22C55E',
       text: '#22C55E',
-      label: 'Online',
+      label: 'En línea',
     },
     offline: {
       bg: '#FEE2E2',
@@ -26,17 +32,13 @@ function StatusPill({ status }: { status: Device['status'] }) {
       label: 'Desconocido',
     },
   } as const
-  // Defensive fallback: backend may emit a status value not in the typed
-  // union (case mismatch, future enum addition, null). Treat anything
-  // unrecognised as "unknown" rather than crashing the card.
-  const key = (status ?? 'unknown') as keyof typeof STATUS_CONFIG
-  const config = STATUS_CONFIG[key] ?? STATUS_CONFIG.unknown
+  const config = STATUS_CONFIG[state]
 
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1"
       style={{ backgroundColor: config.bg }}
-      data-testid={`dev-status-${status ?? 'unknown'}`}
+      data-testid={`dev-status-${deviceId}`}
     >
       <span
         className="block rounded-full w-2 h-2 shrink-0"
@@ -52,16 +54,31 @@ function StatusPill({ status }: { status: Device['status'] }) {
   )
 }
 
+function LifecyclePill({ status, deviceId }: { status: Device['status']; deviceId: string }) {
+  const active = status === 'active'
+  return (
+    <span
+      className="rounded-full px-2.5 py-1 text-[11px] font-medium leading-none"
+      style={{
+        fontFamily: 'var(--font-sans)',
+        backgroundColor: active ? '#EFF6FF' : '#F3F4F6',
+        color: active ? '#1E3FB8' : '#666666',
+      }}
+      data-testid={`dev-lifecycle-${deviceId}`}
+    >
+      {active ? 'Activo' : 'Inactivo'}
+    </span>
+  )
+}
+
 // ── Direction badge ──────────────────────────────────────────────────────────
 
 function DirectionBadge({ direction }: { direction: Device['direction'] }) {
   const DIRECTION_CONFIG = {
     entry: { bg: '#EBF5FB', text: '#1E3FB8', label: 'Entrada' },
     exit:  { bg: '#EBF5FB', text: '#1E3FB8', label: 'Salida' },
-    both:  { bg: '#F3F0FF', text: '#7C3AED', label: 'Mixto' },
   } as const
-  const key = (direction ?? 'both') as keyof typeof DIRECTION_CONFIG
-  const config = DIRECTION_CONFIG[key] ?? DIRECTION_CONFIG.both
+  const config = DIRECTION_CONFIG[direction]
 
   return (
     <span
@@ -87,12 +104,13 @@ interface DeviceCardProps {
 
 export function DeviceCard({ device, onCommandClick, canEdit }: DeviceCardProps) {
   const iconColor =
-    device.status === 'online'  ? '#1E3FB8' :
-    device.status === 'offline' ? '#666666' :
+    device.status === 'inactive' ? '#999999' :
+    device.connection_state === 'online'  ? '#1E3FB8' :
+    device.connection_state === 'offline' ? '#666666' :
     '#999999'
 
   const heartbeatColor =
-    device.status === 'offline' ? '#EF4444' : '#1A1A1A'
+    device.connection_state === 'offline' ? '#EF4444' : '#1A1A1A'
 
   return (
     <article
@@ -111,7 +129,10 @@ export function DeviceCard({ device, onCommandClick, canEdit }: DeviceCardProps)
             {device.name}
           </span>
         </div>
-        <StatusPill status={device.status} />
+        <div className="flex items-center gap-2">
+          <ConnectionPill state={device.connection_state} deviceId={device.id} />
+          <LifecyclePill status={device.status} deviceId={device.id} />
+        </div>
       </div>
 
       {/* Card body: IP + Heartbeat */}
@@ -128,7 +149,7 @@ export function DeviceCard({ device, onCommandClick, canEdit }: DeviceCardProps)
             className="text-[12px] text-[#1A1A1A]"
             style={{ fontFamily: 'var(--font-mono)' }}
           >
-            {device.ip_address}
+            {device.ip}
           </span>
         </div>
 
@@ -155,7 +176,7 @@ export function DeviceCard({ device, onCommandClick, canEdit }: DeviceCardProps)
       {/* Card footer: direction badge + commands button */}
       <div className="flex items-center justify-between">
         <DirectionBadge direction={device.direction} />
-        {canEdit && (
+        {canEdit && device.status === 'active' && (
           <button
             type="button"
             onClick={() => onCommandClick(device)}

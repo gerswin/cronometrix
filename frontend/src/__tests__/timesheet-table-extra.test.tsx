@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TimesheetTable } from '../components/timesheet/timesheet-table'
 import type { DailyRecord } from '../types/api'
 
@@ -34,6 +35,21 @@ function makeRecord(over: Partial<DailyRecord> = {}): DailyRecord {
   }
 }
 
+function renderTable(data: DailyRecord[], onEditClick = () => {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <TimesheetTable
+        data={data}
+        total={data.length}
+        pagination={{ pageIndex: 0, pageSize: 50 }}
+        onPaginationChange={() => {}}
+        onEditClick={onEditClick}
+      />
+    </QueryClientProvider>,
+  )
+}
+
 describe('TimesheetTable (component)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -41,101 +57,51 @@ describe('TimesheetTable (component)', () => {
   })
 
   it('renders all column headers', () => {
-    render(
-      <TimesheetTable
-        data={[]}
-        total={0}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
-    for (const h of ['Empleado', 'Entrada', 'Min. Inicio', 'Min. Fin', 'Salida', 'Total Min', 'Estado']) {
+    renderTable([])
+    for (const h of ['Fecha', 'Empleado', 'Departamento', 'Entrada', 'Salida', 'Novedades / Estado', 'Acciones']) {
       expect(screen.getByText(h)).toBeTruthy()
     }
   })
 
+  it('uses employee and anchor date as stable row identity and shows enriched fields', () => {
+    const first = makeRecord({ id: 'opaque-1', department_name: 'Operaciones' })
+    const second = makeRecord({ id: 'opaque-2', anchor_date: '2026-04-24' })
+    renderTable([first, second])
+    expect(screen.getByTestId('timesheet-row-emp-1:2026-04-23')).toBeTruthy()
+    expect(screen.getByTestId('timesheet-row-emp-1:2026-04-24')).toBeTruthy()
+    expect(screen.getByText('23/04/2026')).toBeTruthy()
+    expect(screen.getByText('Operaciones')).toBeTruthy()
+  })
+
   it('renders the empty-state row when no records', () => {
-    render(
-      <TimesheetTable
-        data={[]}
-        total={0}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
+    renderTable([])
     expect(screen.getByText('Sin registros para esta semana')).toBeTruthy()
   })
 
   it('Normal status badge for a record with work_minutes>0 and no leave', () => {
-    render(
-      <TimesheetTable
-        data={[makeRecord()]}
-        total={1}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
+    renderTable([makeRecord()])
     expect(screen.getByText('Normal')).toBeTruthy()
     // Employee name rendered through the cell helper
     expect(screen.getByText('Ana García')).toBeTruthy()
   })
 
   it('Ausente badge when work_minutes==0 and no leave', () => {
-    render(
-      <TimesheetTable
-        data={[makeRecord({ work_minutes: 0, leave_id: null })]}
-        total={1}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
+    renderTable([makeRecord({ work_minutes: 0, leave_id: null })])
     expect(screen.getByText('Ausente')).toBeTruthy()
   })
 
   it('Ausente Justificado badge when work_minutes==0 with a leave', () => {
-    render(
-      <TimesheetTable
-        data={[makeRecord({ work_minutes: 0, leave_id: 'leave-1' })]}
-        total={1}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
+    renderTable([makeRecord({ work_minutes: 0, leave_id: 'leave-1' })])
     expect(screen.getByText('Ausente Justificado')).toBeTruthy()
   })
 
   it('Justificado badge when work_minutes>0 with a leave (e.g. partial-day permission)', () => {
-    render(
-      <TimesheetTable
-        data={[makeRecord({ work_minutes: 240, leave_id: 'leave-1' })]}
-        total={1}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
+    renderTable([makeRecord({ work_minutes: 240, leave_id: 'leave-1' })])
     expect(screen.getByText('Justificado')).toBeTruthy()
   })
 
   it('shows em-dash for null entry_at / exit_at / minute fields', () => {
-    render(
-      <TimesheetTable
-        data={[makeRecord({
-          entry_at: null,
-          exit_at: null,
-          late_minutes: null as unknown as number,
-        })]}
-        total={1}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
+    renderTable([makeRecord({ entry_at: null, exit_at: null })])
     // At least one em-dash rendered (entry/exit/late columns)
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1)
   })
@@ -143,30 +109,14 @@ describe('TimesheetTable (component)', () => {
   it('admin sees the edit (Pencil) button per row that fires onEditClick', () => {
     const onEditClick = vi.fn()
     const rec = makeRecord()
-    render(
-      <TimesheetTable
-        data={[rec]}
-        total={1}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={onEditClick}
-      />
-    )
+    renderTable([rec], onEditClick)
     fireEvent.click(screen.getByLabelText('Registrar novedad'))
     expect(onEditClick).toHaveBeenCalledWith(rec)
   })
 
   it('non-admin (supervisor) does NOT see the edit button (D-14 RBAC)', () => {
     useAuthMock.mockReturnValue({ role: 'supervisor', sub: 'u1', claims: null })
-    render(
-      <TimesheetTable
-        data={[makeRecord()]}
-        total={1}
-        pagination={{ pageIndex: 0, pageSize: 50 }}
-        onPaginationChange={() => {}}
-        onEditClick={() => {}}
-      />
-    )
+    renderTable([makeRecord()])
     expect(screen.queryByLabelText('Registrar novedad')).toBeNull()
   })
 })

@@ -1,23 +1,17 @@
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { InProgressList } from '../in-progress-list'
-import type { Employee, Enrollment, EnrollmentDevicePush } from '@/types/api'
+import type { Enrollment, EnrollmentDevicePush, PaginatedResponse } from '@/types/api'
 
-const EMPLOYEE: Employee = {
-  id: 'emp-1',
-  cedula: 'V-1',
-  name: 'Ana García',
-  department_id: 'd1',
-  position: 'Analista',
-  hire_date: '2023-01-01',
-  status: 'active',
-  version: 1,
-  created_at: '2023-01-01T00:00:00Z',
-  updated_at: '2023-01-01T00:00:00Z',
-}
+const { listMock } = vi.hoisted(() => ({ listMock: vi.fn() }))
+vi.mock('@/lib/enrollment-api', () => ({
+  listInProgressEnrollments: (...args: unknown[]) => listMock(...args),
+}))
 
-function push(over: Partial<EnrollmentDevicePush>): EnrollmentDevicePush {
+function push(over: Partial<EnrollmentDevicePush> = {}): EnrollmentDevicePush {
   return {
+    id: 'push-1',
     device_id: 'dev-1',
     device_name: 'Entrada',
     status: 'pending',
@@ -28,74 +22,79 @@ function push(over: Partial<EnrollmentDevicePush>): EnrollmentDevicePush {
   }
 }
 
-function enrollment(pushes: EnrollmentDevicePush[]): Enrollment {
+function enrollment(over: Partial<Enrollment> = {}): Enrollment {
   return {
     id: 'enr-1',
-    employee_id: EMPLOYEE.id,
+    employee_id: 'emp-1',
+    employee_name: 'Ana García',
+    employee_code: 'V-1',
     status: 'in_progress',
     started_at: '2026-04-28T12:00:00Z',
     completed_at: null,
-    device_pushes: pushes,
+    version: 1,
+    device_pushes: [push()],
+    ...over,
+  }
+}
+
+function page(data: Enrollment[]): PaginatedResponse<Enrollment> {
+  return { data, total: data.length, limit: 100, offset: 0 }
+}
+
+function makeWrapper() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return function Wrapper({ children }: { children: React.ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>
   }
 }
 
 describe('InProgressList', () => {
-  it('returns null when activeEnrollmentId is missing', () => {
-    const { container } = render(<InProgressList activeEnrollmentId={null} activeEmployee={EMPLOYEE} enrollment={enrollment([push({})])} />)
-    expect(container.firstChild).toBeNull()
+  beforeEach(() => {
+    vi.clearAllMocks()
+    listMock.mockResolvedValue(page([]))
   })
 
-  it('returns null when activeEmployee is missing', () => {
-    const { container } = render(<InProgressList activeEnrollmentId="enr-1" activeEmployee={null} enrollment={enrollment([push({})])} />)
-    expect(container.firstChild).toBeNull()
+  it('queries the server-backed in-progress page at limit 100', async () => {
+    render(<InProgressList onReopen={() => {}} />, { wrapper: makeWrapper() })
+    await waitFor(() => expect(listMock).toHaveBeenCalledWith({ limit: 100 }))
   })
 
-  it('returns null when enrollment is missing', () => {
-    const { container } = render(<InProgressList activeEnrollmentId="enr-1" activeEmployee={EMPLOYEE} enrollment={null} />)
-    expect(container.firstChild).toBeNull()
+  it('renders every server result with stable row and reopen test IDs', async () => {
+    listMock.mockResolvedValueOnce(page([
+      enrollment(),
+      enrollment({ id: 'enr-2', employee_name: 'Luis Pérez', employee_code: 'V-2' }),
+    ]))
+    render(<InProgressList onReopen={() => {}} />, { wrapper: makeWrapper() })
+
+    expect(await screen.findByTestId('enrollment-row-enr-1')).toBeTruthy()
+    expect(screen.getByTestId('enrollment-row-enr-2')).toBeTruthy()
+    expect(screen.getByTestId('enrollment-reopen-enr-1')).toBeTruthy()
   })
 
-  it('returns null when all device pushes are terminal (success or failed)', () => {
-    const e = enrollment([
-      push({ device_id: 'a', status: 'success' }),
-      push({ device_id: 'b', status: 'failed' }),
-    ])
-    const { container } = render(
-      <InProgressList activeEnrollmentId="enr-1" activeEmployee={EMPLOYEE} enrollment={e} />
-    )
-    expect(container.firstChild).toBeNull()
+  it('treats an in-progress enrollment with zero pushes as non-terminal', async () => {
+    listMock.mockResolvedValueOnce(page([enrollment({ device_pushes: [] })]))
+    render(<InProgressList onReopen={() => {}} />, { wrapper: makeWrapper() })
+
+    expect(await screen.findByText('Ana García')).toBeTruthy()
+    expect(screen.getByText('0/0 dispositivos')).toBeTruthy()
   })
 
-  it('renders title + employee name + success/total badge when enrollment is in progress', () => {
-    const e = enrollment([
-      push({ device_id: 'a', status: 'success' }),
-      push({ device_id: 'b', status: 'in_progress' }),
-      push({ device_id: 'c', status: 'pending' }),
-    ])
-    render(<InProgressList activeEnrollmentId="enr-1" activeEmployee={EMPLOYEE} enrollment={e} />)
-    expect(screen.getByText('Enrolamientos en curso')).toBeTruthy()
-    expect(screen.getByText('Ana García')).toBeTruthy()
-    expect(screen.getByText(/1\/3 dispositivos/)).toBeTruthy()
-  })
-
-  it('omits the Ver detalles button when onReopen is not supplied', () => {
-    const e = enrollment([push({ status: 'in_progress' })])
-    render(<InProgressList activeEnrollmentId="enr-1" activeEmployee={EMPLOYEE} enrollment={e} />)
-    expect(screen.queryByText('Ver detalles')).toBeNull()
-  })
-
-  it('Ver detalles button invokes onReopen', () => {
-    const e = enrollment([push({ status: 'in_progress' })])
+  it('reopens by enrollment id and remains recoverable after a fresh remount', async () => {
+    listMock.mockResolvedValue(page([enrollment()]))
     const onReopen = vi.fn()
-    render(
-      <InProgressList
-        activeEnrollmentId="enr-1"
-        activeEmployee={EMPLOYEE}
-        enrollment={e}
-        onReopen={onReopen}
-      />
-    )
-    fireEvent.click(screen.getByText('Ver detalles'))
-    expect(onReopen).toHaveBeenCalled()
+    const first = render(<InProgressList onReopen={onReopen} />, { wrapper: makeWrapper() })
+    fireEvent.click(await screen.findByTestId('enrollment-reopen-enr-1'))
+    expect(onReopen).toHaveBeenCalledWith('enr-1')
+    first.unmount()
+
+    render(<InProgressList onReopen={onReopen} />, { wrapper: makeWrapper() })
+    expect(await screen.findByTestId('enrollment-row-enr-1')).toBeTruthy()
+    expect(listMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders nothing when the server has no in-progress enrollments', async () => {
+    const { container } = render(<InProgressList onReopen={() => {}} />, { wrapper: makeWrapper() })
+    await waitFor(() => expect(listMock).toHaveBeenCalled())
+    expect(container.firstChild).toBeNull()
   })
 })

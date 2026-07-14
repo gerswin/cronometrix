@@ -30,9 +30,7 @@ pub async fn get_tenant_info(conn: &Connection) -> Result<TenantInfo, AppError> 
         .next()
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!("tenant_info singleton row missing"))
-        })?;
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("tenant_info singleton row missing")))?;
 
     row_to_tenant_info(row)
 }
@@ -94,8 +92,9 @@ pub async fn update_tenant_info(
         // here is a stale version.
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Tenant info was modified by another request. Fetch the latest version and retry."
-                .to_string(),
+            message:
+                "Tenant info was modified by another request. Fetch the latest version and retry."
+                    .to_string(),
         });
     }
 
@@ -122,7 +121,13 @@ pub async fn update_tenant_info_queued(
         values.push(libsql::Value::Text(val));
     }
     if sets.is_empty() {
-        return get_tenant_info(&state.db.connect().map_err(|e| AppError::Internal(e.into()))?).await;
+        return get_tenant_info(
+            &state
+                .db
+                .connect()
+                .map_err(|e| AppError::Internal(e.into()))?,
+        )
+        .await;
     }
 
     sets.push("updated_at = unixepoch()".to_string());
@@ -136,16 +141,24 @@ pub async fn update_tenant_info_queued(
         set_clause, version_param
     );
 
-    let rows_affected = state.db_write.execute(sql, values).await.map_err(AppError::Internal)?;
+    let rows_affected = state
+        .db_write
+        .execute(sql, values)
+        .await
+        .map_err(AppError::Internal)?;
     if rows_affected == 0 {
         // Singleton always exists (seeded by migration 013); the only way to fail
         // here is a stale version.
         return Err(AppError::Conflict {
             code: "VERSION_CONFLICT",
-            message: "Tenant info was modified by another request. Fetch the latest version and retry."
-                .to_string(),
+            message:
+                "Tenant info was modified by another request. Fetch the latest version and retry."
+                    .to_string(),
         });
     }
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     get_tenant_info(&conn).await
 }

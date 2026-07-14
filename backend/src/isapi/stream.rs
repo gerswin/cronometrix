@@ -69,10 +69,7 @@ fn extract_boundary(content_type: &str) -> anyhow::Result<String> {
     // Fast path: find "boundary=" and take the value until `;` or end-of-string.
     let lower = content_type.to_ascii_lowercase();
     if !lower.starts_with("multipart/") {
-        anyhow::bail!(
-            "expected multipart/* content-type, got {}",
-            content_type
-        );
+        anyhow::bail!("expected multipart/* content-type, got {}", content_type);
     }
     let idx = lower
         .find("boundary=")
@@ -88,40 +85,6 @@ fn extract_boundary(content_type: &str) -> anyhow::Result<String> {
         anyhow::bail!("empty boundary parameter");
     }
     Ok(unquoted)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_boundary_multipart_mixed() {
-        assert_eq!(
-            extract_boundary("multipart/mixed; boundary=MIME_boundary").unwrap(),
-            "MIME_boundary"
-        );
-    }
-
-    #[test]
-    fn extract_boundary_quoted() {
-        assert_eq!(
-            extract_boundary("multipart/mixed; boundary=\"xyz\"").unwrap(),
-            "xyz"
-        );
-    }
-
-    #[test]
-    fn extract_boundary_form_data() {
-        assert_eq!(
-            extract_boundary("multipart/form-data; boundary=abc").unwrap(),
-            "abc"
-        );
-    }
-
-    #[test]
-    fn extract_boundary_rejects_non_multipart() {
-        assert!(extract_boundary("application/json").is_err());
-    }
 }
 
 /// Open and consume one alertStream connection. Returns when the upstream
@@ -318,7 +281,13 @@ async fn ingest_pair(
         photo_bytes: None,
     };
 
-    match events_service::persist_attendance_event_queued(&state, &state.paths.events_root, new_event).await {
+    match events_service::persist_attendance_event_queued(
+        state,
+        &state.paths.events_root,
+        new_event,
+    )
+    .await
+    {
         Ok(PersistOutcome::Inserted { photo_path }) => {
             tracing::info!(
                 device_id = %cfg.id,
@@ -331,7 +300,7 @@ async fn ingest_pair(
             // test setups without a worker are silently skipped.
             events_service::publish_recompute_if_employee(state, &recompute_snapshot);
             // Phase 4: broadcast to SSE stream clients (non-fatal if no subscribers).
-            events_service::publish_sse_event(state, &recompute_snapshot, &photo_path);
+            events_service::publish_sse_event(state, &recompute_snapshot, &photo_path).await;
         }
         Ok(PersistOutcome::Deduplicated) => {
             tracing::debug!(device_id = %cfg.id, "event deduplicated");
@@ -342,4 +311,38 @@ async fn ingest_pair(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_boundary_multipart_mixed() {
+        assert_eq!(
+            extract_boundary("multipart/mixed; boundary=MIME_boundary").unwrap(),
+            "MIME_boundary"
+        );
+    }
+
+    #[test]
+    fn extract_boundary_quoted() {
+        assert_eq!(
+            extract_boundary("multipart/mixed; boundary=\"xyz\"").unwrap(),
+            "xyz"
+        );
+    }
+
+    #[test]
+    fn extract_boundary_form_data() {
+        assert_eq!(
+            extract_boundary("multipart/form-data; boundary=abc").unwrap(),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn extract_boundary_rejects_non_multipart() {
+        assert!(extract_boundary("application/json").is_err());
+    }
 }

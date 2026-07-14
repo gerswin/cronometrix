@@ -35,8 +35,8 @@ fn new_with_insecure_tls_does_not_error() {
 
 #[test]
 fn debug_impl_redacts_password() {
-    let conn = DeviceConnection::new("https://10.0.0.1:443", "admin", "supersecret", false)
-        .unwrap();
+    let conn =
+        DeviceConnection::new("https://10.0.0.1:443", "admin", "supersecret", false).unwrap();
     let dbg = format!("{:?}", conn);
     assert!(
         !dbg.contains("supersecret"),
@@ -56,7 +56,9 @@ async fn door_open_happy_path_via_mock_200() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))
         .and(path("/ISAPI/AccessControl/RemoteControl/door/1"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("<ResponseStatus>OK</ResponseStatus>"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("<ResponseStatus>OK</ResponseStatus>"),
+        )
         .mount(&server)
         .await;
 
@@ -136,10 +138,7 @@ async fn upsert_user_happy_path() {
         .mount(&server)
         .await;
     let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
-    let r = conn
-        .upsert_user("face-42", "Alice")
-        .await
-        .expect("200");
+    let r = conn.upsert_user("face-42", "Alice").await.expect("200");
     assert!(r.contains("statusCode"));
 }
 
@@ -150,9 +149,10 @@ async fn upsert_user_handles_duplicate_employee_no_as_success() {
     // logs a warn but treats it as Ok (idempotent upsert).
     Mock::given(method("POST"))
         .and(path("/ISAPI/AccessControl/UserInfo/Record"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"{"statusCode":1,"subStatusCode":"duplicateEmployeeNo"}"#,
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"statusCode":1,"subStatusCode":"duplicateEmployeeNo"}"#),
+        )
         .mount(&server)
         .await;
     let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
@@ -190,9 +190,7 @@ async fn upload_face_immediate_200_no_digest_needed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
         .mount(&server)
         .await;
     let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();

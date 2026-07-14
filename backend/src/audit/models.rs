@@ -9,11 +9,11 @@ pub struct AuditEntry {
     pub id: String,
     pub table_name: String,
     pub record_id: String,
-    pub operation: String,               // "INSERT" | "UPDATE" | "DELETE"
-    pub old_data: Option<serde_json::Value>,  // parsed from old_data TEXT column
-    pub new_data: Option<serde_json::Value>,  // parsed from new_data TEXT column
+    pub operation: String,                   // "INSERT" | "UPDATE" | "DELETE"
+    pub old_data: Option<serde_json::Value>, // parsed from old_data TEXT column
+    pub new_data: Option<serde_json::Value>, // parsed from new_data TEXT column
     pub actor_id: Option<String>,
-    pub created_at: i64,                 // epoch seconds
+    pub created_at: i64, // epoch seconds
 }
 
 /// A distinct actor that appears in the audit_log, joined with users for display.
@@ -38,6 +38,6 @@ pub struct AuditListQuery {
     pub table_name: Option<String>,
     pub record_id: Option<String>,
     pub operation: Option<String>,
-    pub from_ts: Option<i64>,  // epoch seconds inclusive lower bound
-    pub to_ts: Option<i64>,    // epoch seconds inclusive upper bound
+    pub from_ts: Option<i64>, // epoch seconds inclusive lower bound
+    pub to_ts: Option<i64>,   // epoch seconds inclusive upper bound
 }

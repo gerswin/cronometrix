@@ -38,9 +38,9 @@ describe('WebcamCaptureTab — extra branches', () => {
     }
 
     const onCaptured = vi.fn()
-    const onValidationChange = vi.fn()
+    const onCleared = vi.fn()
     await act(async () => {
-      render(<WebcamCaptureTab onCaptured={onCaptured} onValidationChange={onValidationChange} />)
+      render(<WebcamCaptureTab onCaptured={onCaptured} onCleared={onCleared} />)
     })
 
     const captureBtn = screen.getByRole('button', { name: /Capturar Rostro/i })
@@ -49,8 +49,11 @@ describe('WebcamCaptureTab — extra branches', () => {
     await waitFor(() => screen.getByRole('button', { name: /Aceptar/i }))
     fireEvent.click(screen.getByRole('button', { name: /Aceptar/i }))
     expect(onCaptured).toHaveBeenCalled()
-    const arg = onCaptured.mock.calls[0][0]
-    expect(arg).toBeInstanceOf(Blob)
+    expect(onCaptured).toHaveBeenCalledWith({
+      blob: expect.any(Blob),
+      capturedVia: 'webcam',
+      sourceDeviceId: null,
+    })
   })
 
   it('Recapturar resets to live preview and re-invokes getUserMedia', async () => {
@@ -66,9 +69,9 @@ describe('WebcamCaptureTab — extra branches', () => {
       cb(new Blob(['x'], { type: 'image/jpeg' }))
     }
 
-    const onValidationChange = vi.fn()
+    const onCleared = vi.fn()
     await act(async () => {
-      render(<WebcamCaptureTab onCaptured={() => {}} onValidationChange={onValidationChange} />)
+      render(<WebcamCaptureTab onCaptured={() => {}} onCleared={onCleared} />)
     })
     const captureBtn = screen.getByRole('button', { name: /Capturar Rostro/i })
     await act(async () => { fireEvent.click(captureBtn) })
@@ -78,7 +81,7 @@ describe('WebcamCaptureTab — extra branches', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Recapturar/i }))
     })
-    expect(onValidationChange).toHaveBeenCalledWith(false)
+    expect(onCleared).toHaveBeenCalledOnce()
     expect(getUserMedia).toHaveBeenCalled()
   })
 
@@ -97,7 +100,7 @@ describe('WebcamCaptureTab — extra branches', () => {
     })
 
     await act(async () => {
-      render(<WebcamCaptureTab onCaptured={() => {}} onValidationChange={() => {}} />)
+      render(<WebcamCaptureTab onCaptured={() => {}} onCleared={() => {}} />)
     })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Capturar Rostro/i })) })
     await waitFor(() => screen.getByRole('button', { name: /Recapturar/i }))
@@ -112,10 +115,45 @@ describe('WebcamCaptureTab — extra branches', () => {
       writable: true, configurable: true,
     })
     await act(async () => {
-      render(<WebcamCaptureTab onCaptured={() => {}} onValidationChange={() => {}} />)
+      render(<WebcamCaptureTab onCaptured={() => {}} onCleared={() => {}} />)
     })
     expect(screen.queryByRole('alert')).toBeNull()
     // Still shows the capture button (live-preview branch)
     expect(screen.getByRole('button', { name: /Capturar Rostro/i })).toBeTruthy()
+  })
+
+  it('stops a late retake stream that resolves after unmount', async () => {
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => ({ drawImage: vi.fn() })) as unknown as typeof HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.toBlob = function (cb: BlobCallback) {
+      cb(new Blob(['x'], { type: 'image/jpeg' }))
+    }
+    const initialStop = vi.fn()
+    const lateStop = vi.fn()
+    let resolveRetake!: (stream: MediaStream) => void
+    const getUserMedia = vi
+      .fn<typeof navigator.mediaDevices.getUserMedia>()
+      .mockResolvedValueOnce({ getTracks: () => [{ stop: initialStop }] } as unknown as MediaStream)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveRetake = resolve }))
+    Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+      value: { getUserMedia }, writable: true, configurable: true,
+    })
+
+    let unmount!: () => void
+    await act(async () => {
+      const rendered = render(<WebcamCaptureTab onCaptured={() => {}} onCleared={() => {}} />)
+      unmount = rendered.unmount
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Capturar Rostro/i }))
+    })
+    await waitFor(() => screen.getByRole('button', { name: /Recapturar/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Recapturar/i }))
+    unmount()
+
+    await act(async () => {
+      resolveRetake({ getTracks: () => [{ stop: lateStop }] } as unknown as MediaStream)
+    })
+
+    expect(lateStop).toHaveBeenCalledOnce()
   })
 })

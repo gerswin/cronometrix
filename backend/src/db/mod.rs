@@ -17,10 +17,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_audit_triggers",
         include_str!("migrations/002_audit_triggers.sql"),
     ),
-    (
-        "003_devices",
-        include_str!("migrations/003_devices.sql"),
-    ),
+    ("003_devices", include_str!("migrations/003_devices.sql")),
     (
         "004_attendance_events",
         include_str!("migrations/004_attendance_events.sql"),
@@ -45,10 +42,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "009_daily_record_overrides",
         include_str!("migrations/009_daily_record_overrides.sql"),
     ),
-    (
-        "010_leaves",
-        include_str!("migrations/010_leaves.sql"),
-    ),
+    ("010_leaves", include_str!("migrations/010_leaves.sql")),
     (
         "011_phase3_audit_triggers",
         include_str!("migrations/011_phase3_audit_triggers.sql"),
@@ -192,10 +186,7 @@ pub async fn run_migrations(conn: &libsql::Connection) -> Result<()> {
 
         // Check if already applied
         let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM _migrations WHERE name = ?1",
-                [*name],
-            )
+            .query("SELECT COUNT(*) FROM _migrations WHERE name = ?1", [*name])
             .await?;
 
         let count: i64 = rows

@@ -22,6 +22,10 @@ use axum::Router;
 use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::events;
+use cronometrix_api::events::models::NewAttendanceEvent;
+use cronometrix_api::events::service::{
+    build_sse_payload, persist_attendance_event, publish_sse_event,
+};
 use cronometrix_api::state::AppState;
 use http_body_util::BodyExt;
 use libsql::params;
@@ -139,8 +143,6 @@ async fn seed_event(
     captured_at: i64,
     photo_bytes: Option<Vec<u8>>,
 ) {
-    use cronometrix_api::events::models::NewAttendanceEvent;
-    use cronometrix_api::events::service::persist_attendance_event;
     let ev = NewAttendanceEvent {
         id: id.to_string(),
         employee_id: employee_id.map(str::to_string),
@@ -156,6 +158,123 @@ async fn seed_event(
     persist_attendance_event(conn, events_root, ev)
         .await
         .expect("persist");
+}
+
+fn sse_event(id: &str, employee_id: Option<&str>, with_photo: bool) -> NewAttendanceEvent {
+    NewAttendanceEvent {
+        id: id.to_string(),
+        employee_id: employee_id.map(str::to_string),
+        device_id: "d-sse".to_string(),
+        direction: "entry".to_string(),
+        captured_at: 1_700_000_000,
+        is_unknown: employee_id.is_none(),
+        face_id: None,
+        employee_no_string: None,
+        raw_xml: "<EventNotificationAlert/>".to_string(),
+        photo_bytes: with_photo.then(|| vec![0xff, 0xd8, 0xff]),
+    }
+}
+
+#[tokio::test]
+async fn sse_payload_enriches_known_employee_department_and_photo_flag() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed_device(&conn, "d-sse", "10.9.0.1", 8443).await;
+    seed_employee(&conn, "e-sse", "EMP-SSE").await;
+
+    let payload = build_sse_payload(&conn, &sse_event("evt-sse", Some("e-sse"), true), true)
+        .await
+        .expect("enrichment succeeds");
+
+    assert_eq!(payload.employee_id.as_deref(), Some("e-sse"));
+    assert_eq!(payload.employee_name.as_deref(), Some("Emp e-sse"));
+    assert_eq!(payload.department.as_deref(), Some("Dept e-sse"));
+    assert!(payload.has_photo);
+}
+
+#[tokio::test]
+async fn sse_payload_keeps_unknown_employee_fields_null() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+
+    let payload = build_sse_payload(&conn, &sse_event("evt-unknown", None, false), false)
+        .await
+        .expect("unknown event still builds a payload");
+
+    assert!(payload.employee_id.is_none());
+    assert!(payload.employee_name.is_none());
+    assert!(payload.department.is_none());
+    assert!(!payload.has_photo);
+}
+
+#[tokio::test]
+async fn sse_enrichment_failure_broadcasts_fallback_without_undoing_persisted_event() {
+    let db = common::test_db().await;
+    let config = Arc::new(Config {
+        database_path: "test".into(),
+        turso_url: String::new(),
+        turso_token: String::new(),
+        jwt_secret: common::TEST_JWT_SECRET.to_string(),
+        server_host: "127.0.0.1".into(),
+        server_port: 0,
+        turso_sync_interval_secs: 300,
+        device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
+        license_jwt_path: String::new(),
+        do_functions_activate_url: String::new(),
+        do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
+    });
+    let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let conn = state.db.connect().unwrap();
+    seed_device(&conn, "d-sse", "10.9.0.2", 8443).await;
+    seed_employee(&conn, "e-sse", "EMP-SSE").await;
+    let event = sse_event("evt-fallback", Some("e-sse"), false);
+    let outcome = persist_attendance_event(
+        &conn,
+        &state.paths.events_root,
+        sse_event("evt-fallback", Some("e-sse"), false),
+    )
+    .await
+    .expect("attendance persistence succeeds first");
+    assert!(matches!(
+        outcome,
+        events::models::PersistOutcome::Inserted { .. }
+    ));
+
+    conn.execute(
+        "ALTER TABLE departments RENAME TO unavailable_departments",
+        (),
+    )
+    .await
+    .expect("force enrichment query failure");
+    let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(tx);
+
+    publish_sse_event(&state, &event, &None).await;
+    let payload = rx.recv().await.expect("fallback is still broadcast");
+    assert_eq!(payload.employee_id.as_deref(), Some("e-sse"));
+    assert!(payload.employee_name.is_none());
+    assert!(payload.department.is_none());
+
+    let persisted: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM attendance_events WHERE id = 'evt-fallback'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(
+        persisted, 1,
+        "enrichment failure cannot compensate the insert"
+    );
 }
 
 // =============================================================================
@@ -302,7 +421,10 @@ async fn list_events_filters_by_time_range() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp.into_body()).await;
-    assert_eq!(body["total"], 1, "only evt-2 has captured_at in [1500, 2500)");
+    assert_eq!(
+        body["total"], 1,
+        "only evt-2 has captured_at in [1500, 2500)"
+    );
 }
 
 #[tokio::test]
@@ -327,7 +449,11 @@ async fn list_events_viewer_can_read() {
         .body(Body::empty())
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "viewer must be able to list events (D-15)");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "viewer must be able to list events (D-15)"
+    );
 }
 
 #[tokio::test]
@@ -394,7 +520,11 @@ async fn get_event_photo_returns_jpeg_bytes() {
     }
     // Sanity: file must be on disk under the per-test events root.
     let expected = events_root.join("2023-11-14/evt-photo-1.jpg");
-    assert!(expected.exists(), "photo file must be on disk: {:?}", expected);
+    assert!(
+        expected.exists(),
+        "photo file must be on disk: {:?}",
+        expected
+    );
 
     let token = viewer_token();
 
@@ -424,7 +554,16 @@ async fn get_event_photo_404_if_no_photo_path() {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.6.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(&conn, &events_root, "evt-no-photo", Some("e1"), "d1", 1000, None).await;
+        seed_event(
+            &conn,
+            &events_root,
+            "evt-no-photo",
+            Some("e1"),
+            "d1",
+            1000,
+            None,
+        )
+        .await;
     }
 
     let token = viewer_token();
@@ -465,7 +604,10 @@ async fn get_event_photo_404_if_file_missing() {
     }
     // Delete the on-disk file but keep the DB row pointing at it.
     let victim = events_root.join("2023-11-14/evt-missing-file.jpg");
-    assert!(victim.exists(), "file should have been written by seed_event");
+    assert!(
+        victim.exists(),
+        "file should have been written by seed_event"
+    );
     std::fs::remove_file(&victim).expect("remove photo file");
 
     let token = viewer_token();

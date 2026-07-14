@@ -25,6 +25,7 @@ pub struct DailyRecordResponse {
     pub employee_id: String,
     pub employee_name: Option<String>,
     pub department_id: String,
+    pub department_name: Option<String>,
     pub anchor_date: String,
     pub shift_type: String,
     pub work_minutes: i64,
@@ -32,13 +33,13 @@ pub struct DailyRecordResponse {
     pub late_minutes: i64,
     pub early_departure_minutes: i64,
     pub is_rest_day_worked: bool,
-    pub entry_at: Option<String>,   // ISO 8601
-    pub exit_at: Option<String>,    // ISO 8601
+    pub entry_at: Option<String>, // ISO 8601
+    pub exit_at: Option<String>,  // ISO 8601
     pub leave_id: Option<String>,
     pub computed_at: String,
     pub created_at: String,
     pub updated_at: String,
-    pub anomalies: Vec<String>,     // AnomalyCode::as_str values
+    pub anomalies: Vec<String>, // AnomalyCode::as_str values
 }
 
 /// Filters for `GET /api/v1/daily-records`. `from_date` / `to_date` are

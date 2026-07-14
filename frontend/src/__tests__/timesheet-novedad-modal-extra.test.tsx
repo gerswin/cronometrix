@@ -9,8 +9,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NovedadModal } from '../components/timesheet/novedad-modal'
 import type { DailyRecord } from '../types/api'
 
-const { apiPost } = vi.hoisted(() => ({ apiPost: vi.fn() }))
-vi.mock('@/lib/api', () => ({ api: { post: (...a: unknown[]) => apiPost(...a) } }))
+const { apiGet, apiPost } = vi.hoisted(() => ({ apiGet: vi.fn(), apiPost: vi.fn() }))
+vi.mock('@/lib/api', () => ({
+  api: {
+    get: (...a: unknown[]) => apiGet(...a),
+    post: (...a: unknown[]) => apiPost(...a),
+  },
+}))
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({
@@ -42,6 +47,26 @@ const RECORD: DailyRecord = {
 describe('NovedadModal (component)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    apiGet.mockImplementation((url: string) => {
+      if (url === '/employees') {
+        return Promise.resolve({
+          data: {
+            data: [{ id: 'emp-1', name: 'Ana García', employee_code: 'EMP001', department_id: 'dep-1' }],
+            total: 1,
+            limit: 500,
+            offset: 0,
+          },
+        })
+      }
+      return Promise.resolve({
+        data: {
+          data: [{ id: 'dep-1', name: 'Operaciones' }],
+          total: 1,
+          limit: 200,
+          offset: 0,
+        },
+      })
+    })
     apiPost.mockResolvedValue({ data: { ok: true } })
   })
 
@@ -55,12 +80,10 @@ describe('NovedadModal (component)', () => {
     // "Registrar Novedad" appears in both the title and the submit button; assert presence via getAllByText
     expect(screen.getAllByText('Registrar Novedad').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('Aprobado')).toBeTruthy()
-    expect(screen.getByText(/Empleado \*/)).toBeTruthy()
-    expect(screen.getByText(/Departamento \*/)).toBeTruthy()
-    expect(screen.getByText(/Fecha Inicio \*/)).toBeTruthy()
-    expect(screen.getByText(/Fecha Fin \*/)).toBeTruthy()
-    expect(screen.getByText(/Tipo de Novedad \*/)).toBeTruthy()
-    expect(screen.getByText(/Descripción \/ Justificación \*/)).toBeTruthy()
+    for (const label of ['Empleado', 'Departamento', 'Fecha Inicio', 'Fecha Fin', 'Tipo']) {
+      expect(screen.getByText(label)).toBeTruthy()
+    }
+    expect(screen.getByText(/Descripción \/ Justificación/)).toBeTruthy()
   })
 
   it('Cancelar fires onClose', async () => {
@@ -98,11 +121,12 @@ describe('NovedadModal (component)', () => {
 
   it('valid submission with a null record posts to /leaves instead', async () => {
     render(wrap(<NovedadModal open={true} record={null} onClose={() => {}} />))
-    // Fill required fields manually because record=null
-    fireEvent.input(screen.getByLabelText('Empleado *'), { target: { value: 'emp-2' } })
-    fireEvent.input(screen.getByLabelText('Departamento *'), { target: { value: 'dep-2' } })
-    fireEvent.input(screen.getByLabelText('Fecha Inicio *'), { target: { value: '2026-05-01' } })
-    fireEvent.input(screen.getByLabelText('Fecha Fin *'), { target: { value: '2026-05-01' } })
+    fireEvent.click(screen.getByTestId('novedad-employee'))
+    fireEvent.click(await screen.findByRole('option', { name: /Ana García/ }, { timeout: 2_000 }))
+    fireEvent.click(screen.getByTestId('novedad-department'))
+    fireEvent.click(screen.getByRole('option', { name: /Operaciones/ }))
+    fireEvent.input(screen.getByLabelText(/^Fecha Inicio/), { target: { value: '2026-05-01' } })
+    fireEvent.input(screen.getByLabelText(/^Fecha Fin/), { target: { value: '2026-05-01' } })
     fireEvent.input(screen.getByLabelText(/Descripción \/ Justificación/), {
       target: { value: 'Vacaciones' },
     })
@@ -119,7 +143,7 @@ describe('NovedadModal (component)', () => {
     fireEvent.input(screen.getByLabelText(/Descripción \/ Justificación/), {
       target: { value: 'Médica' },
     })
-    fireEvent.input(screen.getByLabelText(/Motivo \(opcional\)/), {
+    fireEvent.input(screen.getByLabelText('Motivo'), {
       target: { value: 'Reposo' },
     })
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
@@ -142,7 +166,7 @@ describe('NovedadModal (component)', () => {
     fireEvent.input(screen.getByLabelText(/Descripción \/ Justificación/), {
       target: { value: 'Vacaciones de fin de año' },
     })
-    fireEvent.change(screen.getByLabelText(/Tipo de Novedad/), {
+    fireEvent.change(screen.getByLabelText(/^Tipo/), {
       target: { value: 'vacation' },
     })
     await act(async () => {
@@ -151,6 +175,17 @@ describe('NovedadModal (component)', () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalled())
     const [, fd] = apiPost.mock.calls[0]
     expect((fd as FormData).get('leave_type')).toBe('vacation')
+  })
+
+  it('resets defaults when reopened from null to a daily record', async () => {
+    const { rerender } = render(
+      wrap(<NovedadModal open={false} record={null} onClose={() => {}} />),
+    )
+    rerender(wrap(<NovedadModal open={true} record={RECORD} onClose={() => {}} />))
+
+    await waitFor(() => expect(screen.getByTestId('novedad-employee')).toHaveTextContent('Ana García'))
+    expect(screen.getByLabelText(/Fecha Inicio/)).toHaveValue('2026-04-23')
+    expect(screen.getByLabelText(/Fecha Fin/)).toHaveValue('2026-04-23')
   })
 
   it('clearing the file input (no selection) does NOT include evidence in FormData', async () => {

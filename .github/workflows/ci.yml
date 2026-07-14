@@ -1,7 +1,7 @@
 # .github/workflows/ci.yml
-# Phase 8 quality gate: backend + frontend coverage on every push + PR to main.
-# Hard-fails on threshold miss (D-13). HTML artifacts uploaded for triage (D-04).
-# Two parallel jobs (D-05); both required via GitHub branch protection (manual UI step).
+# Coverage and E2E gates run on every push and PR to main.
+# Threshold misses hard-fail; HTML/test artifacts are uploaded for triage.
+# Phase 13 applies and proves required-check branch protection on main.
 name: CI
 
 on:
@@ -24,10 +24,13 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - name: Install nightly Rust (--branch is unstable)
+      - name: Install pinned Rust toolchain (--branch is unstable)
         run: |
-          rustup toolchain install nightly --component llvm-tools-preview
-          rustup default nightly
+          PINNED_RUST="$(sed -n 's/^channel = "\(.*\)"/\1/p' ../rust-toolchain.toml)"
+          test -n "$PINNED_RUST"
+          rustup toolchain install "$PINNED_RUST" --profile minimal \
+            --component llvm-tools-preview --component rustfmt --component clippy
+          rustup show active-toolchain | grep -F "$PINNED_RUST"
           rustc --version
       - uses: Swatinem/rust-cache@v2
         with:
@@ -68,11 +71,15 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      - name: Validate CI file references
+        run: make -C "$GITHUB_WORKSPACE" test-ci-config
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - name: Pin npm
+        run: npm install --global npm@11.12.1
       - run: npm ci
       - name: Run Vitest with coverage (thresholds enforced via vitest.config.ts)
         run: npx vitest run --coverage
@@ -91,16 +98,22 @@ jobs:
       TZ: America/Caracas
     steps:
       - uses: actions/checkout@v4
+      - name: Validate CI file references
+        run: make -C "$GITHUB_WORKSPACE" test-ci-config
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Install stable Rust toolchain (mirrors Phase 8 backend-coverage pattern)
+      - name: Pin npm
+        run: npm install --global npm@11.12.1
+      - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install stable
-          rustup default stable
-          rustup component add clippy
+          PINNED_RUST="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$PINNED_RUST"
+          rustup toolchain install "$PINNED_RUST" --profile minimal \
+            --component llvm-tools-preview --component rustfmt --component clippy
+          rustup show active-toolchain | grep -F "$PINNED_RUST"
           rustc --version
       - uses: Swatinem/rust-cache@v2
         with:
@@ -108,19 +121,17 @@ jobs:
       - name: Install npm deps
         working-directory: frontend
         run: npm ci
+      - name: Build E2E release harness
+        run: make -C "$GITHUB_WORKSPACE" e2e-build
       - name: Install Playwright Chromium
         working-directory: frontend
         run: npx playwright install --with-deps chromium
-      - name: Build backend release binaries (cronometrix + mock_hikvision + seed_e2e)
-        working-directory: backend
-        run: |
-          cargo build --release --bin cronometrix
-          cargo build --release --bin mock_hikvision --features mock-hikvision
-          cargo build --release --bin seed_e2e --features seed-e2e
       - name: Run Playwright tests (full E2E suite)
         working-directory: frontend
         env:
           CI: 'true'
+          CRONOMETRIX_E2E_RELEASE: 'true'
+          CRONOMETRIX_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           TZ: America/Caracas
         run: npx playwright test
       - name: Upload HTML report

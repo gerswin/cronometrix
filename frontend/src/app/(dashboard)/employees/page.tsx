@@ -18,7 +18,7 @@ import {
   Briefcase,
   Save,
 } from 'lucide-react'
-import { api, setAccessToken } from '@/lib/api'
+import { api, logoutCurrentSession } from '@/lib/api'
 import { useAuth } from '@/hooks/use-auth'
 import { EnrollmentModal } from '@/components/enrollment/enrollment-modal'
 import {
@@ -242,9 +242,8 @@ export default function EmployeesPage() {
     if (isLoggingOut) return
     setIsLoggingOut(true)
     try {
-      await api.post('/auth/logout').catch(() => undefined)
+      await logoutCurrentSession()
     } finally {
-      setAccessToken(null)
       router.push('/login')
     }
   }

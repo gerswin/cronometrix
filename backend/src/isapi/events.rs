@@ -154,8 +154,8 @@ mod tests {
     #[test]
     fn deserialize_k1t341_fixture() {
         let stripped = strip_xmlns(K1T341_XML);
-        let alert: EventNotificationAlert = quick_xml::de::from_str(&stripped)
-            .expect("should parse k1t341 XML");
+        let alert: EventNotificationAlert =
+            quick_xml::de::from_str(&stripped).expect("should parse k1t341 XML");
         assert_eq!(alert.event_type, "AccessControllerEvent");
         let ace = alert
             .access_controller_event
@@ -241,6 +241,9 @@ mod tests {
         // Undefined / empty / unknown → "entry" (conservative default per A1)
         assert_eq!(direction_for_attendance_status(""), "entry");
         assert_eq!(direction_for_attendance_status("undefined"), "entry");
-        assert_eq!(direction_for_attendance_status("SomeNewFirmwareValue"), "entry");
+        assert_eq!(
+            direction_for_attendance_status("SomeNewFirmwareValue"),
+            "entry"
+        );
     }
 }

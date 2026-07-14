@@ -58,15 +58,20 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
 /// stderr MUST contain "CRONOMETRIX_LICENSE_BYPASS" (the FATAL eprintln! message).
 #[test]
 fn bypass_without_e2e_aborts_with_code_2() {
+    let tmp_dir = tempfile::TempDir::new().expect("tempdir");
     let out = Command::new(env!("CARGO_BIN_EXE_cronometrix"))
         .env_clear()
+        .current_dir(tmp_dir.path())
         // Pass PATH so the binary can locate dynamic libraries.
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         // Required by Config::from_env — JWT_SECRET must be >= 32 chars.
         .env("JWT_SECRET", TEST_JWT_SECRET)
         // Required by Config::from_env — must be valid base64 of exactly 32 bytes.
         .env("DEVICE_CREDS_KEY", TEST_DEVICE_CREDS_KEY)
-        .env("LICENSE_JWT_PATH", "/tmp/nonexistent-license-bypass-test.jwt")
+        .env(
+            "LICENSE_JWT_PATH",
+            "/tmp/nonexistent-license-bypass-test.jwt",
+        )
         // The misconfiguration under test: bypass set WITHOUT e2e flag.
         .env("CRONOMETRIX_LICENSE_BYPASS", "true")
         // Deliberately DO NOT set CRONOMETRIX_E2E — this is the trigger condition.
@@ -110,11 +115,15 @@ fn bypass_with_e2e_proceeds_past_license_gate() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cronometrix"))
         .env_clear()
+        .current_dir(tmp_dir.path())
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         // Required by Config::from_env
         .env("JWT_SECRET", TEST_JWT_SECRET)
         .env("DEVICE_CREDS_KEY", TEST_DEVICE_CREDS_KEY)
-        .env("LICENSE_JWT_PATH", "/tmp/nonexistent-license-bypass-test.jwt")
+        .env(
+            "LICENSE_JWT_PATH",
+            "/tmp/nonexistent-license-bypass-test.jwt",
+        )
         // Both flags set — should pass the gate and proceed to normal startup.
         .env("CRONOMETRIX_E2E", "true")
         .env("CRONOMETRIX_LICENSE_BYPASS", "true")

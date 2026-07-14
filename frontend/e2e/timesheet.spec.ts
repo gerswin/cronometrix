@@ -5,19 +5,18 @@
  * (open, validation, happy path with evidence upload), audit_log assertion
  * per mutation (mutation→audit dimension, CLAUDE.md non-negotiable).
  *
- * All tests use the pre-authenticated admin session (Plan 06 setup).
+ * Authenticated tests use a fresh admin context per test.
  * test.beforeEach resets mutable tables for determinism (D-12).
  *
  * Language: Spanish copy per D-19 (timesheet page is Spanish locale).
  */
 
-import { test, expect, type Page, type APIRequestContext } from '@playwright/test'
+import { type Page, type APIRequestContext } from '@playwright/test'
+import { test, expect, API_BASE } from './fixtures/auth'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { resetMutableTables, getAudit, pushHikvisionEvent } from './fixtures/api'
 import { SEL } from './fixtures/selectors'
-
-test.use({ storageState: 'e2e/.auth/admin.json' })
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,13 +29,49 @@ async function readEvent(filename: string): Promise<string> {
   )
 }
 
+async function restartEntryDevice(request: APIRequestContext) {
+  const currentResponse = await request.get(`${API_BASE}/devices/dev-entry`)
+  expect(currentResponse.ok()).toBeTruthy()
+  const current = await currentResponse.json()
+  const temporaryResponse = await request.patch(`${API_BASE}/devices/dev-entry`, {
+    data: { version: current.version, port: 4402 },
+  })
+  expect(temporaryResponse.ok()).toBeTruthy()
+  const temporary = await temporaryResponse.json()
+  const restoredResponse = await request.patch(`${API_BASE}/devices/dev-entry`, {
+    data: { version: temporary.version, port: 4400 },
+  })
+  expect(restoredResponse.ok()).toBeTruthy()
+}
+
 /** Push entry + exit for Ana Pérez and wait for her to appear in the grid. */
 async function seedAnaAndWait(page: Page, request: APIRequestContext) {
+  // The E2E seed runs after the backend starts. Restarting the seeded device
+  // emits the lifecycle signal that attaches its alertStream task.
+  await restartEntryDevice(request)
   const entry = await readEvent('ana-entrada.xml')
   const exit = await readEvent('ana-salida.xml')
   await pushHikvisionEvent(request, entry)
   await pushHikvisionEvent(request, exit)
-  await page.goto('/timesheet')
+  await expect.poll(
+    async () => {
+      const response = await request.get(`${API_BASE}/daily-records`, {
+        params: {
+          employee_id: 'emp-ana',
+          from_date: '2026-04-15',
+          to_date: '2026-04-15',
+        },
+      })
+      if (!response.ok()) return 0
+      return (await response.json()).total as number
+    },
+    { timeout: 20_000, message: 'Expected Ana daily record after pushed events' },
+  ).toBe(1)
+  const params = new URLSearchParams({
+    employee_id: 'emp-ana',
+    anchor_date: '2026-04-15',
+  })
+  await page.goto(`/timesheet?${params.toString()}`)
   await expect(page.getByText('Ana Pérez')).toBeVisible({ timeout: 20_000 })
 }
 
@@ -52,7 +87,7 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
   // ── T-01: Grid renders with Spanish heading ───────────────────────────────
   test('renders Marcaciones page with Spanish heading', async ({ page }) => {
     await page.goto('/timesheet')
-    await expect(page.getByText('Marcaciones')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Marcaciones' })).toBeVisible()
   })
 
   // ── T-02: Admin sees Registrar Novedad button ─────────────────────────────
@@ -69,14 +104,22 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     await expect(page.getByText('Ana Pérez')).toBeVisible()
   })
 
+  test('canonical employee/day deep link filters the requested week safely', async ({ page, request }) => {
+    await seedAnaAndWait(page, request)
+
+    await expect(page.getByTestId(SEL.timesheetRow('emp-ana:2026-04-15'))).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByText('Ana Pérez')).toBeVisible()
+    await page.getByRole('button', { name: 'Semana siguiente' }).click()
+    await expect(page).toHaveURL(/employee_id=emp-ana/)
+    await expect(page).toHaveURL(/anchor_date=2026-04-22/)
+  })
+
   // ── T-04: Filter by date range — week navigator changes week ─────────────
   test('week navigator is visible for period navigation', async ({ page }) => {
     await page.goto('/timesheet')
     // WeekNavigator renders prev/next buttons for period navigation
-    const nav = page.locator('button', { hasText: /anterior|siguiente|prev|next|←|→|‹|›/i })
-    // At least one navigation control present (exact label depends on WeekNavigator impl)
-    // Fallback: just assert the page loaded with the heading
-    await expect(page.getByText('Marcaciones')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Semana anterior' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Semana siguiente' })).toBeVisible()
   })
 
   // ── T-05: Registrar Novedad global button opens the modal ─────────────────
@@ -108,30 +151,23 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     await seedAnaAndWait(page, request)
 
     // Click the row-level edit button (pencil icon) for the first daily record
-    const rowBtn = page.getByTestId(SEL.openNovedadModal).first()
+    const rowBtn = page
+      .getByTestId(SEL.timesheetRow('emp-ana:2026-04-15'))
+      .getByTestId(SEL.openNovedadModal)
     await expect(rowBtn).toBeVisible({ timeout: 10_000 })
     await rowBtn.click()
 
     await expect(page.getByTestId(SEL.novedadModal)).toBeVisible({ timeout: 5_000 })
 
-    // Fill mandatory fields
-    // employee_id and department_id are pre-populated when opening from a row
-    // If not pre-populated (global open), fill them in
-    const empIdInput = page.locator('#employee_id')
-    if (await empIdInput.inputValue() === '') {
-      await empIdInput.fill('EMP001')
-    }
-    const deptIdInput = page.locator('#department_id')
-    if (await deptIdInput.inputValue() === '') {
-      await deptIdInput.fill('dept-prod')
-    }
+    await expect(page.getByTestId('novedad-employee')).toContainText('Ana Pérez')
+    await expect(page.getByTestId('novedad-department')).toContainText('Producción')
 
     // Fill mandatory date fields
-    const fechaInicio = page.locator('#fecha_inicio')
+    const fechaInicio = page.getByLabel(/Fecha Inicio/)
     if (await fechaInicio.inputValue() === '') {
       await fechaInicio.fill('2026-04-15')
     }
-    const fechaFin = page.locator('#fecha_fin')
+    const fechaFin = page.getByLabel(/Fecha Fin/)
     if (await fechaFin.inputValue() === '') {
       await fechaFin.fill('2026-04-15')
     }
@@ -178,10 +214,12 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     await expect(page.getByTestId(SEL.novedadModal)).toBeVisible({ timeout: 5_000 })
 
     // Fill all required fields
-    await page.locator('#employee_id').fill('EMP001')
-    await page.locator('#department_id').fill('dept-prod')
-    await page.locator('#fecha_inicio').fill('2026-04-15')
-    await page.locator('#fecha_fin').fill('2026-04-15')
+    await page.getByTestId('novedad-employee').click()
+    await page.getByRole('option', { name: /Ana Pérez/ }).click()
+    await page.getByTestId('novedad-department').click()
+    await page.getByRole('option', { name: 'Producción' }).click()
+    await page.getByLabel(/Fecha Inicio/).fill('2026-04-15')
+    await page.getByLabel(/Fecha Fin/).fill('2026-04-15')
     await page.getByTestId(SEL.novedadJustification).fill('Ausencia justificada por médico')
 
     await page.getByTestId(SEL.novedadEvidence).setInputFiles({

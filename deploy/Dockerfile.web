@@ -2,25 +2,23 @@
 # Phase 6: Cronometrix web container (Next.js 15 standalone).
 # Requires `output: "standalone"` in frontend/next.config.ts.
 
-FROM node:24-alpine AS deps
+FROM node:24.15.0-alpine@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS deps
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
-# `npm install` (not `npm ci`) so a stale lock file doesn't block the build.
-# CI in the project repo can re-introduce `npm ci` once the lock is current.
-RUN npm install --no-audit --no-fund
+RUN npm install -g npm@11.12.1 && npm ci --no-audit --no-fund
 
-FROM node:24-alpine AS builder
+FROM node:24.15.0-alpine@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend/ ./
 # Next.js inlines NEXT_PUBLIC_* at build time, so the API URL must be present
 # during `npm run build` rather than just at runtime. Override per environment.
-ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+ARG NEXT_PUBLIC_API_URL=
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:24-alpine AS runner
+FROM node:24.15.0-alpine@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

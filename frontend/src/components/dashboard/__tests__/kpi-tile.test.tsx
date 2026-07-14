@@ -39,15 +39,13 @@ describe('KPITile', () => {
     expect(root.className).not.toContain('border-red-300')
   })
 
-  it('warning variant applies the yellow border class', () => {
-    const { container } = render(<KPITile title="WARN" value={1} variant="warning" />)
-    const root = container.firstChild as HTMLElement
-    expect(root.className).toContain('border-yellow-300')
+  it('warning variant colors the numeric value amber', () => {
+    render(<KPITile title="WARN" value={1} variant="warning" />)
+    expect(screen.getByText('1')).toHaveStyle({ color: '#F59E0B' })
   })
 
-  it('danger variant applies the red border class', () => {
-    const { container } = render(<KPITile title="DANGER" value={1} variant="danger" />)
-    const root = container.firstChild as HTMLElement
-    expect(root.className).toContain('border-red-300')
+  it('danger variant colors the numeric value red', () => {
+    render(<KPITile title="DANGER" value={1} variant="danger" />)
+    expect(screen.getByText('1')).toHaveStyle({ color: '#EF4444' })
   })
 })

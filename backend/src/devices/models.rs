@@ -17,7 +17,7 @@ pub struct DeviceResponse {
     // NO password field here — see D-03 / threat model T-2-01.
     pub direction: String, // "entry" | "exit"
     pub allow_insecure_tls: bool,
-    pub connection_state: String, // "online" | "offline" | "unknown"
+    pub connection_state: String,     // "online" | "offline" | "unknown"
     pub last_seen_at: Option<String>, // ISO 8601
     pub status: String,
     pub deleted_at: Option<String>,
@@ -82,9 +82,9 @@ pub struct CommandRequest {
 /// a `CommandResult` so the client has a single decision point ("did the request succeed").
 #[derive(Debug, Serialize)]
 pub struct CommandResult {
-    pub outcome: String, // "ok"
+    pub outcome: String,         // "ok"
     pub device_response: String, // raw text/XML from the device
-    pub dispatched_at: String, // ISO 8601
+    pub dispatched_at: String,   // ISO 8601
     pub completed_at: String,
 }
 
@@ -186,7 +186,9 @@ pub fn validate_direction(s: &str) -> Result<(), &'static str> {
 pub fn validate_ip(s: &str) -> Result<(), &'static str> {
     use std::net::IpAddr;
     use std::str::FromStr;
-    IpAddr::from_str(s).map(|_| ()).map_err(|_| "ip must be a valid IPv4 or IPv6 address")
+    IpAddr::from_str(s)
+        .map(|_| ())
+        .map_err(|_| "ip must be a valid IPv4 or IPv6 address")
 }
 
 /// Validate status is `active` or `inactive` (for PATCH).

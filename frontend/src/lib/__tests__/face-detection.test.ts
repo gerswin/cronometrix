@@ -15,9 +15,11 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { loadFromUriMock, detectSingleFaceMock } = vi.hoisted(() => ({
+const { loadFromUriMock, detectSingleFaceMock, setBackendMock, readyMock } = vi.hoisted(() => ({
   loadFromUriMock: vi.fn(),
   detectSingleFaceMock: vi.fn(),
+  setBackendMock: vi.fn(),
+  readyMock: vi.fn(),
 }))
 
 vi.mock('@vladmandic/face-api', () => ({
@@ -26,11 +28,17 @@ vi.mock('@vladmandic/face-api', () => ({
     constructor(public opts: unknown) {}
   },
   detectSingleFace: detectSingleFaceMock,
+  tf: {
+    setBackend: setBackendMock,
+    ready: readyMock,
+  },
 }))
 
 beforeEach(() => {
   vi.clearAllMocks()
   loadFromUriMock.mockResolvedValue(undefined)
+  setBackendMock.mockResolvedValue(true)
+  readyMock.mockResolvedValue(undefined)
   // Re-import the module fresh per test so cached state (faceapiCache,
   // modelLoaded) does not leak across cases.
   vi.resetModules()
@@ -39,6 +47,10 @@ beforeEach(() => {
 function makeVideo(): HTMLVideoElement {
   const v = document.createElement('video')
   return v
+}
+
+function makeImage(): HTMLImageElement {
+  return document.createElement('img')
 }
 
 function makeCanvas(samplePixels: Uint8ClampedArray): HTMLCanvasElement {
@@ -64,6 +76,36 @@ function pixels(rgbValue: number, count = 64 * 48): Uint8ClampedArray {
 }
 
 describe('lib/face-detection', () => {
+  it.each([
+    ['Google SwiftShader', true],
+    ['ANGLE (LLVMpipe 15.0.7)', true],
+    ['Apple M3', false],
+    [null, false],
+  ])('classifies software WebGL renderer %s', async (renderer, expected) => {
+    const { isSoftwareWebGlRenderer } = await import('../face-detection')
+    expect(isSoftwareWebGlRenderer(renderer)).toBe(expected)
+  })
+
+  it('selects the CPU backend before loading the model under SwiftShader', async () => {
+    const { configureFaceApiBackend } = await import('../face-detection')
+    const faceapi = await import('@vladmandic/face-api')
+
+    await configureFaceApiBackend(faceapi, 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device))')
+
+    expect(setBackendMock).toHaveBeenCalledWith('cpu')
+    expect(readyMock).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the default accelerated backend for a hardware renderer', async () => {
+    const { configureFaceApiBackend } = await import('../face-detection')
+    const faceapi = await import('@vladmandic/face-api')
+
+    await configureFaceApiBackend(faceapi, 'ANGLE (NVIDIA GeForce RTX 4090)')
+
+    expect(setBackendMock).not.toHaveBeenCalled()
+    expect(readyMock).toHaveBeenCalledOnce()
+  })
+
   it('loadFaceApi resolves to the face-api module and triggers tinyFaceDetector.loadFromUri once', async () => {
     const { loadFaceApi } = await import('../face-detection')
     const fa = await loadFaceApi()
@@ -94,6 +136,21 @@ describe('lib/face-detection', () => {
     expect(result.luminance).toBeCloseTo(120, 0)
     expect(result.width).toBe(200)
     expect(result.height).toBe(200)
+  })
+
+  it('analyzeFrame accepts a still image source and samples that exact image', async () => {
+    detectSingleFaceMock.mockResolvedValueOnce({ box: { width: 200, height: 200 } })
+    const { loadFaceApi, analyzeFrame } = await import('../face-detection')
+    const fa = await loadFaceApi()
+    const image = makeImage()
+    const canvas = makeCanvas(pixels(120))
+
+    await analyzeFrame(image, canvas, fa)
+
+    const context = vi.mocked(canvas.getContext).mock.results[0].value as unknown as {
+      drawImage: ReturnType<typeof vi.fn>
+    }
+    expect(context.drawImage).toHaveBeenCalledWith(image, 0, 0, 64, 48)
   })
 
   it('analyzeFrame returns sizeOk=false when face box smaller than 160x160', async () => {
@@ -136,5 +193,61 @@ describe('lib/face-detection', () => {
     const result = await analyzeFrame(makeVideo(), makeCanvas(pixels(240)), fa)
     expect(result.luminanceOk).toBe(false)
     expect(result.luminance).toBeGreaterThan(200)
+  })
+
+  it('analyzePhotoBlob analyzes the decoded image and always revokes its object URL', async () => {
+    detectSingleFaceMock.mockResolvedValueOnce({ box: { width: 200, height: 200 } })
+    const sampleCanvas = makeCanvas(pixels(120))
+    const createElement = vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+      if (tag === 'canvas') return sampleCanvas
+      return document.createElementNS('http://www.w3.org/1999/xhtml', tag)
+    }) as typeof document.createElement)
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:face-photo')
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
+    class LoadedImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      naturalWidth = 640
+      naturalHeight = 480
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.())
+      }
+    }
+    vi.stubGlobal('Image', LoadedImage)
+
+    const { analyzePhotoBlob } = await import('../face-detection')
+    const result = await analyzePhotoBlob(new Blob(['jpeg'], { type: 'image/jpeg' }))
+
+    expect(result).toMatchObject({ faceDetected: true, luminanceOk: true, sizeOk: true })
+    expect(createObjectURL).toHaveBeenCalledOnce()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:face-photo')
+
+    createElement.mockRestore()
+    createObjectURL.mockRestore()
+    revokeObjectURL.mockRestore()
+    vi.unstubAllGlobals()
+  })
+
+  it.each([
+    ['missing face', { faceDetected: false, luminanceOk: true, sizeOk: true }],
+    ['bad luminance', { faceDetected: true, luminanceOk: false, sizeOk: true }],
+    ['small face', { faceDetected: true, luminanceOk: true, sizeOk: false }],
+  ])('isAcceptableFace rejects %s', async (_label, flags) => {
+    const { isAcceptableFace } = await import('../face-detection')
+    expect(isAcceptableFace({ ...flags, luminance: 120, width: 200, height: 200 })).toBe(false)
+  })
+
+  it('isAcceptableFace accepts only the three green checks', async () => {
+    const { isAcceptableFace } = await import('../face-detection')
+    expect(isAcceptableFace({
+      faceDetected: true,
+      luminanceOk: true,
+      sizeOk: true,
+      luminance: 120,
+      width: 200,
+      height: 200,
+    })).toBe(true)
   })
 })

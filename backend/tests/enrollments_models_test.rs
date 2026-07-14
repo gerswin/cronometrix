@@ -11,9 +11,9 @@
 
 use cronometrix_api::enrollments::models::{
     validate_captured_via, validate_enrollment_status, validate_push_status,
-    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse,
-    CreateEnrollmentRequest, EnrollmentDevicePushResponse, EnrollmentResponse,
-    EnrollmentSubmitResponse, RetryResponse,
+    CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse, CreateEnrollmentRequest,
+    EnrollmentDevicePushResponse, EnrollmentListQuery, EnrollmentResponse,
+    EnrollmentSubmitResponse, FaceQualityEvidence, FaceQualityValidationError, RetryResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -51,6 +51,53 @@ fn validate_captured_via_rejects_uppercase_variants() {
     // The match is case-sensitive — "Device" must reject.
     assert!(validate_captured_via("Device").is_err());
     assert!(validate_captured_via("WEBCAM").is_err());
+}
+
+fn acceptable_face_quality() -> FaceQualityEvidence {
+    FaceQualityEvidence {
+        face_detected: true,
+        luminance_ok: true,
+        size_ok: true,
+        luminance: 120.0,
+        width: 200.0,
+        height: 200.0,
+    }
+}
+
+#[test]
+fn face_quality_parses_camel_case_json_and_accepts_current_frontend_contract() {
+    let parsed = FaceQualityEvidence::parse_json(
+        r#"{"faceDetected":true,"luminanceOk":true,"sizeOk":true,"luminance":120,"width":200,"height":200}"#,
+    )
+    .unwrap();
+    assert!(parsed.validate().is_ok());
+}
+
+#[test]
+fn face_quality_rejects_non_finite_and_contradictory_evidence() {
+    let mut evidence = acceptable_face_quality();
+    evidence.luminance = f64::NAN;
+    assert!(matches!(
+        evidence.validate(),
+        Err(FaceQualityValidationError::Invalid(_))
+    ));
+
+    let mut evidence = acceptable_face_quality();
+    evidence.width = 100.0;
+    assert!(matches!(
+        evidence.validate(),
+        Err(FaceQualityValidationError::Invalid(_))
+    ));
+}
+
+#[test]
+fn face_quality_rejects_frontend_unacceptable_decision() {
+    let mut evidence = acceptable_face_quality();
+    evidence.face_detected = false;
+    assert_eq!(
+        evidence.validate(),
+        Err(FaceQualityValidationError::Unacceptable)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +189,8 @@ fn enrollment_response_serializes_nested_device_pushes() {
     let resp = EnrollmentResponse {
         id: "enr-1".into(),
         employee_id: "emp-1".into(),
+        employee_name: "Ada Lovelace".into(),
+        employee_code: "EMP-001".into(),
         status: "in_progress".into(),
         started_at: "2026-04-28T10:00:00Z".into(),
         completed_at: None,
@@ -158,6 +207,8 @@ fn enrollment_response_serializes_nested_device_pushes() {
     };
     let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["id"], "enr-1");
+    assert_eq!(v["employee_name"], "Ada Lovelace");
+    assert_eq!(v["employee_code"], "EMP-001");
     assert_eq!(v["status"], "in_progress");
     assert_eq!(v["device_pushes"][0]["device_id"], "dev-1");
     // completed_at is Option<String> with no skip — must be present as null.
@@ -194,10 +245,12 @@ fn capture_from_device_response_serializes() {
     let resp = CaptureFromDeviceResponse {
         capture_id: "cap-1".into(),
         status: "capturing".into(),
+        source_device_id: "dev-1".into(),
     };
     let s = serde_json::to_string(&resp).unwrap();
     assert!(s.contains("\"capture_id\":\"cap-1\""));
     assert!(s.contains("\"status\":\"capturing\""));
+    assert!(s.contains("\"source_device_id\":\"dev-1\""));
 }
 
 // ---------------------------------------------------------------------------
@@ -209,13 +262,20 @@ fn capture_response_omits_photo_b64_when_none() {
     let resp = CaptureResponse {
         capture_id: "cap-1".into(),
         status: "capturing".into(),
-        photo_path: None,
+        source_device_id: "dev-1".into(),
         photo_b64: None,
         error_message: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
+    assert!(
+        !s.contains("photo_path"),
+        "internal capture paths must never be public: {s}"
+    );
     // photo_b64 must be absent (skip_serializing_if = "Option::is_none").
-    assert!(!s.contains("photo_b64"), "expected photo_b64 omitted, got: {s}");
+    assert!(
+        !s.contains("photo_b64"),
+        "expected photo_b64 omitted, got: {s}"
+    );
 }
 
 #[test]
@@ -223,7 +283,7 @@ fn capture_response_includes_photo_b64_when_some() {
     let resp = CaptureResponse {
         capture_id: "cap-1".into(),
         status: "captured".into(),
-        photo_path: Some("/tmp/cap-1.jpg".into()),
+        source_device_id: "dev-1".into(),
         photo_b64: Some("aGVsbG8=".into()),
         error_message: None,
     };
@@ -254,6 +314,29 @@ fn capture_from_device_request_rejects_missing_field() {
 }
 
 // ---------------------------------------------------------------------------
+// EnrollmentListQuery deserialization/defaults
+// ---------------------------------------------------------------------------
+
+#[test]
+fn enrollment_list_query_deserializes_and_defaults() {
+    let query: EnrollmentListQuery = serde_json::from_value(serde_json::json!({
+        "status": "in_progress",
+        "limit": 25,
+        "offset": 5,
+    }))
+    .unwrap();
+    assert_eq!(query.status.as_deref(), Some("in_progress"));
+    assert_eq!(query.limit, Some(25));
+    assert_eq!(query.offset, Some(5));
+
+    let default = EnrollmentListQuery::default();
+    assert!(default.status.is_none());
+    assert!(default.limit.is_none());
+    assert!(default.offset.is_none());
+    assert!(format!("{default:?}").contains("EnrollmentListQuery"));
+}
+
+// ---------------------------------------------------------------------------
 // Debug impls — exercise the derive
 // ---------------------------------------------------------------------------
 
@@ -270,17 +353,21 @@ fn dtos_have_debug_impls() {
     let c = CaptureResponse {
         capture_id: "c".into(),
         status: "capturing".into(),
-        photo_path: None,
+        source_device_id: "d".into(),
         photo_b64: None,
         error_message: None,
     };
     let s = format!("{:?}", c);
     assert!(s.contains("CaptureResponse"));
 
-    let s = format!("{:?}", CaptureFromDeviceResponse {
-        capture_id: "c".into(),
-        status: "capturing".into(),
-    });
+    let s = format!(
+        "{:?}",
+        CaptureFromDeviceResponse {
+            capture_id: "c".into(),
+            status: "capturing".into(),
+            source_device_id: "d".into(),
+        }
+    );
     assert!(s.contains("CaptureFromDeviceResponse"));
 
     let s = format!(
@@ -302,6 +389,8 @@ fn dtos_have_debug_impls() {
         EnrollmentResponse {
             id: "e".into(),
             employee_id: "emp".into(),
+            employee_name: "Employee".into(),
+            employee_code: "EMP-1".into(),
             status: "in_progress".into(),
             started_at: "ts".into(),
             completed_at: None,
@@ -336,7 +425,7 @@ fn dtos_have_debug_impls() {
             employee_id: "emp-1".into(),
             captured_via: "upload".into(),
             source_device_id: None,
-            face_quality_score: None,
+            face_quality_score: acceptable_face_quality(),
             photo_bytes: vec![0xFF, 0xD8, 0xFF],
         }
     );

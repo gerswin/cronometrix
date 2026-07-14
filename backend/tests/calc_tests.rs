@@ -148,8 +148,11 @@ fn lottt_scenarios_all_pass() {
             "early_departure_minutes mismatch for scenario: {}",
             s.description
         );
-        let got_codes: Vec<String> =
-            out.anomalies.iter().map(|a| a.as_str().to_string()).collect();
+        let got_codes: Vec<String> = out
+            .anomalies
+            .iter()
+            .map(|a| a.as_str().to_string())
+            .collect();
         for expected in &s.expected_anomalies {
             assert!(
                 got_codes.contains(expected),
@@ -332,7 +335,11 @@ fn overnight_engine_with_synthetic_events(
     let tz: chrono_tz::Tz = "America/Caracas".parse().unwrap();
     // Start at 22:00 Mon local.
     let start_local = anchor.and_time(chrono::NaiveTime::from_hms_opt(22, 0, 0).unwrap());
-    let shift_start_epoch = tz.from_local_datetime(&start_local).single().unwrap().timestamp();
+    let shift_start_epoch = tz
+        .from_local_datetime(&start_local)
+        .single()
+        .unwrap()
+        .timestamp();
     let entry_epoch = shift_start_epoch;
     let exit_epoch = shift_start_epoch + work_minutes * 60;
     let events = vec![

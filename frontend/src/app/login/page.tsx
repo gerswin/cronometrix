@@ -21,7 +21,7 @@ import axios from "axios"
 import { toast } from "sonner"
 
 import { loginSchema, type LoginFormData } from "@/lib/validations"
-import { API_BASE, setAccessToken } from "@/lib/api"
+import { loginWithCredentials } from "@/lib/api"
 import {
   Form,
   FormControl,
@@ -67,12 +67,7 @@ function LoginPageInner() {
     setServerError(null)
 
     try {
-      const { data } = await axios.post(
-        `${API_BASE}/api/v1/auth/login`,
-        { username: values.username, password: values.password },
-        { withCredentials: true }
-      )
-      setAccessToken(data.access_token)
+      await loginWithCredentials(values.username, values.password)
       // CR-02: validate redirect to prevent open-redirect via ?redirect=//evil.com
       router.push(safeRedirect(searchParams.get("redirect")))
     } catch (err) {
@@ -80,12 +75,12 @@ function LoginPageInner() {
         const status = err.response?.status
         if (status === 401) {
           // T-01-19: Generic error — do not reveal which field is wrong
-          setServerError({ message: "Invalid username or password." })
+          setServerError({ message: "Usuario o contraseña inválidos." })
         } else {
-          setServerError({ message: "Something went wrong. Please try again." })
+          setServerError({ message: "Ocurrió un error. Inténtelo de nuevo." })
         }
       } else {
-        setServerError({ message: "Something went wrong. Please try again." })
+        setServerError({ message: "Ocurrió un error. Inténtelo de nuevo." })
       }
     } finally {
       setIsSubmitting(false)
@@ -262,14 +257,14 @@ function LoginPageInner() {
                     >
                       Usuario
                     </FormLabel>
-                    <FormControl>
-                      <div className="relative">
-                        <span
-                          className="pointer-events-none absolute inset-y-0 left-[14px] flex items-center"
-                          aria-hidden="true"
-                        >
-                          <User size={16} style={{ color: "#666666" }} />
-                        </span>
+                    <div className="relative">
+                      <span
+                        className="pointer-events-none absolute inset-y-0 left-[14px] flex items-center"
+                        aria-hidden="true"
+                      >
+                        <User size={16} style={{ color: "#666666" }} />
+                      </span>
+                      <FormControl>
                         <Input
                           {...field}
                           autoComplete="username"
@@ -281,8 +276,8 @@ function LoginPageInner() {
                           className="h-[44px] rounded pl-[42px] pr-[14px] border text-sm"
                           style={{ borderColor: "#EEF0F2" }}
                         />
-                      </div>
-                    </FormControl>
+                      </FormControl>
+                    </div>
                     <FormMessage id="login-username-error" />
                   </FormItem>
                 )}
@@ -304,14 +299,14 @@ function LoginPageInner() {
                     >
                       Contraseña
                     </FormLabel>
-                    <FormControl>
-                      <div className="relative">
-                        <span
-                          className="pointer-events-none absolute inset-y-0 left-[14px] flex items-center"
-                          aria-hidden="true"
-                        >
-                          <Lock size={16} style={{ color: "#666666" }} />
-                        </span>
+                    <div className="relative">
+                      <span
+                        className="pointer-events-none absolute inset-y-0 left-[14px] flex items-center"
+                        aria-hidden="true"
+                      >
+                        <Lock size={16} style={{ color: "#666666" }} />
+                      </span>
+                      <FormControl>
                         <Input
                           {...field}
                           type={showPassword ? "text" : "password"}
@@ -324,22 +319,22 @@ function LoginPageInner() {
                           className="h-[44px] rounded pl-[42px] pr-[44px] border text-sm"
                           style={{ borderColor: "#EEF0F2" }}
                         />
-                        <button
-                          type="button"
-                          onClick={() => setShowPassword((v) => !v)}
-                          aria-label={showPassword ? "Hide password" : "Show password"}
-                          className="absolute inset-y-0 right-0 flex items-center px-3"
-                          style={{ color: "#666666" }}
-                          tabIndex={-1}
-                        >
-                          {showPassword ? (
-                            <EyeOff size={16} />
-                          ) : (
-                            <Eye size={16} />
-                          )}
-                        </button>
-                      </div>
-                    </FormControl>
+                      </FormControl>
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                        className="absolute inset-y-0 right-0 flex items-center px-3"
+                        style={{ color: "#666666" }}
+                        tabIndex={-1}
+                      >
+                        {showPassword ? (
+                          <EyeOff size={16} />
+                        ) : (
+                          <Eye size={16} />
+                        )}
+                      </button>
+                    </div>
                     <FormMessage id="login-password-error" />
                   </FormItem>
                 )}
@@ -444,7 +439,7 @@ export default function LoginPage() {
           <Loader2
             className="h-6 w-6 animate-spin"
             style={{ color: "#1E3FB8" }}
-            aria-label="Loading login"
+            aria-label="Cargando inicio de sesión"
           />
         </div>
       }

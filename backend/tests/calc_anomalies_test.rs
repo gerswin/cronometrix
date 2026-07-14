@@ -64,7 +64,7 @@ fn all_variants_distinct_in_hashset() {
 fn copy_and_clone_semantics() {
     let a = AnomalyCode::OtCapExceededDaily;
     let b = a; // Copy
-    let c = a.clone(); // Clone
+    let c = a; // Clone
     assert_eq!(a, b);
     assert_eq!(a, c);
     assert_eq!(b.as_str(), "OT_CAP_EXCEEDED_DAILY");

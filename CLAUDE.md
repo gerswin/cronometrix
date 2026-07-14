@@ -213,8 +213,9 @@ outlives the test's assertions — see `backend/tests/common/mod.rs`.
 
 ## Test Coverage
 
-Phase 8 established a hard-fail coverage gate. Every PR to `main` runs the
-same checks documented below and cannot merge if any threshold is missed.
+Phase 8 established hard-failing coverage jobs. Every PR to `main` runs the
+same checks documented below; Phase 13 separately proves branch protection
+blocks merge when a required threshold is missed.
 
 ### Install (one-time per developer)
 
@@ -230,8 +231,12 @@ rustup toolchain install "$NIGHTLY" --component llvm-tools-preview
 
 # Frontend coverage tooling is already installed
 # (vitest + @vitest/coverage-v8 in frontend/package.json)
-cd frontend && npm ci
+nvm use && npm install --global npm@11.12.1 && cd frontend && npm ci
 ```
+
+Frontend installs are pinned to Node `24.15.0` and npm `11.12.1` via
+the root `.nvmrc`, `package.json` engines, and `packageManager`. CI and the web
+image must use the same pair and `npm ci`; a lockfile mismatch is a hard failure.
 
 The pinned nightly is currently `nightly-2026-04-01`. Bump cadence is quarterly
 (or earlier if nightly introduces an ICE / strict lint that blocks CI). Bump =
@@ -243,10 +248,12 @@ update `rust-toolchain.toml` + verify `make coverage-backend` still green.
 make coverage           # Backend + frontend; both must pass
 make coverage-backend   # Backend only (cargo-llvm-cov + per-file enforcer)
 make coverage-frontend  # Frontend only (Vitest --coverage)
+make test-ci-config     # Verify every setup-node version-file exists
 ```
 
-The same commands run in CI (`.github/workflows/ci.yml`), so a green
-`make coverage` locally implies a green PR.
+The same coverage commands run in CI (`.github/workflows/ci.yml`), so local
+green is the required pre-push evidence. It does not prove the live GitHub run
+or branch protection; Phase 13 records those external results.
 
 ### Thresholds
 
@@ -322,13 +329,15 @@ Workflow file: `.github/workflows/ci.yml`
 
 Triggers: push to any branch, pull_request targeting `main`.
 
-Jobs (both required):
+Coverage jobs (intended required checks; live protection is verified in Phase 13):
 - `Backend Coverage` — installs nightly Rust + cargo-llvm-cov + cargo-nextest;
   runs `cargo llvm-cov nextest --branch --all-features --ignore-filename-regex
   '(main\.rs|tests/common/.*)' --fail-under-lines 90 --lcov --output-path
   lcov.info`, then `bash ../scripts/enforce-coverage-floor.sh lcov.info 85 70
-  60`. Threshold miss → job exits non-zero → PR cannot merge.
-- `Frontend Coverage` — installs Node 20; runs `npx vitest run --coverage`.
+  60`. Threshold miss makes the job red; verified Phase 13 protection then
+  blocks merge.
+- `Frontend Coverage` — reads Node `24.15.0` from the root `.nvmrc`, pins npm
+  `11.12.1`, and runs `npx vitest run --coverage`.
   Vitest enforces both project-wide and per-file thresholds natively from
   `frontend/vitest.config.ts`.
 
@@ -422,6 +431,15 @@ cd frontend && npx playwright test --grep "<spec name>"  # Run a single spec
 The same commands run in CI (`.github/workflows/ci.yml::e2e-tests`), so a
 green `make e2e` locally implies a green `E2E Tests` job on PRs.
 
+### Login language contract (Phase 12)
+
+As of the **2026-07-13 Phase 12 supersession** of Phase 9 Addendum D-19,
+`/login` is Spanish-authoritative. Its E2E contract locks `Iniciar Sesión`,
+`Usuario`, `Contraseña`, `Mostrar contraseña` / `Ocultar contraseña`, both
+Spanish error messages, the Spanish required-field message, and root
+`<html lang="es-VE">`. Phase 9's English assertions remain historical
+evidence only; current tests and operator guidance must use this contract.
+
 ### Test-only env flags (DEV/TEST ONLY — must NEVER appear in prod env)
 
 | Flag | Purpose | Abort contract |
@@ -453,7 +471,7 @@ frontend/
 │   ├── setup/
 │   │   ├── 00-build-and-seed.setup.ts  # health probe + seed_e2e + reset mutable tables
 │   │   └── 01-authenticate.setup.ts    # login as 3 roles → write storageState files
-│   ├── login.spec.ts                   # D-01 UAT (English copy on login screen — Addendum D-19)
+│   ├── login.spec.ts                   # D-01 UAT (Spanish copy — Phase 12 supersedes D-19)
 │   ├── dashboard.spec.ts               # D-02 UAT (KPIs, donut, ring buffer, photo, SSE)
 │   ├── timesheet.spec.ts               # D-03 marcaciones CRUD + audit
 │   ├── employees.spec.ts               # D-03 empleados CRUD + audit
@@ -505,17 +523,20 @@ intermittently, check all three places.
 ### CI gate
 
 Workflow file: `.github/workflows/ci.yml`
-Job name: **E2E Tests** (matches required-status-check name; case-sensitive).
+Job name: **E2E Tests** (the intended required-status-check name; case-sensitive).
 
 Job steps:
 1. `actions/checkout@v4`
-2. `actions/setup-node@v4` (Node 20)
-3. Install stable Rust + `Swatinem/rust-cache@v2` (target/ + cargo registry)
-4. `npm ci`
-5. `npx playwright install --with-deps chromium`
-6. `cargo build --release` for the 3 binaries (cronometrix, mock_hikvision, seed_e2e)
-7. `npx playwright test`
-8. `actions/upload-artifact@v4` × 2 — `playwright-html-report` + `playwright-test-results`, both `if: always()`, retention 14 days
+2. Validate CI file references
+3. `actions/setup-node@v4` reads Node `24.15.0` from the root `.nvmrc`
+4. Pin npm to `11.12.1`
+5. Install the exact `rust-toolchain.toml` nightly + `Swatinem/rust-cache@v2` (target/ + cargo registry)
+6. `npm ci`
+7. `npm run build`
+8. `npx playwright install --with-deps chromium`
+9. `cargo build --release` for the 3 binaries (cronometrix, mock_hikvision, seed_e2e)
+10. `npx playwright test`
+11. `actions/upload-artifact@v4` × 2 — `playwright-html-report` + `playwright-test-results`, both `if: always()`, retention 14 days
 
 Pinned actions: parity with Phase 8 T-08-15 (`actions/checkout@v4`,
 `actions/setup-node@v4`, `actions/upload-artifact@v4`, `Swatinem/rust-cache@v2`).
@@ -532,7 +553,7 @@ Pinned actions: parity with Phase 8 T-08-15 (`actions/checkout@v4`,
 5. If the failure is in `setup/`: check that `backend/target/release/seed_e2e`
    and `mock_hikvision` exist (run `make e2e-build`).
 
-### Pending live validation (Plan 12 deferred — Manual Follow-up)
+### Pending live validation (carried forward to Phase 13)
 
 Plan 12 (CI gate) shipped the workflow file, but the live runtime validation
 was deferred per Phase 8 Plan 05 precedent. Three items remain:
@@ -544,8 +565,8 @@ was deferred per Phase 8 Plan 05 precedent. Three items remain:
 3. **Branch protection** — Settings → Branches → branch protection rule for `main`
    → Require status checks → add `E2E Tests` to required list.
 
-Phase 9 is NOT considered fully green until items 1-3 all pass on the live
-GitHub Actions runner with branch protection active. See
+Phase 13 Plan 13-01 is the current executable owner of items 1-3. Phase 9's
+historical code delivery is not live-gate proof. See
 `.planning/phases/09-e2e-playwright-test-suite-login-dashboard-marcaciones-emplea/09-12-SUMMARY.md`
 for exact commands.
 

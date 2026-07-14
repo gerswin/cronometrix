@@ -5,8 +5,8 @@
 //!   bump `last_seen_at` via `touch_last_seen`.
 //! - the watchdog only transitions `connection_state` → `offline` when
 //!   `last_seen_at < unixepoch() - 90`.
-//! This keeps the state machine single-writer per transition and avoids
-//! flapping.
+//!   This keeps the state machine single-writer per transition and avoids
+//!   flapping.
 
 use anyhow::Result;
 

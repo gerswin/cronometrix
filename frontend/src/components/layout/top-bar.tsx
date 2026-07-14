@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { LogOut } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
-import { api, setAccessToken } from '@/lib/api'
+import { logoutCurrentSession } from '@/lib/api'
 
 interface TopBarProps { title: string }
 
@@ -21,9 +21,8 @@ export function TopBar({ title }: TopBarProps) {
     try {
       // Backend clears the refresh cookie + invalidates the refresh-token hash.
       // Failure is non-fatal: we still clear local state and redirect.
-      await api.post('/auth/logout').catch(() => undefined)
+      await logoutCurrentSession()
     } finally {
-      setAccessToken(null)
       router.push('/login')
     }
   }

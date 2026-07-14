@@ -3,8 +3,9 @@
 export interface DailyRecord {
   id: string
   employee_id: string
-  employee_name?: string   // joined by frontend enrichment
+  employee_name?: string | null
   department_id: string
+  department_name?: string | null
   anchor_date: string      // YYYY-MM-DD
   shift_type: string
   work_minutes: number
@@ -36,8 +37,6 @@ export interface PaginatedResponse<T> {
 export interface Employee {
   id: string
   employee_code: string
-  /** @deprecated backend now returns `employee_code`; kept for legacy callers. */
-  cedula?: string
   name: string
   department_id: string
   department_name?: string
@@ -66,13 +65,23 @@ export interface Department {
   updated_at: string
 }
 
+export type DeviceConnectionState = 'online' | 'offline' | 'unknown'
+export type DeviceStatus = 'active' | 'inactive'
+
 export interface Device {
   id: string
   name: string
-  ip_address: string
-  direction: 'entry' | 'exit' | 'both'
-  status: 'online' | 'offline' | 'unknown'
+  ip: string
+  port: number
+  scheme: 'http' | 'https'
+  username: string
+  direction: 'entry' | 'exit'
+  allow_insecure_tls: boolean
+  connection_state: DeviceConnectionState
   last_seen_at: string | null
+  status: DeviceStatus
+  deleted_at: string | null
+  version: number
   created_at: string
   updated_at: string
 }
@@ -118,6 +127,8 @@ export interface JWTClaims {
   role: 'admin' | 'supervisor' | 'viewer'
   exp: number
   iat: number
+  jti: string
+  token_type: 'access' | 'refresh'
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -273,6 +284,7 @@ export interface RawAttendanceEvent {
 // ──────────────────────────────────────────────────────────────────────────
 
 export interface EnrollmentDevicePush {
+  id: string
   device_id: string
   device_name: string
   status: 'pending' | 'in_progress' | 'success' | 'failed'
@@ -284,17 +296,38 @@ export interface EnrollmentDevicePush {
 export interface Enrollment {
   id: string
   employee_id: string
+  employee_name: string
+  employee_code: string
   status: 'in_progress' | 'success' | 'partial' | 'failed'
   started_at: string
   completed_at: string | null
+  version: number
   device_pushes: EnrollmentDevicePush[]
+}
+
+export interface EnrollmentSubmitResponse {
+  enrollment_id: string
+  face_id: string
+  device_pushes: EnrollmentDevicePush[]
+}
+
+export interface RetryEnrollmentPushResponse {
+  enrollment_id: string
+  device_id: string
+  status: 'pending'
+}
+
+export interface CaptureStartResponse {
+  capture_id: string
+  status: 'capturing'
+  source_device_id: string
 }
 
 export interface CaptureFromDeviceState {
   capture_id: string
   status: 'capturing' | 'captured' | 'timeout' | 'error'
-  photo_path: string | null
-  photo_b64: string | null      // base64 JPEG iff status=='captured'
+  source_device_id: string
+  photo_b64?: string            // base64 JPEG iff status=='captured'; omitted otherwise
   error_message: string | null
 }
 

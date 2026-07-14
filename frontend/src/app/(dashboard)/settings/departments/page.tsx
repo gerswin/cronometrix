@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Plus, X, LogOut, Loader2, Building2, Clock4, Calendar, Save } from 'lucide-react'
 
-import { api, setAccessToken } from '@/lib/api'
+import { api, logoutCurrentSession } from '@/lib/api'
 import { useAuth } from '@/hooks/use-auth'
 import {
   Dialog,
@@ -106,9 +106,8 @@ export default function DepartmentsPage() {
     if (isLoggingOut) return
     setIsLoggingOut(true)
     try {
-      await api.post('/auth/logout').catch(() => undefined)
+      await logoutCurrentSession()
     } finally {
-      setAccessToken(null)
       router.push('/login')
     }
   }

@@ -1,3 +1,7 @@
+// Shared fixtures are intentionally broader than any single integration test;
+// each test crate selects only the helpers it needs.
+#![allow(dead_code)]
+
 use cronometrix_api::db::run_migrations;
 
 pub mod mock_hikvision;
@@ -68,6 +72,7 @@ pub fn test_access_token(user_id: &str, role: &str) -> String {
         "role": role,
         "exp": chrono::Utc::now().timestamp() + 3600,  // 1 hour for tests
         "iat": chrono::Utc::now().timestamp(),
+        "jti": uuid::Uuid::new_v4().to_string(),
         "token_type": "access"
     });
 
@@ -121,11 +126,11 @@ pub async fn create_test_supervisor(db: &libsql::Database) -> String {
 pub async fn create_test_department_with_shift(
     db: &libsql::Database,
     name: &str,
-    shift_type: &str,          // "day" | "night" | "mixed"
+    shift_type: &str, // "day" | "night" | "mixed"
     is_overnight: bool,
     ordinary_daily_minutes: i64,
-    shift_start: &str,         // "HH:MM"
-    shift_end: &str,           // "HH:MM"
+    shift_start: &str, // "HH:MM"
+    shift_end: &str,   // "HH:MM"
 ) -> String {
     let conn = db.connect().expect("connect");
     let id = uuid::Uuid::new_v4().to_string();
@@ -314,8 +319,8 @@ pub fn unknown_face_event_xml() -> String {
 /// Generate a synthetic 100×100 JPEG (~50KB) for enrollment tests.
 /// Uses `image` crate to produce a real JPEG that the image pipeline can decode.
 pub fn sample_face_jpeg_50kb() -> Vec<u8> {
-    use image::{ImageBuffer, Rgb};
     use image::codecs::jpeg::JpegEncoder;
+    use image::{ImageBuffer, Rgb};
 
     let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
         ImageBuffer::from_fn(100, 100, |x, y| Rgb([x as u8, y as u8, 128u8]));
@@ -331,11 +336,12 @@ pub fn sample_face_jpeg_50kb() -> Vec<u8> {
 /// Generate a synthetic 2000×2000 JPEG (>2 MB) for downscale tests.
 /// Produces a real JPEG that the image pipeline must compress to ≤200KB.
 pub fn sample_face_jpeg_4mb() -> Vec<u8> {
-    use image::{ImageBuffer, Rgb};
     use image::codecs::jpeg::JpegEncoder;
+    use image::{ImageBuffer, Rgb};
 
-    let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-        ImageBuffer::from_fn(2000, 2000, |x, y| Rgb([(x % 256) as u8, (y % 256) as u8, 128u8]));
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(2000, 2000, |x, y| {
+        Rgb([(x % 256) as u8, (y % 256) as u8, 128u8])
+    });
     let dynamic = image::DynamicImage::ImageRgb8(img);
 
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -364,36 +370,44 @@ pub fn sample_face_jpeg_4mb() -> Vec<u8> {
 /// All responses are 200 OK so integration tests exercise the happy path.
 /// Tests that need failure responses should spawn their own MockServer.
 pub async fn mock_hikvision_server() -> wiremock::MockServer {
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let server = MockServer::start().await;
 
     // UserInfo/Record — create person
     Mock::given(method("POST"))
         .and(path("/ISAPI/AccessControl/UserInfo/Record"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#),
+        )
         .mount(&server)
         .await;
 
     // FaceDataRecord — upload face image (multipart)
     Mock::given(method("POST"))
         .and(path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#),
+        )
         .mount(&server)
         .await;
 
     // UserInfoDetail/Delete — delete person by employeeNo
     Mock::given(method("PUT"))
         .and(path("/ISAPI/AccessControl/UserInfoDetail/Delete"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#),
+        )
         .mount(&server)
         .await;
 
     // CaptureFaceData — enter enrollment mode
     Mock::given(method("POST"))
         .and(path("/ISAPI/AccessControl/CaptureFaceData"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#),
+        )
         .mount(&server)
         .await;
 
@@ -500,6 +514,8 @@ pub fn test_state(
         backfill_tx: None,
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
         db_write: cronometrix_api::db::write_queue::DbWriteQueue::new(db_write_tx),
+        e2e_enabled: false,
+        test_reset_enabled: false,
     }
 }
 
@@ -522,9 +538,7 @@ pub fn test_state_with_tmpdir(
     config: std::sync::Arc<cronometrix_api::config::Config>,
 ) -> (cronometrix_api::state::AppState, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("create tempdir for test_state");
-    let paths = std::sync::Arc::new(
-        cronometrix_api::state::Paths::for_test(tmp.path()),
-    );
+    let paths = std::sync::Arc::new(cronometrix_api::state::Paths::for_test(tmp.path()));
     let state = test_state(db, config, paths);
     (state, tmp)
 }

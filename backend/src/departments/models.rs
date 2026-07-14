@@ -14,8 +14,8 @@ pub struct Department {
     pub status: String,
     pub deleted_at: Option<String>,
     pub version: i64,
-    pub created_at: String,              // ISO 8601
-    pub updated_at: String,              // ISO 8601
+    pub created_at: String, // ISO 8601
+    pub updated_at: String, // ISO 8601
 }
 
 /// Request body for POST /departments.

@@ -1,147 +1,197 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Loader2, AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Camera, Check, Loader2, RotateCcw } from 'lucide-react'
 import { api } from '@/lib/api'
+import {
+  getDeviceCapture,
+  startDeviceCapture,
+  type CapturedPhotoCandidate,
+} from '@/lib/enrollment-api'
 import { PrimaryButton } from '@/components/ui/primary-button'
-import { Camera, Check, RotateCcw } from 'lucide-react'
-import type { Device, CaptureFromDeviceState } from '@/types/api'
+import type { CaptureFromDeviceState, Device } from '@/types/api'
 
 interface KioskCaptureTabProps {
   employeeId: string
-  onCaptured: (blob: Blob) => void
+  onCaptured: (candidate: CapturedPhotoCandidate) => void
+  onCleared: () => void
 }
 
 type KioskState = 'idle' | 'waiting' | 'captured' | 'timeout'
 
 const COUNTDOWN_SECONDS = 30
 
-export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps) {
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
+export function KioskCaptureTab({ employeeId, onCaptured, onCleared }: KioskCaptureTabProps) {
+  const queryClient = useQueryClient()
+  const [selectedDeviceId, setSelectedDeviceId] = useState('')
   const [captureId, setCaptureId] = useState<string | null>(null)
+  const [captureSourceDeviceId, setCaptureSourceDeviceId] = useState<string | null>(null)
   const [kioskState, setKioskState] = useState<KioskState>('idle')
   const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS)
   const [previewBlob, setPreviewBlob] = useState<Blob | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const previewUrlRef = useRef<string | null>(null)
+  const generationRef = useRef(0)
+  const previousEmployeeRef = useRef(employeeId)
 
-  // Fetch active devices for the Select dropdown
   const { data: devicesData } = useQuery<{ data: Device[] }>({
     queryKey: ['devices-active'],
-    queryFn: () => api.get('/devices?status=active').then(r => r.data),
+    queryFn: () => api.get('/devices?status=active').then((response) => response.data),
   })
   const devices = devicesData?.data ?? []
 
-  // Start capture mutation
+  function stopCountdown() {
+    if (!countdownRef.current) return
+    clearInterval(countdownRef.current)
+    countdownRef.current = null
+  }
+
+  function clearPreview() {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    previewUrlRef.current = null
+    setPreviewUrl(null)
+    setPreviewBlob(null)
+    setCaptureSourceDeviceId(null)
+  }
+
+  useEffect(() => {
+    if (previousEmployeeRef.current === employeeId) return
+    previousEmployeeRef.current = employeeId
+    generationRef.current += 1
+    if (captureId) {
+      void queryClient.cancelQueries({ queryKey: ['capture', captureId] })
+    }
+    stopCountdown()
+    clearPreview()
+    setSelectedDeviceId('')
+    setCaptureId(null)
+    setKioskState('idle')
+    setCountdown(COUNTDOWN_SECONDS)
+    onCleared()
+  // Reset is intentionally tied only to the employee/session identity.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeId])
+
+  useEffect(() => {
+    return () => {
+      generationRef.current += 1
+      stopCountdown()
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = null
+    }
+  }, [])
+
   const startCaptureMutation = useMutation({
-    mutationFn: () =>
-      api.post('/enrollments/capture-from-device', {
-        device_id: selectedDeviceId,
-        employee_id: employeeId,
-      }).then(r => r.data as { capture_id: string; status: string }),
-    onSuccess: (data) => {
+    mutationFn: (request: { deviceId: string; employeeId: string; generation: number }) =>
+      startDeviceCapture(request),
+    onSuccess: (data, request) => {
+      if (request.generation !== generationRef.current || request.employeeId !== employeeId) return
       setCaptureId(data.capture_id)
+      setCaptureSourceDeviceId(data.source_device_id)
       setKioskState('waiting')
       setCountdown(COUNTDOWN_SECONDS)
-      // Start countdown
-      if (countdownRef.current) clearInterval(countdownRef.current)
+      stopCountdown()
       countdownRef.current = setInterval(() => {
-        setCountdown(prev => {
-          if (prev <= 1) {
-            if (countdownRef.current) clearInterval(countdownRef.current)
+        setCountdown((previous) => {
+          if (previous <= 1) {
+            stopCountdown()
             return 0
           }
-          return prev - 1
+          return previous - 1
         })
       }, 1000)
     },
-    onError: (err: unknown) => {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+    onError: (error: unknown, request) => {
+      if (request.generation !== generationRef.current || request.employeeId !== employeeId) return
+      const responseData = (error as {
+        response?: { data?: { error?: { message?: string }; message?: string } }
+      })?.response?.data
+      const message = responseData?.error?.message
+        ?? responseData?.message
         ?? 'No se pudo iniciar la captura.'
-      toast.error(msg)
+      toast.error(message)
     },
   })
 
-  // Poll capture status
   const { data: captureState } = useQuery<CaptureFromDeviceState>({
     queryKey: ['capture', captureId],
-    queryFn: () => api.get(`/enrollments/captures/${captureId}`).then(r => r.data),
-    enabled: !!captureId,
-    refetchInterval: (q) => {
-      const d = q.state.data as CaptureFromDeviceState | undefined
-      if (!d) return 1500
-      const terminal = d.status === 'captured' || d.status === 'timeout' || d.status === 'error'
-      return terminal ? false : 1500
+    queryFn: () => getDeviceCapture(captureId as string),
+    enabled: captureId !== null,
+    refetchInterval: (query) => {
+      const state = query.state.data as CaptureFromDeviceState | undefined
+      if (!state) return 1500
+      return state.status === 'capturing' ? 1500 : false
     },
   })
 
-  // Decode photo_b64 → Blob when captured (contract reconciled with 07-01 Task 4)
   useEffect(() => {
-    if (captureState?.status !== 'captured' || !captureState.photo_b64) return
+    if (
+      !captureId
+      || captureState?.capture_id !== captureId
+      || captureState.status !== 'captured'
+      || !captureState.photo_b64
+    ) return
 
-    // Clear countdown timer
-    if (countdownRef.current) {
-      clearInterval(countdownRef.current)
-      countdownRef.current = null
+    stopCountdown()
+    const binary = atob(captureState.photo_b64)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index)
     }
-
-    const bin = atob(captureState.photo_b64)
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
     const blob = new Blob([bytes], { type: 'image/jpeg' })
+    clearPreview()
+    const objectUrl = URL.createObjectURL(blob)
+    previewUrlRef.current = objectUrl
     setPreviewBlob(blob)
-    const url = URL.createObjectURL(blob)
-    setPreviewUrl(url)
+    setPreviewUrl(objectUrl)
+    setCaptureSourceDeviceId(captureState.source_device_id)
     setKioskState('captured')
+  }, [captureId, captureState])
 
-    return () => URL.revokeObjectURL(url)
-  }, [captureState?.status, captureState?.photo_b64])
-
-  // Handle timeout/error from poll
   useEffect(() => {
-    if (captureState?.status === 'timeout' || captureState?.status === 'error') {
-      if (countdownRef.current) {
-        clearInterval(countdownRef.current)
-        countdownRef.current = null
-      }
-      setKioskState('timeout')
-    }
-  }, [captureState?.status])
+    if (!captureId || captureState?.capture_id !== captureId) return
+    if (captureState.status !== 'timeout' && captureState.status !== 'error') return
+    stopCountdown()
+    setKioskState('timeout')
+  }, [captureId, captureState])
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (countdownRef.current) clearInterval(countdownRef.current)
-      if (previewUrl) URL.revokeObjectURL(previewUrl)
+  function beginCapture() {
+    const generation = ++generationRef.current
+    clearPreview()
+    onCleared()
+    startCaptureMutation.mutate({
+      deviceId: selectedDeviceId,
+      employeeId,
+      generation,
+    })
+  }
+
+  function resetCapture() {
+    generationRef.current += 1
+    if (captureId) {
+      void queryClient.cancelQueries({ queryKey: ['capture', captureId] })
     }
-  }, [previewUrl])
+    stopCountdown()
+    clearPreview()
+    setCaptureId(null)
+    setKioskState('idle')
+    setCountdown(COUNTDOWN_SECONDS)
+    onCleared()
+  }
 
   function handleAccept() {
-    if (previewBlob) {
-      onCaptured(previewBlob)
-    }
-  }
-
-  function handleRetry() {
-    setCaptureId(null)
-    setKioskState('idle')
-    setPreviewBlob(null)
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl)
-      setPreviewUrl(null)
-    }
-  }
-
-  function handleCancel() {
-    if (countdownRef.current) clearInterval(countdownRef.current)
-    setCaptureId(null)
-    setKioskState('idle')
+    if (!previewBlob || !captureSourceDeviceId) return
+    onCaptured({
+      blob: previewBlob,
+      capturedVia: 'device',
+      sourceDeviceId: captureSourceDeviceId,
+    })
   }
 
   return (
     <div className="space-y-4">
-      {/* Idle state */}
       {kioskState === 'idle' && (
         <div className="space-y-3">
           <div>
@@ -150,14 +200,14 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
             </label>
             <select
               value={selectedDeviceId}
-              onChange={e => setSelectedDeviceId(e.target.value)}
+              onChange={(event) => setSelectedDeviceId(event.target.value)}
               className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
               aria-label="Seleccionar dispositivo"
             >
               <option value="">Selecciona un dispositivo…</option>
-              {devices.map(d => (
-                <option key={d.id} value={d.id}>
-                  {d.name} ({d.ip_address})
+              {devices.map((device) => (
+                <option key={device.id} value={device.id}>
+                  {device.name} ({device.ip})
                 </option>
               ))}
             </select>
@@ -167,29 +217,29 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
             type="button"
             icon={startCaptureMutation.isPending ? Loader2 : Camera}
             disabled={!selectedDeviceId || startCaptureMutation.isPending}
-            onClick={() => startCaptureMutation.mutate()}
+            onClick={beginCapture}
           >
             {startCaptureMutation.isPending ? 'Iniciando…' : 'Iniciar Captura'}
           </PrimaryButton>
         </div>
       )}
 
-      {/* Waiting state */}
       {kioskState === 'waiting' && (
         <div className="space-y-3">
           <div className="flex items-center gap-3 rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-700">
             <Loader2 size={16} className="animate-spin shrink-0" />
             <span>Esperando captura en el dispositivo… ({countdown}s)</span>
           </div>
-          <PrimaryButton size="sm" variant="outline" type="button" onClick={handleCancel}>
+          <PrimaryButton size="sm" variant="outline" type="button" onClick={resetCapture}>
             Cancelar
           </PrimaryButton>
         </div>
       )}
 
-      {/* Captured state — preview + Aceptar */}
       {kioskState === 'captured' && previewUrl && (
         <div className="space-y-3">
+          {/* Blob-backed device preview cannot use the Next image optimizer. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={previewUrl}
             alt="Captura del dispositivo"
@@ -200,14 +250,13 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
             <PrimaryButton size="sm" icon={Check} type="button" onClick={handleAccept}>
               Aceptar
             </PrimaryButton>
-            <PrimaryButton size="sm" variant="outline" icon={RotateCcw} type="button" onClick={handleRetry}>
+            <PrimaryButton size="sm" variant="outline" icon={RotateCcw} type="button" onClick={resetCapture}>
               Recapturar
             </PrimaryButton>
           </div>
         </div>
       )}
 
-      {/* Timeout state */}
       {kioskState === 'timeout' && (
         <div className="space-y-3">
           <div
@@ -217,7 +266,7 @@ export function KioskCaptureTab({ employeeId, onCaptured }: KioskCaptureTabProps
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <span>No se detectó captura. El dispositivo no respondió a tiempo.</span>
           </div>
-          <PrimaryButton size="sm" variant="outline" icon={RotateCcw} type="button" onClick={handleRetry}>
+          <PrimaryButton size="sm" variant="outline" icon={RotateCcw} type="button" onClick={resetCapture}>
             Reintentar
           </PrimaryButton>
         </div>

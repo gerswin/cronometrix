@@ -26,6 +26,7 @@ function makeEmployee(over: Partial<Employee> = {}): Employee {
     created_at: '2023-01-15T00:00:00Z',
     updated_at: '2023-01-15T00:00:00Z',
     ...over,
+    base_salary_cents: over.base_salary_cents ?? 100000,
   }
 }
 

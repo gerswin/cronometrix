@@ -1,6 +1,6 @@
 //! Reports service — SQL aggregation across daily_records + overrides + leaves
 //! + anomalies, plus secondary leaves aggregation (W-5), money math (LOTTT
-//! Art. 117/118/120), and app-code audit insert (D-21).
+//!   Art. 117/118/120), and app-code audit insert (D-21).
 //!
 //! Read-only path on daily_records. Audit insert is the only write — it lands
 //! AFTER aggregation succeeds (Pitfall 7: failed reports must not leak audit
@@ -68,13 +68,12 @@ pub async fn compute_report(
     // 1. Parse period_type → PeriodPreset → (from, to).
     //    For non-custom presets, from_date is treated as the anchor/ref date.
     let preset = periods::parse_period(&params.period_type, &params.from_date, &params.to_date)?;
-    let ref_date =
-        NaiveDate::parse_from_str(&params.from_date, "%Y-%m-%d").map_err(|_| {
-            AppError::Validation {
-                code: "VALIDATION_ERROR",
-                message: "from_date must be YYYY-MM-DD".to_string(),
-            }
-        })?;
+    let ref_date = NaiveDate::parse_from_str(&params.from_date, "%Y-%m-%d").map_err(|_| {
+        AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "from_date must be YYYY-MM-DD".to_string(),
+        }
+    })?;
     let (from, to) = periods::resolve_period(preset, ref_date);
 
     // DoS guard (T-05-10 / Security V13). Any range >366 days is rejected up
@@ -111,8 +110,12 @@ pub async fn compute_report(
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("tenant_info row missing")))?;
-    let client_name: String = tenant_row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-    let client_rif: String = tenant_row.get(1).map_err(|e| AppError::Internal(e.into()))?;
+    let client_name: String = tenant_row
+        .get(0)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let client_rif: String = tenant_row
+        .get(1)
+        .map_err(|e| AppError::Internal(e.into()))?;
     drop(tenant_rows);
 
     let header = BrandingHeader {
@@ -221,8 +224,7 @@ pub async fn compute_report(
         let dept_id: String = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
         let dept_name: String = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
         let base_salary_cents: i64 = row.get(6).map_err(|e| AppError::Internal(e.into()))?;
-        let ordinary_daily_minutes: i64 =
-            row.get(7).map_err(|e| AppError::Internal(e.into()))?;
+        let ordinary_daily_minutes: i64 = row.get(7).map_err(|e| AppError::Internal(e.into()))?;
         let day_shift_type: String = row.get(8).map_err(|e| AppError::Internal(e.into()))?; // W-6
         let anchor_date_str: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
         let work_minutes: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
@@ -240,7 +242,9 @@ pub async fn compute_report(
         // Override merge — operator edits invisible if skipped (Pitfall 3).
         let effective_work_min = override_work_min_opt.unwrap_or(work_minutes);
 
-        dept_seen.entry(dept_id.clone()).or_insert(dept_name.clone());
+        dept_seen
+            .entry(dept_id.clone())
+            .or_insert(dept_name.clone());
 
         let entry = acc.entry(employee_id.clone()).or_insert_with(|| AccRow {
             employee_id: employee_id.clone(),
@@ -332,14 +336,12 @@ pub async fn compute_report(
                 entry.agg.late_min = entry.agg.late_min.saturating_add(late_minutes);
                 entry.agg.work_pay_cents = entry.agg.work_pay_cents.saturating_add(work_pay);
                 entry.agg.ot_pay_cents = entry.agg.ot_pay_cents.saturating_add(ot_pay);
-                entry.agg.night_premium_cents =
-                    entry.agg.night_premium_cents.saturating_add(night);
+                entry.agg.night_premium_cents = entry.agg.night_premium_cents.saturating_add(night);
                 entry.agg.rest_day_surcharge_cents =
                     entry.agg.rest_day_surcharge_cents.saturating_add(rest);
                 entry.agg.late_deduction_cents =
                     entry.agg.late_deduction_cents.saturating_add(late);
-                entry.agg.total_a_pagar_cents =
-                    entry.agg.total_a_pagar_cents.saturating_add(total);
+                entry.agg.total_a_pagar_cents = entry.agg.total_a_pagar_cents.saturating_add(total);
                 if effective_work_min > 0 {
                     entry.agg.days_worked += 1;
                     entry.worked_dates.insert(anchor_date);

@@ -2,15 +2,15 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use axum::Router;
 use axum::routing::{get, patch};
+use axum::Router;
 use cronometrix_api::auth;
-use cronometrix_api::rules;
 use cronometrix_api::config::Config;
+use cronometrix_api::rules;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
-use http_body_util::BodyExt;
 
 /// Build a test app with rules routes only. Returns (Router, TempDir) per
 /// Plan 08-02 D-20: caller binds the TempDir to a local that outlives every
@@ -79,7 +79,11 @@ async fn rules_tolerance_endpoint() {
         .unwrap();
 
     let get_resp = app.clone().oneshot(get_req).await.unwrap();
-    assert_eq!(get_resp.status(), StatusCode::OK, "GET /rules should return 200");
+    assert_eq!(
+        get_resp.status(),
+        StatusCode::OK,
+        "GET /rules should return 200"
+    );
     let rules = body_to_json(get_resp.into_body()).await;
 
     assert_eq!(
@@ -90,8 +94,14 @@ async fn rules_tolerance_endpoint() {
         rules["early_departure_tolerance_min"], 10,
         "Default early_departure_tolerance_min should be 10"
     );
-    assert!(rules["effective_from"].is_string(), "effective_from should be ISO 8601 string");
-    assert!(rules["updated_at"].is_string(), "updated_at should be ISO 8601 string");
+    assert!(
+        rules["effective_from"].is_string(),
+        "effective_from should be ISO 8601 string"
+    );
+    assert!(
+        rules["updated_at"].is_string(),
+        "updated_at should be ISO 8601 string"
+    );
 
     let version = rules["version"].as_i64().unwrap();
 
@@ -112,11 +122,21 @@ async fn rules_tolerance_endpoint() {
         .unwrap();
 
     let patch_resp = app.clone().oneshot(patch_req).await.unwrap();
-    assert_eq!(patch_resp.status(), StatusCode::OK, "PATCH /rules should return 200");
+    assert_eq!(
+        patch_resp.status(),
+        StatusCode::OK,
+        "PATCH /rules should return 200"
+    );
     let updated = body_to_json(patch_resp.into_body()).await;
 
-    assert_eq!(updated["late_arrival_tolerance_min"], 15, "late_arrival_tolerance_min should be updated to 15");
-    assert_eq!(updated["early_departure_tolerance_min"], 5, "early_departure_tolerance_min should be updated to 5");
+    assert_eq!(
+        updated["late_arrival_tolerance_min"], 15,
+        "late_arrival_tolerance_min should be updated to 15"
+    );
+    assert_eq!(
+        updated["early_departure_tolerance_min"], 5,
+        "early_departure_tolerance_min should be updated to 5"
+    );
     assert_eq!(updated["version"], version + 1, "Version should increment");
 }
 
@@ -156,9 +176,16 @@ async fn rules_bonus_minutes_config() {
         .unwrap();
 
     let patch_resp = app.clone().oneshot(patch_req).await.unwrap();
-    assert_eq!(patch_resp.status(), StatusCode::OK, "PATCH should return 200");
+    assert_eq!(
+        patch_resp.status(),
+        StatusCode::OK,
+        "PATCH should return 200"
+    );
     let patched = body_to_json(patch_resp.into_body()).await;
-    assert_eq!(patched["bonus_minutes"], 15, "bonus_minutes should be 15 after PATCH");
+    assert_eq!(
+        patched["bonus_minutes"], 15,
+        "bonus_minutes should be 15 after PATCH"
+    );
 
     // GET again to verify persistence
     let get_req2 = Request::builder()
@@ -171,7 +198,10 @@ async fn rules_bonus_minutes_config() {
     let get_resp2 = app.clone().oneshot(get_req2).await.unwrap();
     assert_eq!(get_resp2.status(), StatusCode::OK);
     let verified = body_to_json(get_resp2.into_body()).await;
-    assert_eq!(verified["bonus_minutes"], 15, "bonus_minutes should persist after GET");
+    assert_eq!(
+        verified["bonus_minutes"], 15,
+        "bonus_minutes should persist after GET"
+    );
 }
 
 #[tokio::test]
@@ -214,7 +244,11 @@ async fn rules_effective_from_updates_on_change() {
         .unwrap();
 
     let patch_resp = app.clone().oneshot(patch_req).await.unwrap();
-    assert_eq!(patch_resp.status(), StatusCode::OK, "PATCH should return 200");
+    assert_eq!(
+        patch_resp.status(),
+        StatusCode::OK,
+        "PATCH should return 200"
+    );
 
     // GET rules again to verify effective_from changed
     let get_req2 = Request::builder()
@@ -233,5 +267,8 @@ async fn rules_effective_from_updates_on_change() {
         new_effective_from, initial_effective_from,
         "effective_from should be updated to a newer timestamp after PATCH (RULE-03)"
     );
-    assert_eq!(updated["late_arrival_tolerance_min"], 20, "tolerance should be updated");
+    assert_eq!(
+        updated["late_arrival_tolerance_min"], 20,
+        "tolerance should be updated"
+    );
 }

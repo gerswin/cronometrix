@@ -6,6 +6,9 @@
 
 mod common;
 
+use cronometrix_api::enrollments::models::EnrollmentListQuery;
+use cronometrix_api::enrollments::service;
+
 // ---------------------------------------------------------------------------
 // Task 2 — audit trigger test (populated after migrations 016/017 land)
 // ---------------------------------------------------------------------------
@@ -33,7 +36,9 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
          lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
          VALUES (?1, ?2, 0, '08:00', '17:00', 'fixed', 60, 'active', 1, unixepoch(), unixepoch())",
         libsql::params![dept_id.clone(), format!("Dept-{}", &dept_id[..8])],
-    ).await.expect("seed department");
+    )
+    .await
+    .expect("seed department");
 
     let emp_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
@@ -84,7 +89,10 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     ).await.expect("count audit_log");
     let row = rows.next().await.expect("next row").expect("has row");
     let count: i64 = row.get(0).expect("count col");
-    assert_eq!(count, 3, "expected 3 audit rows after 3 INSERTs, got {count}");
+    assert_eq!(
+        count, 3,
+        "expected 3 audit rows after 3 INSERTs, got {count}"
+    );
 
     // -----------------------------------------------------------------------
     // UPDATE each row -> +3 more audit rows
@@ -92,17 +100,23 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     conn.execute(
         "UPDATE enrollments SET status='success', version=version+1 WHERE id=?1",
         libsql::params![enr_id.clone()],
-    ).await.expect("update enrollment");
+    )
+    .await
+    .expect("update enrollment");
 
     conn.execute(
         "UPDATE face_enrollments SET face_quality_score='{\"face_detected\":true}' WHERE id=?1",
         libsql::params![fe_id.clone()],
-    ).await.expect("update face_enrollment");
+    )
+    .await
+    .expect("update face_enrollment");
 
     conn.execute(
         "UPDATE device_face_mappings SET state='pending_delete', version=version+1 WHERE id=?1",
         libsql::params![mapping_id.clone()],
-    ).await.expect("update device_face_mapping");
+    )
+    .await
+    .expect("update device_face_mapping");
 
     let mut rows = conn.query(
         "SELECT count(*) FROM audit_log WHERE table_name IN ('enrollments','face_enrollments','device_face_mappings')",
@@ -110,7 +124,10 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     ).await.expect("count audit_log after updates");
     let row = rows.next().await.expect("next row").expect("has row");
     let count: i64 = row.get(0).expect("count col");
-    assert_eq!(count, 6, "expected 6 audit rows after 3 INSERTs + 3 UPDATEs, got {count}");
+    assert_eq!(
+        count, 6,
+        "expected 6 audit rows after 3 INSERTs + 3 UPDATEs, got {count}"
+    );
 
     // -----------------------------------------------------------------------
     // DELETE each row -> +3 more audit rows (total 9)
@@ -118,12 +135,24 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     // delete enrollments first (references face_enrollments), then face_enrollments,
     // then device_face_mappings.
     // -----------------------------------------------------------------------
-    conn.execute("DELETE FROM enrollments WHERE id=?1", libsql::params![enr_id.clone()])
-        .await.expect("delete enrollment");
-    conn.execute("DELETE FROM face_enrollments WHERE id=?1", libsql::params![fe_id.clone()])
-        .await.expect("delete face_enrollment");
-    conn.execute("DELETE FROM device_face_mappings WHERE id=?1", libsql::params![mapping_id.clone()])
-        .await.expect("delete device_face_mapping");
+    conn.execute(
+        "DELETE FROM enrollments WHERE id=?1",
+        libsql::params![enr_id.clone()],
+    )
+    .await
+    .expect("delete enrollment");
+    conn.execute(
+        "DELETE FROM face_enrollments WHERE id=?1",
+        libsql::params![fe_id.clone()],
+    )
+    .await
+    .expect("delete face_enrollment");
+    conn.execute(
+        "DELETE FROM device_face_mappings WHERE id=?1",
+        libsql::params![mapping_id.clone()],
+    )
+    .await
+    .expect("delete device_face_mapping");
 
     let mut rows = conn.query(
         "SELECT count(*) FROM audit_log WHERE table_name IN ('enrollments','face_enrollments','device_face_mappings')",
@@ -131,7 +160,88 @@ async fn test_audit_log_rows_written_for_enrollments_face_enrollments_device_fac
     ).await.expect("count audit_log after deletes");
     let row = rows.next().await.expect("next row").expect("has row");
     let count: i64 = row.get(0).expect("count col");
-    assert_eq!(count, 9, "expected 9 audit rows (3 INSERT + 3 UPDATE + 3 DELETE), got {count}");
+    assert_eq!(
+        count, 9,
+        "expected 9 audit rows (3 INSERT + 3 UPDATE + 3 DELETE), got {count}"
+    );
+}
+
+#[tokio::test]
+async fn persisted_in_progress_enrollment_is_listable_from_fresh_connection() {
+    let db = common::test_db().await;
+    let user_id = common::create_test_admin(&db).await;
+    let conn = db.connect().expect("initial connection");
+
+    let dept_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO departments (id, name, base_salary_cents, shift_start_time, shift_end_time, \
+         lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
+         VALUES (?1, 'Lifecycle Department', 0, '08:00', '17:00', 'fixed', 60, \
+                 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![dept_id.clone()],
+    )
+    .await
+    .expect("seed department");
+
+    let employee_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO employees (id, employee_code, name, department_id, status, version, created_at, updated_at) \
+         VALUES (?1, 'LIFE-001', 'Persisted Employee', ?2, 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![employee_id.clone(), dept_id],
+    )
+    .await
+    .expect("seed employee");
+
+    let face_enrollment_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO face_enrollments \
+         (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
+         VALUES (?1, ?2, 'upload', NULL, 'persisted/photo.jpg', NULL, ?3, 1800000000)",
+        libsql::params![
+            face_enrollment_id.clone(),
+            employee_id.clone(),
+            user_id.clone()
+        ],
+    )
+    .await
+    .expect("seed face enrollment");
+
+    let enrollment_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO enrollments \
+         (id, employee_id, face_enrollment_id, status, started_by, started_at, completed_at, version) \
+         VALUES (?1, ?2, ?3, 'in_progress', ?4, 1800000000, NULL, 1)",
+        libsql::params![
+            enrollment_id.clone(),
+            employee_id.clone(),
+            face_enrollment_id,
+            user_id
+        ],
+    )
+    .await
+    .expect("persist enrollment");
+    drop(conn);
+
+    let fresh_conn = db.connect().expect("fresh connection");
+    let page = service::list_enrollments(
+        &fresh_conn,
+        EnrollmentListQuery {
+            status: Some("in_progress".into()),
+            limit: None,
+            offset: None,
+        },
+    )
+    .await
+    .expect("list persisted enrollment");
+
+    assert_eq!(page.total, 1);
+    assert_eq!(page.data.len(), 1);
+    assert_eq!(page.data[0].id, enrollment_id);
+    assert_eq!(page.data[0].employee_id, employee_id);
+    assert_eq!(page.data[0].employee_name, "Persisted Employee");
+    assert_eq!(page.data[0].employee_code, "LIFE-001");
+    assert_eq!(page.data[0].status, "in_progress");
+    assert!(page.data[0].device_pushes.is_empty());
 }
 
 // ---------------------------------------------------------------------------

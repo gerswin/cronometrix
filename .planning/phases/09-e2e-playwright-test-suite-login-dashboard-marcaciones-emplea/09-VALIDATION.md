@@ -14,6 +14,13 @@ updated: 2026-04-28
 > Source: `09-RESEARCH.md` § Validation Architecture (lines 862–931).
 > Updated 2026-04-28 to reflect the FINAL 13-plan layout.
 
+> **2026-07-13 Phase 12 supersession:** This validation map preserves Phase
+> 9's original English D-19 row as historical planning evidence. The current
+> `/login` validation contract is Spanish (`Iniciar Sesión`, `Usuario`,
+> `Contraseña`, password-toggle ARIA, exact errors, and required-field copy)
+> and requires root `<html lang="es-VE">`; current executions use the Phase 12
+> contract rather than the historical English row below.
+
 ---
 
 ## Test Infrastructure

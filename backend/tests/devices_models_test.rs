@@ -3,8 +3,8 @@
 //! bucket row 10).
 
 use cronometrix_api::devices::models::{
-    Command, CommandRequest, CreateDeviceRequest, DeviceWithPlaintext, UpdateDeviceRequest,
-    validate_direction, validate_ip, validate_scheme, validate_status,
+    validate_direction, validate_ip, validate_scheme, validate_status, Command, CommandRequest,
+    CreateDeviceRequest, DeviceResponse, DeviceWithPlaintext, UpdateDeviceRequest,
 };
 use validator::Validate;
 
@@ -73,6 +73,60 @@ fn validate_ip_rejects_garbage() {
     assert!(validate_ip("hostname.example.com").is_err());
 }
 
+#[test]
+fn device_response_serializes_the_canonical_public_contract() {
+    let response = DeviceResponse {
+        id: "dev-entry".into(),
+        name: "Entrada Principal".into(),
+        ip: "127.0.0.1".into(),
+        port: 4400,
+        scheme: "http".into(),
+        username: "admin".into(),
+        direction: "entry".into(),
+        allow_insecure_tls: false,
+        connection_state: "online".into(),
+        last_seen_at: None,
+        status: "active".into(),
+        deleted_at: None,
+        version: 1,
+        created_at: "2026-04-15T12:00:00Z".into(),
+        updated_at: "2026-04-15T12:00:00Z".into(),
+    };
+
+    let value = serde_json::to_value(response).expect("DeviceResponse must serialize");
+    let object = value
+        .as_object()
+        .expect("device response must be an object");
+    let expected_keys = [
+        "id",
+        "name",
+        "ip",
+        "port",
+        "scheme",
+        "username",
+        "direction",
+        "allow_insecure_tls",
+        "connection_state",
+        "last_seen_at",
+        "status",
+        "deleted_at",
+        "version",
+        "created_at",
+        "updated_at",
+    ];
+
+    assert_eq!(object.len(), expected_keys.len());
+    for key in expected_keys {
+        assert!(object.contains_key(key), "missing canonical key: {key}");
+    }
+    assert_eq!(object["ip"], "127.0.0.1");
+    assert_eq!(object["connection_state"], "online");
+    assert_eq!(object["status"], "active");
+    assert!(!object.contains_key("password"));
+    assert!(!object.contains_key("encrypted_password"));
+    assert!(!object.contains_key("ip_address"));
+}
+
 // =============================================================================
 // Command enum: as_str + from_request_str
 // =============================================================================
@@ -111,7 +165,7 @@ fn command_from_request_str_rejects_unknown() {
 fn command_copy_clone_semantics() {
     let c = Command::Reboot;
     let _c2 = c; // Copy
-    let c3 = c.clone();
+    let c3 = c;
     assert_eq!(c.as_str(), c3.as_str());
 }
 
@@ -235,9 +289,7 @@ fn command_request_validate_happy() {
 
 #[test]
 fn command_request_blank_rejected() {
-    let r = CommandRequest {
-        command: "".into(),
-    };
+    let r = CommandRequest { command: "".into() };
     assert!(r.validate().is_err());
 }
 
@@ -271,7 +323,10 @@ fn device_with_plaintext_debug_redacts_password() {
         !dbg.contains("supersecret"),
         "password MUST not appear in Debug, got: {dbg}"
     );
-    assert!(dbg.contains("[redacted]"), "Debug must mark redaction: {dbg}");
+    assert!(
+        dbg.contains("[redacted]"),
+        "Debug must mark redaction: {dbg}"
+    );
     // Non-sensitive fields appear.
     assert!(dbg.contains("admin"));
     assert!(dbg.contains("10.0.0.1"));

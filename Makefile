@@ -7,9 +7,14 @@
 # The same commands are invoked by .github/workflows/ci.yml so local and CI runs
 # produce the same numbers (within toolchain version tolerance).
 
-.PHONY: coverage coverage-backend coverage-frontend
+.PHONY: test-ci-config coverage coverage-backend coverage-frontend
 
-coverage: coverage-backend coverage-frontend
+test-ci-config:
+	bash scripts/tests/test-ci-node-version-files.sh
+	bash scripts/tests/test-ci-node-version-files-portability.sh
+	bash scripts/test-e2e-harness-config.sh
+
+coverage: test-ci-config coverage-backend coverage-frontend
 	@echo "All coverage gates passed."
 
 coverage-backend:
@@ -26,14 +31,17 @@ coverage-frontend:
 
 .PHONY: e2e e2e-install e2e-build
 
+NEXT_PUBLIC_API_URL ?= http://localhost:4001
+
 e2e-install:
 	cd frontend && npm ci && npx playwright install --with-deps chromium
 
-e2e-build:
+e2e-build: test-ci-config
 	cd backend && cargo build --release --bin cronometrix
 	cd backend && cargo build --release --bin mock_hikvision --features mock-hikvision
 	cd backend && cargo build --release --bin seed_e2e --features seed-e2e
+	cd frontend && NEXT_PUBLIC_API_URL="$(NEXT_PUBLIC_API_URL)" npm run build
 
 e2e: e2e-build
-	cd frontend && npx playwright test
+	cd frontend && CRONOMETRIX_E2E_RELEASE=true CRONOMETRIX_E2E_RUN_ID=$${CRONOMETRIX_E2E_RUN_ID:-local-$$(date +%s)} npx playwright test
 	@echo "E2E HTML: frontend/playwright-report/index.html"

@@ -64,11 +64,7 @@ async fn seed_device(conn: &libsql::Connection, id: &str, _hint_port: u16) {
          created_at, updated_at) \
          VALUES (?1, ?2, '127.0.0.1', ?3, 'http', 'admin', 'ciphertext', \
          'entry', 0, 'offline', 'active', 1, unixepoch(), unixepoch())",
-        params![
-            id.to_string(),
-            format!("dev-{}", id),
-            port
-        ],
+        params![id.to_string(), format!("dev-{}", id), port],
     )
     .await
     .expect("seed device");
@@ -98,7 +94,12 @@ async fn seed_employee(conn: &libsql::Connection, emp_id: &str, emp_code: &str) 
     .expect("seed employee");
 }
 
-async fn seed_face_mapping(conn: &libsql::Connection, device_id: &str, face_id: &str, emp_id: &str) {
+async fn seed_face_mapping(
+    conn: &libsql::Connection,
+    device_id: &str,
+    face_id: &str,
+    emp_id: &str,
+) {
     conn.execute(
         "INSERT INTO device_face_mappings (id, device_id, face_id, employee_id, version, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, 1, unixepoch(), unixepoch())",
@@ -138,7 +139,9 @@ async fn connect_and_stream_persists_one_event() {
     let body = build_multipart_fixture(&k1t341_event_xml(), Some(MINI_JPEG));
     let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
 
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
     let cfg = device_cfg("d1", addr);
 
     connect_and_stream(&cfg, &state)
@@ -154,7 +157,11 @@ async fn connect_and_stream_persists_one_event() {
         )
         .await
         .unwrap();
-    let row = rows.next().await.unwrap().expect("must have at least one row");
+    let row = rows
+        .next()
+        .await
+        .unwrap()
+        .expect("must have at least one row");
     let employee_id: Option<String> = row.get(0).unwrap();
     let direction: String = row.get(1).unwrap();
     let raw_xml: String = row.get(2).unwrap();
@@ -167,11 +174,21 @@ async fn connect_and_stream_persists_one_event() {
     assert_eq!(is_unknown, 0);
     let relpath = photo_path.expect("photo_path populated");
     let on_disk = state.paths.events_root.join(&relpath);
-    assert!(on_disk.exists(), "photo jpeg must be on disk at {:?}", on_disk);
+    assert!(
+        on_disk.exists(),
+        "photo jpeg must be on disk at {:?}",
+        on_disk
+    );
 
     // No additional rows.
     let next = rows.next().await.unwrap();
     assert!(next.is_none(), "should persist exactly one event");
+
+    let payload = event_rx.recv().await.expect("inserted event is broadcast");
+    assert_eq!(payload.employee_id.as_deref(), Some("e1"));
+    assert_eq!(payload.employee_name.as_deref(), Some("Emp e1"));
+    assert_eq!(payload.department.as_deref(), Some("Dept e1"));
+    assert!(payload.has_photo);
 }
 
 #[tokio::test]
@@ -186,7 +203,9 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
     let body = build_multipart_fixture(&common::heartbeat_event_xml(), None);
     let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
 
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
     let cfg = device_cfg("d-hb", addr);
     connect_and_stream(&cfg, &state).await.expect("stream ok");
 
@@ -206,10 +225,7 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
     assert_eq!(count, 0, "heartbeat must not persist an attendance event");
 
     let ls_row = conn
-        .query(
-            "SELECT last_seen_at FROM devices WHERE id = 'd-hb'",
-            (),
-        )
+        .query("SELECT last_seen_at FROM devices WHERE id = 'd-hb'", ())
         .await
         .unwrap()
         .next()
@@ -220,6 +236,13 @@ async fn heartbeat_updates_last_seen_at_and_does_not_persist() {
     assert!(
         last_seen.is_some() && last_seen.unwrap() > 0,
         "heartbeat must refresh last_seen_at"
+    );
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "heartbeat must not publish an SSE attendance event"
     );
 }
 
@@ -274,13 +297,19 @@ async fn second_identical_event_deduplicates() {
     // Two sequential connections, each serving the same fixture. The second
     // must hit the dedup branch (same employee_id, device_id, direction, bucket_30s).
     let addr1 = spawn_mock_hikvision_plain(body.clone(), "MIME_boundary").await;
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
     let cfg1 = device_cfg("d-dup", addr1);
-    connect_and_stream(&cfg1, &state).await.expect("first stream");
+    connect_and_stream(&cfg1, &state)
+        .await
+        .expect("first stream");
 
     let addr2 = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
     let cfg2 = device_cfg("d-dup", addr2);
-    connect_and_stream(&cfg2, &state).await.expect("second stream");
+    connect_and_stream(&cfg2, &state)
+        .await
+        .expect("second stream");
 
     let conn = state.db.connect().unwrap();
     let row = conn
@@ -295,7 +324,52 @@ async fn second_identical_event_deduplicates() {
         .unwrap()
         .unwrap();
     let count: i64 = row.get(0).unwrap();
-    assert_eq!(count, 1, "dedup must keep row count at 1 on identical replay");
+    assert_eq!(
+        count, 1,
+        "dedup must keep row count at 1 on identical replay"
+    );
+    let first = event_rx.recv().await.expect("first insert is broadcast");
+    assert_eq!(first.employee_id.as_deref(), Some("e1"));
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "deduplicated event must not publish a second payload"
+    );
+}
+
+#[tokio::test]
+async fn failed_event_insert_does_not_broadcast() {
+    let db = common::test_db().await;
+    {
+        let conn = db.connect().unwrap();
+        seed_device(&conn, "d-fail", 0).await;
+        seed_employee(&conn, "e-fail", "EMP001").await;
+        seed_face_mapping(&conn, "d-fail", "42", "e-fail").await;
+        conn.execute("DROP TABLE attendance_events", ())
+            .await
+            .expect("force the persistence layer to fail");
+    }
+
+    let body = build_multipart_fixture(&k1t341_event_xml(), Some(MINI_JPEG));
+    let addr = spawn_mock_hikvision_plain(body, "MIME_boundary").await;
+    let (mut state, _tmp) = make_state(db);
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+    state.event_broadcast = Some(event_tx);
+
+    let result = connect_and_stream(&device_cfg("d-fail", addr), &state).await;
+    assert!(
+        result.is_err(),
+        "failed persistence must bubble to the supervisor"
+    );
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "failed persistence must not publish an SSE payload"
+    );
 }
 
 #[tokio::test]

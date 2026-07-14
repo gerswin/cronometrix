@@ -67,10 +67,7 @@ impl DeviceConnection {
     /// `PUT /ISAPI/AccessControl/RemoteControl/door/1` — open the door for N seconds
     /// (the XML body `<cmd>open</cmd>` instructs the device to unlock briefly).
     pub async fn door_open(&self) -> Result<String> {
-        let url = format!(
-            "{}/ISAPI/AccessControl/RemoteControl/door/1",
-            self.base_url
-        );
+        let url = format!("{}/ISAPI/AccessControl/RemoteControl/door/1", self.base_url);
         let body = r#"<RemoteControlDoor><cmd>open</cmd></RemoteControlDoor>"#;
         self.send_xml(&url, reqwest::Method::PUT, body).await
     }
@@ -160,7 +157,10 @@ impl DeviceConnection {
 
         if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
             let status = resp.status();
-            let text = resp.text().await.context("read ISAPI FaceDataRecord response")?;
+            let text = resp
+                .text()
+                .await
+                .context("read ISAPI FaceDataRecord response")?;
             anyhow::ensure!(
                 status.is_success(),
                 "device returned non-success status {status}: {text}"
@@ -176,7 +176,7 @@ impl DeviceConnection {
             .unwrap_or("")
             .to_string();
 
-        let path = format!("/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json");
+        let path = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json".to_string();
         let context = digest_auth::AuthContext::new_with_method(
             &self.username,
             &self.password,
@@ -190,14 +190,20 @@ impl DeviceConnection {
         let resp2 = self
             .client
             .post(&url)
-            .header(reqwest::header::AUTHORIZATION, auth_header.to_header_string())
+            .header(
+                reqwest::header::AUTHORIZATION,
+                auth_header.to_header_string(),
+            )
             .multipart(build_multipart_form(face_id, jpeg_bytes)?)
             .send()
             .await
             .context("ISAPI FaceDataRecord digest-auth request failed")?;
 
         let status = resp2.status();
-        let text = resp2.text().await.context("read ISAPI FaceDataRecord response")?;
+        let text = resp2
+            .text()
+            .await
+            .context("read ISAPI FaceDataRecord response")?;
         anyhow::ensure!(
             status.is_success(),
             "device returned non-success status {status}: {text}"
@@ -235,10 +241,7 @@ impl DeviceConnection {
         self.enrollment_mode().await?;
 
         // Step 2: retrieve the captured picture bytes.
-        let url = format!(
-            "{}/ISAPI/AccessControl/CapturedFacePicture",
-            self.base_url
-        );
+        let url = format!("{}/ISAPI/AccessControl/CapturedFacePicture", self.base_url);
         use diqwest::WithDigestAuth;
         let resp = self
             .client
@@ -252,16 +255,14 @@ impl DeviceConnection {
             status.is_success(),
             "device returned non-success status {status} on CapturedFacePicture"
         );
-        let bytes = resp.bytes().await.context("read CapturedFacePicture body")?;
+        let bytes = resp
+            .bytes()
+            .await
+            .context("read CapturedFacePicture body")?;
         Ok(bytes.to_vec())
     }
 
-    async fn send_xml(
-        &self,
-        url: &str,
-        method: reqwest::Method,
-        body: &str,
-    ) -> Result<String> {
+    async fn send_xml(&self, url: &str, method: reqwest::Method, body: &str) -> Result<String> {
         let resp = self
             .client
             .request(method, url)
@@ -279,12 +280,7 @@ impl DeviceConnection {
         Ok(text)
     }
 
-    async fn send_json(
-        &self,
-        url: &str,
-        method: reqwest::Method,
-        body: &str,
-    ) -> Result<String> {
+    async fn send_json(&self, url: &str, method: reqwest::Method, body: &str) -> Result<String> {
         let resp = self
             .client
             .request(method, url)

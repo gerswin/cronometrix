@@ -28,6 +28,13 @@ deferred: []
 **Status:** PASS-WITH-DEFERRALS (human_needed — 3 live CI items remain, same pattern as Phase 8 Plan 05)
 **Re-verification:** No — initial verification
 
+> **2026-07-13 Phase 12 supersession:** This report remains the historical
+> Phase 9 verification record; its 12-test counts and English D-19 assertions
+> describe what was verified on 2026-04-29. Phase 12 supersedes only the
+> current `/login` language contract with exact Spanish copy and root
+> `<html lang="es-VE">`. The original results below are intentionally not
+> rewritten.
+
 ---
 
 ## Goal Achievement

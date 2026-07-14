@@ -19,8 +19,8 @@ use std::time::Duration;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::AppError;
 use super::fingerprint;
+use crate::errors::AppError;
 
 /// JWT claims signed by DO Functions on activation. Mirrors RESEARCH § Pattern 4.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,9 +92,9 @@ pub enum BypassDecision {
 /// | false | false  | NormalPath          |
 pub fn evaluate_bypass(e2e: bool, bypass: bool) -> BypassDecision {
     match (e2e, bypass) {
-        (true, true)  => BypassDecision::AllowBypass,
+        (true, true) => BypassDecision::AllowBypass,
         (false, true) => BypassDecision::AbortMisconfigured,
-        _             => BypassDecision::NormalPath,
+        _ => BypassDecision::NormalPath,
     }
 }
 
@@ -142,8 +142,7 @@ pub async fn activate_license(
             message: "License server URL not configured".to_string(),
         });
     }
-    let fp = fingerprint::collect_fingerprint()
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let fp = fingerprint::collect_fingerprint().map_err(AppError::Internal)?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -184,12 +183,12 @@ pub async fn activate_license(
         });
     }
 
-    let body: serde_json::Value = resp.json().await
-        .map_err(|_| AppError::BadGateway {
-            code: "ACTIVATION_UNREACHABLE",
-            message: "License server returned malformed body".to_string(),
-        })?;
-    let token = body.get("token")
+    let body: serde_json::Value = resp.json().await.map_err(|_| AppError::BadGateway {
+        code: "ACTIVATION_UNREACHABLE",
+        message: "License server returned malformed body".to_string(),
+    })?;
+    let token = body
+        .get("token")
         .and_then(|v| v.as_str())
         .ok_or(AppError::BadGateway {
             code: "ACTIVATION_UNREACHABLE",
@@ -250,7 +249,7 @@ async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> {
         return Ok(()); // not yet within renewal window
     }
 
-    let fp = fingerprint::collect_fingerprint().map_err(|e| AppError::Internal(e.into()))?;
+    let fp = fingerprint::collect_fingerprint().map_err(AppError::Internal)?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -314,7 +313,10 @@ mod evaluate_bypass_tests {
 
     #[test]
     fn bypass_without_e2e_aborts_misconfigured() {
-        assert_eq!(evaluate_bypass(false, true), BypassDecision::AbortMisconfigured);
+        assert_eq!(
+            evaluate_bypass(false, true),
+            BypassDecision::AbortMisconfigured
+        );
     }
 
     #[test]

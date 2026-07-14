@@ -16,7 +16,7 @@ function wrap(ui: React.ReactNode) {
 const EMPLOYEES: Employee[] = [
   {
     id: 'emp-1',
-    cedula: 'V-12345678',
+    employee_code: 'V-12345678',
     name: 'Ana García',
     department_id: 'd1',
     position: 'Analista',
@@ -25,10 +25,11 @@ const EMPLOYEES: Employee[] = [
     version: 1,
     created_at: '2023-01-01T00:00:00Z',
     updated_at: '2023-01-01T00:00:00Z',
+    base_salary_cents: 100000,
   },
   {
     id: 'emp-2',
-    cedula: 'V-87654321',
+    employee_code: 'V-87654321',
     name: 'Luis Pérez',
     department_id: 'd2',
     position: 'Operador',
@@ -37,6 +38,7 @@ const EMPLOYEES: Employee[] = [
     version: 1,
     created_at: '2024-02-10T00:00:00Z',
     updated_at: '2024-02-10T00:00:00Z',
+    base_salary_cents: 100000,
   },
 ]
 
@@ -70,6 +72,17 @@ describe('EmployeeEnrollmentPicker', () => {
       expect(screen.getByText(/Ana García — V-12345678/)).toBeTruthy()
     })
     expect(screen.getByText(/Luis Pérez — V-87654321/)).toBeTruthy()
+  })
+
+  it('renders the canonical employee_code', async () => {
+    const canonicalEmployee = { ...EMPLOYEES[0] }
+    apiGet.mockResolvedValueOnce({
+      data: { data: [canonicalEmployee], total: 1, limit: 100, offset: 0 },
+    })
+    await act(async () => {
+      render(wrap(<EmployeeEnrollmentPicker onSelect={() => {}} />))
+    })
+    expect(await screen.findByText('Ana García — V-12345678')).toBeTruthy()
   })
 
   it('hits the active-only employees endpoint with limit=100', async () => {

@@ -12,7 +12,7 @@ import {
 import { es } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { FileSpreadsheet, FileText, FileDown, LogOut, Loader2 } from 'lucide-react'
-import { api, setAccessToken } from '@/lib/api'
+import { api, logoutCurrentSession } from '@/lib/api'
 import { useAuth } from '@/hooks/use-auth'
 import { renderReportPdf } from '@/lib/reports/pdf'
 import { renderReportCsv } from '@/lib/reports/csv'
@@ -142,9 +142,8 @@ export default function ReportsPage() {
     if (isLoggingOut) return
     setIsLoggingOut(true)
     try {
-      await api.post('/auth/logout').catch(() => undefined)
+      await logoutCurrentSession()
     } finally {
-      setAccessToken(null)
       router.push('/login')
     }
   }

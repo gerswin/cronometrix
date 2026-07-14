@@ -459,6 +459,13 @@ const table = useReactTable({
 
 **Spanish vs English copy (D-19 + Addendum):** `login.spec.ts` matches CURRENT English copy ("Log in to Cronometrix", "Username", "Password", "Log in", "Invalid username or password.") per `frontend/src/app/login/page.tsx` lines 95, 120, 139, 182, 78. All other specs match Spanish copy ("Empleados", "Marcaciones", "Dispositivos", "Reportes", "Auditoría", "Sin empleados…").
 
+> **2026-07-13 Phase 12 supersession:** The paragraph above records the Phase
+> 9 implementation pattern and remains unchanged as historical evidence. For
+> current `/login` work, Phase 12 supersedes the English-only D-19 addendum:
+> use accessible Spanish selectors for `Iniciar Sesión`, `Usuario`,
+> `Contraseña`, `Mostrar contraseña` / `Ocultar contraseña`, assert the exact
+> Spanish error copy, and require root `<html lang="es-VE">`.
+
 **Time-determinism rule (D-20):** every spec sets `timezoneId: 'America/Caracas'` on the browser context (Playwright `use.timezoneId` config) and the backend gets `TZ=America/Caracas` via `webServer.env`. NEVER use `NOW()` in DB seeds — always seed fixed epoch values (RESEARCH §Flake sources line 950).
 
 ---

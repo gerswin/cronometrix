@@ -108,12 +108,12 @@ pub async fn seed_daily_record(
     db: &libsql::Database,
     employee_id: &str,
     dept_id: &str,
-    anchor_date: &str,        // YYYY-MM-DD
-    day_shift_type: &str,     // "day" | "night" | "mixed"
+    anchor_date: &str,    // YYYY-MM-DD
+    day_shift_type: &str, // "day" | "night" | "mixed"
     work_min: i64,
     ot_min: i64,
     late_min: i64,
-    is_rest_day_worked: i64,  // 0 | 1
+    is_rest_day_worked: i64, // 0 | 1
     leave_id_opt: Option<&str>,
 ) -> String {
     let conn = db.connect().expect("connect");

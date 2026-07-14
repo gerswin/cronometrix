@@ -4,7 +4,7 @@
  * Covers: KPI tiles (4), donut chart, ring buffer 20-event cap, photo fallback,
  * SSE disconnect banner DOM attachment, empty state.
  *
- * All tests use the pre-authenticated admin session (Plan 06 setup).
+ * Authenticated tests use a fresh admin context per test.
  * test.beforeEach resets mutable tables for determinism (D-12).
  *
  * SSE banner: per RESEARCH §Pitfall 5, we assert DOM attachment only.
@@ -13,13 +13,12 @@
  * Language: Spanish copy per D-19 (dashboard is Spanish locale).
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect } from './fixtures/auth'
+import type { APIRequestContext, Page } from '@playwright/test'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { resetMutableTables, pushHikvisionEvent } from './fixtures/api'
+import { API_BASE, resetMutableTables, pushHikvisionEvent } from './fixtures/api'
 import { SEL } from './fixtures/selectors'
-
-test.use({ storageState: 'e2e/.auth/admin.json' })
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,6 +44,30 @@ function mutateDateTime(xml: string, index: number): string {
     /<dateTime>[^<]+<\/dateTime>/,
     `<dateTime>2026-04-15T08:${minutes}:${seconds}-04:00</dateTime>`,
   )
+}
+
+async function openDashboardWithSSE(page: Page): Promise<void> {
+  const streamReady = page.waitForResponse((response) =>
+    response.url().includes('/api/v1/events/stream?token=') &&
+    response.status() === 200,
+  )
+  await page.goto('/dashboard')
+  await streamReady
+}
+
+async function restartEntryDevice(request: APIRequestContext): Promise<void> {
+  const currentResponse = await request.get(`${API_BASE}/devices/dev-entry`)
+  expect(currentResponse.ok()).toBeTruthy()
+  const current = await currentResponse.json()
+  const temporaryResponse = await request.patch(`${API_BASE}/devices/dev-entry`, {
+    data: { version: current.version, port: 4402 },
+  })
+  expect(temporaryResponse.ok()).toBeTruthy()
+  const temporary = await temporaryResponse.json()
+  const restoredResponse = await request.patch(`${API_BASE}/devices/dev-entry`, {
+    data: { version: temporary.version, port: 4400 },
+  })
+  expect(restoredResponse.ok()).toBeTruthy()
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +104,7 @@ test.describe('Dashboard (D-02 UAT depth)', () => {
     // Push entry events for two employees seeded by Plan 03
     const anaXml = await readEvent('ana-entrada.xml')
     const luisXml = await readEvent('luis-entrada.xml')
+    await restartEntryDevice(request)
     await pushHikvisionEvent(request, anaXml)
     await pushHikvisionEvent(request, luisXml)
 
@@ -112,13 +136,16 @@ test.describe('Dashboard (D-02 UAT depth)', () => {
   }) => {
     const anaXml = await readEvent('ana-entrada.xml')
 
+    // The broadcast channel has no replay, so establish the real SSE response
+    // before injecting the events that this page must render.
+    await restartEntryDevice(request)
+    await openDashboardWithSSE(page)
+
     // Push 25 events with unique timestamps to avoid deduplication
     for (let i = 0; i < 25; i++) {
       const mutated = mutateDateTime(anaXml, i)
       await pushHikvisionEvent(request, mutated)
     }
-
-    await page.goto('/dashboard')
 
     // Ring buffer container must be visible
     const ringBuffer = page.getByTestId(SEL.ringBuffer)
@@ -137,9 +164,9 @@ test.describe('Dashboard (D-02 UAT depth)', () => {
   }) => {
     // Push one event (current XML fixtures include no JPEG part → has_photo=false)
     const xml = await readEvent('ana-entrada.xml')
+    await restartEntryDevice(request)
+    await openDashboardWithSSE(page)
     await pushHikvisionEvent(request, xml)
-
-    await page.goto('/dashboard')
 
     // Wait for the SSE event to appear in the ring buffer
     const ringBuffer = page.getByTestId(SEL.ringBuffer)

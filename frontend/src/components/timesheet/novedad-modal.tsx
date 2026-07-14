@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -45,6 +45,22 @@ export function NovedadModal({ open, record, onClose }: NovedadModalProps) {
   const departmentId = watch('department_id')
   const evidence = watch('evidence')
 
+  useEffect(() => {
+    if (!open) return
+    reset({
+      tipo_novedad: 'manual',
+      notificar_supervisor: false,
+      employee_id: record?.employee_id ?? '',
+      department_id: record?.department_id ?? '',
+      fecha_inicio: record?.anchor_date ?? '',
+      fecha_fin: record?.anchor_date ?? '',
+      justification: '',
+      motivo: '',
+      impacto_nomina: '',
+      evidence: undefined,
+    })
+  }, [open, record, reset])
+
   const { data: employees, isLoading: loadingEmployees } = useQuery<PaginatedResponse<Employee>>({
     queryKey: ['employees', 'searchable'],
     queryFn: () => api.get('/employees', { params: { limit: 500 } }).then((r) => r.data),
@@ -62,7 +78,7 @@ export function NovedadModal({ open, record, onClose }: NovedadModalProps) {
   const employeeOptions = (employees?.data ?? []).map((e) => ({
     id: e.id,
     label: e.name,
-    sublabel: [e.cedula, e.department_name].filter(Boolean).join(' · '),
+    sublabel: [e.employee_code, e.department_name].filter(Boolean).join(' · '),
   }))
 
   const departmentOptions = (departments?.data ?? []).map((d) => ({

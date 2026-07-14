@@ -2,17 +2,19 @@
  * Login E2E spec — Plan 09-07 (D-01 Full UAT depth)
  *
  * This is the ONLY spec that uses UI-driven login (D-06 hybrid auth).
- * Every other spec reuses storageState from Plan 06 (01-authenticate.setup.ts).
+ * Every other spec uses fresh API-authenticated contexts from fixtures/auth.ts.
  *
- * Language: English copy per Addendum D-19 (login page is English despite global es-VE locale).
- * Strings asserted: "Username", "Password", "Log in", "Invalid username or password.",
- *                   "Something went wrong. Please try again.", "Log in to Cronometrix"
+ * Language: Spanish copy per the 2026-07-13 Phase 12 supersession of D-19.
+ * Strings asserted: "Iniciar Sesión", "Usuario", "Contraseña", "Mostrar contraseña",
+ *                   "Ocultar contraseña", "Usuario o contraseña inválidos.",
+ *                   "Ocurrió un error. Inténtelo de nuevo.", "Este campo es obligatorio."
  *
  * NOTE: No test.use({ storageState }) — spec runs in fresh browser contexts.
  * NOTE: No page.waitForTimeout() calls — all waits are explicit Playwright auto-waits.
  */
 
 import { test, expect, type Page } from '@playwright/test'
+import { SEL } from './fixtures/selectors'
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -20,34 +22,50 @@ import { test, expect, type Page } from '@playwright/test'
 
 /** Fill login form and click submit. */
 async function fillAndSubmit(page: Page, username: string, password: string) {
-  await page.getByLabel('Username').fill(username)
-  await page.getByLabel('Password').fill(password)
-  await page.getByRole('button', { name: 'Log in' }).click()
+  await page.getByLabel(SEL.loginUsername.name, { exact: true }).fill(username)
+  await page.getByLabel(SEL.loginPassword.name, { exact: true }).fill(password)
+  await page.getByRole(SEL.loginSubmit.role, {
+    name: SEL.loginSubmit.name,
+    exact: true,
+  }).click()
+}
+
+/** Select the login error banner without matching Next.js' route announcer. */
+function loginAlert(page: Page, message: string) {
+  return page.getByRole('alert').filter({ hasText: message })
 }
 
 // ─────────────────────────────────────────────────────────────────
 // Test suite
 // ─────────────────────────────────────────────────────────────────
 
-test.describe('Login (UAT depth, English copy per Addendum D-19)', () => {
+test.describe('Inicio de sesión (UAT completo, contrato en español de Phase 12)', () => {
 
-  // ── T-01: Form renders with expected English labels and heading ──────────
-  test('renders login form with English labels and heading', async ({ page }) => {
+  // ── T-01: Form renders with expected Spanish labels, heading, and locale ─
+  test('renderiza el formulario con copy en español y lang es-VE', async ({ page }) => {
     await page.goto('/login')
 
-    // Page heading (CardTitle)
-    await expect(page.getByRole('heading', { name: 'Log in to Cronometrix' })).toBeVisible()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'es-VE')
+
+    // Page heading
+    await expect(page.getByRole(SEL.loginHeading.role, {
+      name: SEL.loginHeading.name,
+      exact: true,
+    })).toBeVisible()
 
     // Form fields via accessible label
-    await expect(page.getByLabel('Username')).toBeVisible()
-    await expect(page.getByLabel('Password')).toBeVisible()
+    await expect(page.getByLabel(SEL.loginUsername.name, { exact: true })).toBeVisible()
+    await expect(page.getByLabel(SEL.loginPassword.name, { exact: true })).toBeVisible()
 
     // Submit button
-    await expect(page.getByRole('button', { name: 'Log in' })).toBeVisible()
+    await expect(page.getByRole(SEL.loginSubmit.role, {
+      name: SEL.loginSubmit.name,
+      exact: true,
+    })).toBeVisible()
   })
 
   // ── T-02: Happy path — admin logs in and lands on / or /dashboard ────────
-  test('happy path: admin logs in and lands on dashboard', async ({ page }) => {
+  test('flujo exitoso: admin inicia sesión y llega al dashboard', async ({ page }) => {
     await page.goto('/login')
     await fillAndSubmit(page, 'e2e_admin', 'e2e-admin-pass')
 
@@ -56,73 +74,91 @@ test.describe('Login (UAT depth, English copy per Addendum D-19)', () => {
   })
 
   // ── T-03: Invalid credentials → 401 → error message, stays on /login ────
-  test('invalid credentials → 401 → "Invalid username or password."', async ({ page }) => {
+  test('credenciales inválidas → 401 → error genérico en español', async ({ page }) => {
     await page.goto('/login')
     await fillAndSubmit(page, 'e2e_admin', 'wrong-password-xyz')
 
     // Error banner (role="alert" per login/page.tsx markup)
-    await expect(page.getByRole('alert')).toContainText('Invalid username or password.')
+    await expect(loginAlert(page, 'Usuario o contraseña inválidos.')).toHaveText(
+      'Usuario o contraseña inválidos.',
+    )
 
     // User remains on the login page
     await expect(page).toHaveURL(/\/login/)
   })
 
   // ── T-04: Empty username blocked by Zod — stays on /login ───────────────
-  test('validation: empty username stays on /login and shows field error', async ({ page }) => {
+  test('validación: usuario vacío permanece en /login y muestra el error exacto', async ({ page }) => {
     await page.goto('/login')
 
     // Leave username blank, fill only password, try to submit
-    await page.getByLabel('Password').fill('e2e-admin-pass')
-    await page.getByRole('button', { name: 'Log in' }).click()
+    await page.getByLabel(SEL.loginPassword.name, { exact: true }).fill('e2e-admin-pass')
+    await page.getByRole(SEL.loginSubmit.role, {
+      name: SEL.loginSubmit.name,
+      exact: true,
+    }).click()
 
     // User stays on /login (no network call should be made)
     await expect(page).toHaveURL(/\/login/)
 
     // react-hook-form renders FormMessage as the validation error
-    // loginSchema: username: z.string().min(1, 'This field is required.')
-    const errors = page.locator('p[id="login-username-error"], .text-destructive, [role="alert"]')
-    await expect(errors.first()).toBeVisible({ timeout: 3_000 })
+    // loginSchema: username uses the authoritative Spanish required-field copy.
+    await expect(page.locator('#login-username-error')).toHaveText(
+      'Este campo es obligatorio.',
+      { timeout: 3_000 },
+    )
   })
 
   // ── T-05: Empty password blocked by Zod — stays on /login ───────────────
-  test('validation: empty password stays on /login and shows field error', async ({ page }) => {
+  test('validación: contraseña vacía permanece en /login y muestra el error exacto', async ({ page }) => {
     await page.goto('/login')
 
     // Leave password blank, fill only username, try to submit
-    await page.getByLabel('Username').fill('e2e_admin')
-    await page.getByRole('button', { name: 'Log in' }).click()
+    await page.getByLabel(SEL.loginUsername.name, { exact: true }).fill('e2e_admin')
+    await page.getByRole(SEL.loginSubmit.role, {
+      name: SEL.loginSubmit.name,
+      exact: true,
+    }).click()
 
     // User stays on /login
     await expect(page).toHaveURL(/\/login/)
 
-    // loginSchema: password: z.string().min(1, 'This field is required.')
-    const errors = page.locator('p[id="login-password-error"], .text-destructive, [role="alert"]')
-    await expect(errors.first()).toBeVisible({ timeout: 3_000 })
+    // loginSchema: password uses the authoritative Spanish required-field copy.
+    await expect(page.locator('#login-password-error')).toHaveText(
+      'Este campo es obligatorio.',
+      { timeout: 3_000 },
+    )
   })
 
   // ── T-06: Password visibility toggle (Eye ↔ EyeOff) ─────────────────────
-  test('toggle password visibility (Show/Hide password)', async ({ page }) => {
+  test('alterna la visibilidad de la contraseña con nombres accesibles en español', async ({ page }) => {
     await page.goto('/login')
 
-    const pwd = page.getByLabel('Password')
+    const pwd = page.getByLabel(SEL.loginPassword.name, { exact: true })
     await pwd.fill('secret123')
 
     // Initially the field type should be "password"
     await expect(pwd).toHaveAttribute('type', 'password')
 
-    // Click the "Show password" toggle (aria-label from login/page.tsx)
-    await page.getByRole('button', { name: 'Show password' }).click()
+    // Click the Spanish "Mostrar contraseña" toggle (aria-label from login/page.tsx)
+    await page.getByRole(SEL.loginShowPassword.role, {
+      name: SEL.loginShowPassword.name,
+      exact: true,
+    }).click()
 
     // After toggle, type should change to "text"
     await expect(pwd).toHaveAttribute('type', 'text')
 
-    // Toggle back — "Hide password" is now the label
-    await page.getByRole('button', { name: 'Hide password' }).click()
+    // Toggle back — "Ocultar contraseña" is now the label
+    await page.getByRole(SEL.loginHidePassword.role, {
+      name: SEL.loginHidePassword.name,
+      exact: true,
+    }).click()
     await expect(pwd).toHaveAttribute('type', 'password')
   })
 
   // ── T-07: Session persists across browser refresh ────────────────────────
-  test('session persists across refresh (refresh-cookie re-issues access_token)', async ({ page }) => {
+  test('la sesión persiste tras recargar (refresh cookie reemite access_token)', async ({ page }) => {
     await page.goto('/login')
     await fillAndSubmit(page, 'e2e_admin', 'e2e-admin-pass')
 
@@ -137,7 +173,7 @@ test.describe('Login (UAT depth, English copy per Addendum D-19)', () => {
   })
 
   // ── T-08: Multi-tab — second tab shares session ──────────────────────────
-  test('multi-tab: second tab shares session (same browser context)', async ({ context, page }) => {
+  test('múltiples pestañas: la segunda comparte la sesión del mismo contexto', async ({ context, page }) => {
     await page.goto('/login')
     await fillAndSubmit(page, 'e2e_admin', 'e2e-admin-pass')
 
@@ -152,7 +188,7 @@ test.describe('Login (UAT depth, English copy per Addendum D-19)', () => {
   })
 
   // ── T-09: RBAC — Viewer cannot trigger admin commands on /devices ─────────
-  test('RBAC: viewer logs in, navigates to /devices, admin command buttons absent', async ({ page }) => {
+  test('RBAC: viewer inicia sesión y no ve comandos admin en /devices', async ({ page }) => {
     await page.goto('/login')
     await fillAndSubmit(page, 'e2e_viewer', 'e2e-viewer-pass')
 
@@ -171,35 +207,60 @@ test.describe('Login (UAT depth, English copy per Addendum D-19)', () => {
   })
 
   // ── T-10: Redirect param honored after successful login ──────────────────
-  test('redirect param honored: ?redirect=/employees routes there after login', async ({ page }) => {
+  test('respeta redirect: ?redirect=/employees navega allí tras iniciar sesión', async ({ page }) => {
     await page.goto('/login?redirect=/employees')
     await fillAndSubmit(page, 'e2e_admin', 'e2e-admin-pass')
 
     // Should land on /employees (safeRedirect accepts this relative path)
-    await expect(page).toHaveURL(/\/employees/, { timeout: 10_000 })
+    await expect(page).toHaveURL(
+      (url) => url.pathname === '/employees',
+      { timeout: 10_000 },
+    )
   })
 
   // ── T-11: Open-redirect sanitized (CR-02 mitigation T-09-09) ────────────
-  test('open-redirect sanitized: "//evil.com" falls back to "/"', async ({ page }) => {
+  test('sanea open redirect: "//evil.com" usa el destino seguro', async ({ page }) => {
     await page.goto('/login?redirect=//evil.com')
     await fillAndSubmit(page, 'e2e_admin', 'e2e-admin-pass')
 
     // safeRedirect() in login/page.tsx rejects protocol-relative URLs.
-    // The app must NOT navigate to evil.com.
-    await expect(page).not.toHaveURL(/evil\.com/, { timeout: 10_000 })
-
-    // It must land on the safe fallback: "/" or "/dashboard"
-    await expect(page).toHaveURL(/\/$|\/dashboard/, { timeout: 10_000 })
+    // The app must stay on the expected origin and land on the safe fallback.
+    await expect(page).toHaveURL(
+      (url) =>
+        url.origin === 'http://localhost:3001'
+        && (url.pathname === '/' || url.pathname === '/dashboard'),
+      { timeout: 10_000 },
+    )
   })
 
   // ── T-12: Non-existent username → 401 (same generic error, no user enumeration) ─
-  test('non-existent username → generic "Invalid username or password." (no user enumeration)', async ({ page }) => {
+  test('usuario inexistente → mismo error genérico (sin enumeración)', async ({ page }) => {
     await page.goto('/login')
     await fillAndSubmit(page, 'user_that_does_not_exist_xyz', 'any-password-123')
 
     // Backend must return 401 for unknown users without revealing "user not found"
     // (T-01-19: generic error per CLAUDE.md RBAC architecture — security requirement).
-    await expect(page.getByRole('alert')).toContainText('Invalid username or password.')
+    await expect(loginAlert(page, 'Usuario o contraseña inválidos.')).toHaveText(
+      'Usuario o contraseña inválidos.',
+    )
+    await expect(page).toHaveURL(/\/login/)
+  })
+
+  // ── T-13: Non-401 failure → generic Spanish fallback ────────────────────
+  test('error no-401 → fallback genérico en español', async ({ page }) => {
+    await page.route('**/api/v1/auth/login', async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE' } }),
+      })
+    })
+    await page.goto('/login')
+    await fillAndSubmit(page, 'e2e_admin', 'e2e-admin-pass')
+
+    await expect(loginAlert(page, 'Ocurrió un error. Inténtelo de nuevo.')).toHaveText(
+      'Ocurrió un error. Inténtelo de nuevo.',
+    )
     await expect(page).toHaveURL(/\/login/)
   })
 

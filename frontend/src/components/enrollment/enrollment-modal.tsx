@@ -1,180 +1,329 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
 import { X } from 'lucide-react'
 import {
-  Dialog, DialogContent,
-} from '@/components/ui/dialog'
+  createEnrollment,
+  getEnrollment,
+  type CapturedPhoto,
+  type CapturedPhotoCandidate,
+} from '@/lib/enrollment-api'
+import { analyzePhotoBlob, isAcceptableFace } from '@/lib/face-detection'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { PrimaryButton } from '@/components/ui/primary-button'
 import { ValidationPanel } from './validation-panel'
 import { SyncPanel } from './sync-panel'
 import { KioskCaptureTab } from './kiosk-capture-tab'
 import { WebcamCaptureTab } from './webcam-capture-tab'
 import { UploadCaptureTab } from './upload-capture-tab'
-import type { Employee, Enrollment } from '@/types/api'
+import type { Employee, Enrollment, EnrollmentDevicePush } from '@/types/api'
 
 type CaptureTab = 'hikvision' | 'webcam' | 'upload'
 
 interface EnrollmentModalProps {
   open: boolean
   employee: Employee | null
+  initialEnrollmentId?: string | null
   onClose: () => void
 }
 
-function isTerminal(enrollment: Enrollment): boolean {
-  return enrollment.device_pushes.every(
-    p => p.status === 'success' || p.status === 'failed'
+function shouldPollEnrollment(enrollment: Enrollment): boolean {
+  return enrollment.status === 'in_progress'
+    || enrollment.device_pushes.some(
+      (push) => push.status === 'pending' || push.status === 'in_progress',
+    )
+}
+
+function showRecoveryToast(enrollmentId: string, pushes: EnrollmentDevicePush[]) {
+  const successCount = pushes.filter((push) => push.status === 'success').length
+  toast(
+    `Enrolamiento en curso — ${successCount}/${pushes.length} dispositivos`,
+    { id: `enrollment-${enrollmentId}`, duration: Infinity },
   )
 }
 
-export function EnrollmentModal({ open, employee, onClose }: EnrollmentModalProps) {
+export function EnrollmentModal({
+  open,
+  employee,
+  initialEnrollmentId = null,
+  onClose,
+}: EnrollmentModalProps) {
+  const queryClient = useQueryClient()
   const [tab, setTab] = useState<CaptureTab>('hikvision')
-  const [photoBlob, setPhotoBlob] = useState<Blob | null>(null)
-  const [enrollmentId, setEnrollmentId] = useState<string | null>(null)
-  const [allValidationGreen, setAllValidationGreen] = useState(false)
-  const [selectedKioskDevice, setSelectedKioskDevice] = useState('')
-  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [capturedPhoto, setCapturedPhoto] = useState<CapturedPhoto | null>(null)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [enrollmentId, setEnrollmentId] = useState<string | null>(initialEnrollmentId)
+  const generationRef = useRef(0)
+  const enrollmentIdRef = useRef<string | null>(initialEnrollmentId)
+  const immediatePushesRef = useRef<EnrollmentDevicePush[]>([])
+  const terminalHandledRef = useRef<string | null>(null)
+  const closedDuringSubmitRef = useRef(false)
+  const openRef = useRef(open)
+  openRef.current = open
+  const sessionIdentity = initialEnrollmentId
+    ? `enrollment:${initialEnrollmentId}`
+    : employee
+      ? `employee:${employee.id}`
+      : 'none'
+  const sessionIdentityRef = useRef(sessionIdentity)
 
-  // Reset state when modal closes/opens for a new employee
-  useEffect(() => {
-    if (!open) {
-      setTab('hikvision')
-      setPhotoBlob(null)
-      setAllValidationGreen(false)
-    }
-  }, [open])
-
-  // Submit enrollment mutation
   const submitMutation = useMutation({
-    mutationFn: () => {
-      if (!employee || !photoBlob) throw new Error('Missing employee or photo')
-      const fd = new FormData()
-      fd.append('employee_id', employee.id)
-      fd.append(
-        'captured_via',
-        tab === 'hikvision' ? 'device' : tab === 'webcam' ? 'webcam' : 'upload'
-      )
-      if (tab === 'hikvision' && selectedKioskDevice) {
-        fd.append('source_device_id', selectedKioskDevice)
+    mutationFn: async (request: {
+      generation: number
+      employeeId: string
+      photo: CapturedPhoto
+    }) => ({
+      generation: request.generation,
+      response: await createEnrollment({
+        employeeId: request.employeeId,
+        capturedVia: request.photo.capturedVia,
+        sourceDeviceId: request.photo.sourceDeviceId,
+        photo: request.photo.blob,
+        faceQualityScore: request.photo.analysis,
+      }),
+    }),
+    onSuccess: ({ generation, response }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ['enrollment', response.enrollment_id],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['enrollments', 'in_progress'] })
+      if (generation !== generationRef.current) return
+      immediatePushesRef.current = response.device_pushes
+      terminalHandledRef.current = null
+      enrollmentIdRef.current = response.enrollment_id
+      setEnrollmentId(response.enrollment_id)
+      if (!openRef.current || closedDuringSubmitRef.current) {
+        showRecoveryToast(response.enrollment_id, response.device_pushes)
       }
-      fd.append('photo', photoBlob)
-      return api
-        .post('/enrollments', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-        .then(r => r.data as { enrollment_id: string; device_pushes: Enrollment['device_pushes'] })
+      closedDuringSubmitRef.current = false
     },
-    onSuccess: (data) => {
-      setEnrollmentId(data.enrollment_id)
-    },
-    onError: (err: unknown) => {
-      const msg =
-        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        'No se pudo registrar el enrolamiento.'
-      toast.error(msg)
+    onError: (error: unknown, request) => {
+      if (request.generation !== generationRef.current) return
+      const responseData = (error as {
+        response?: { data?: { error?: { message?: string }; message?: string } }
+      })?.response?.data
+      const message = responseData?.error?.message
+        ?? responseData?.message
+        ?? (error instanceof Error ? error.message : null)
+        ?? 'No se pudo registrar el enrolamiento.'
+      toast.error(message)
     },
   })
 
-  // Poll enrollment status
+  useEffect(() => {
+    if (sessionIdentityRef.current === sessionIdentity) return
+    sessionIdentityRef.current = sessionIdentity
+    generationRef.current += 1
+    const previousEnrollmentId = enrollmentIdRef.current
+    if (previousEnrollmentId) {
+      void queryClient.cancelQueries({ queryKey: ['enrollment', previousEnrollmentId] })
+      toast.dismiss(`enrollment-${previousEnrollmentId}`)
+    }
+    enrollmentIdRef.current = initialEnrollmentId
+    immediatePushesRef.current = []
+    terminalHandledRef.current = null
+    closedDuringSubmitRef.current = false
+    setEnrollmentId(initialEnrollmentId)
+    setTab('hikvision')
+    setCapturedPhoto(null)
+    setAnalyzing(false)
+    submitMutation.reset()
+  // Session identity is the only reset boundary; closing the same session must keep polling.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionIdentity])
+
   const { data: enrollmentStatus } = useQuery<Enrollment>({
     queryKey: ['enrollment', enrollmentId],
-    queryFn: () => api.get(`/enrollments/${enrollmentId}`).then(r => r.data),
-    enabled: !!enrollmentId,
-    refetchInterval: (q) => {
-      const d = q.state.data as Enrollment | undefined
-      if (!d) return 1500
-      return isTerminal(d) ? false : 1500
+    queryFn: () => getEnrollment(enrollmentId as string),
+    enabled: enrollmentId !== null,
+    refetchInterval: (query) => {
+      const enrollment = query.state.data as Enrollment | undefined
+      if (!enrollment) return 1500
+      return shouldPollEnrollment(enrollment) ? 1500 : false
     },
   })
 
-  // Terminal toast — fires once when status flips to all-terminal
   useEffect(() => {
-    if (!enrollmentStatus || !enrollmentId || !employee) return
-    if (!isTerminal(enrollmentStatus)) return
-
-    const succ = enrollmentStatus.device_pushes.filter(p => p.status === 'success').length
-    const tot = enrollmentStatus.device_pushes.length
-
-    if (succ === tot) {
-      toast.success(`Enrolamiento completado para ${employee.name}.`, {
-        id: `enrollment-${enrollmentId}`,
-      })
-    } else if (succ > 0) {
-      toast.warning(
-        `Enrolamiento parcial: ${succ}/${tot}. Revisa los dispositivos fallidos.`,
-        { id: `enrollment-${enrollmentId}` }
-      )
-    } else {
-      toast.error('Enrolamiento falló en todos los dispositivos. Reintenta desde el panel.', {
-        id: `enrollment-${enrollmentId}`,
-      })
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    enrollmentStatus?.status,
-    enrollmentStatus?.device_pushes.map(p => p.status).join(','),
-  ])
-
-  // Modal close behavior (D-09): keep polling alive, fire sticky toast
-  function handleClose() {
     if (
-      enrollmentId &&
-      enrollmentStatus &&
-      !isTerminal(enrollmentStatus)
-    ) {
-      const successCount = enrollmentStatus.device_pushes.filter(
-        p => p.status === 'success'
-      ).length
-      toast(
-        `Enrolamiento en curso — ${successCount}/${enrollmentStatus.device_pushes.length} dispositivos`,
-        { id: `enrollment-${enrollmentId}`, duration: Infinity }
-      )
+      !enrollmentStatus
+      || !enrollmentId
+      || enrollmentIdRef.current !== enrollmentId
+      || enrollmentStatus.id !== enrollmentId
+    ) return
+
+    if (shouldPollEnrollment(enrollmentStatus)) {
+      terminalHandledRef.current = null
+      return
     }
+
+    if (terminalHandledRef.current !== enrollmentId) {
+      terminalHandledRef.current = enrollmentId
+      void queryClient.invalidateQueries({ queryKey: ['enrollments', 'in_progress'] })
+
+      const successCount = enrollmentStatus.device_pushes.filter(
+        (push) => push.status === 'success',
+      ).length
+      const totalCount = enrollmentStatus.device_pushes.length
+      const employeeName = employee?.name ?? enrollmentStatus.employee_name
+
+      if (enrollmentStatus.status === 'success') {
+        toast.success(`Enrolamiento completado para ${employeeName}.`, {
+          id: `enrollment-${enrollmentId}`,
+        })
+      } else if (enrollmentStatus.status === 'partial') {
+        toast.warning(
+          `Enrolamiento parcial: ${successCount}/${totalCount}. Revisa los dispositivos fallidos.`,
+          { id: `enrollment-${enrollmentId}` },
+        )
+      } else {
+        toast.error('Enrolamiento falló en todos los dispositivos. Reintenta desde el panel.', {
+          id: `enrollment-${enrollmentId}`,
+        })
+      }
+    }
+
+    if (!open) {
+      void queryClient.cancelQueries({ queryKey: ['enrollment', enrollmentId] })
+      enrollmentIdRef.current = null
+      immediatePushesRef.current = []
+      terminalHandledRef.current = null
+      closedDuringSubmitRef.current = false
+      setEnrollmentId(null)
+      resetCapturedPhoto()
+      setTab('hikvision')
+      submitMutation.reset()
+    }
+  }, [employee?.name, enrollmentId, enrollmentStatus, open, queryClient, submitMutation])
+
+  function resetCapturedPhoto() {
+    generationRef.current += 1
+    setCapturedPhoto(null)
+    setAnalyzing(false)
+  }
+
+  function clearCapturedPhoto() {
+    if (submitMutation.isPending) return
+    resetCapturedPhoto()
+  }
+
+  async function handleCandidate(candidate: CapturedPhotoCandidate) {
+    if (submitMutation.isPending) return
+    const generation = ++generationRef.current
+    setCapturedPhoto(null)
+    setAnalyzing(true)
+    try {
+      const analysis = await analyzePhotoBlob(candidate.blob)
+      if (generation !== generationRef.current) return
+      setCapturedPhoto({ ...candidate, analysis })
+    } catch {
+      if (generation !== generationRef.current) return
+      setCapturedPhoto(null)
+      toast.error('No se pudo analizar la calidad de la foto.')
+    } finally {
+      if (generation === generationRef.current) setAnalyzing(false)
+    }
+  }
+
+  function handleTabChange(nextTab: CaptureTab) {
+    if (submitMutation.isPending) return
+    if (nextTab === tab) return
+    clearCapturedPhoto()
+    setTab(nextTab)
+  }
+
+  function handleSubmit() {
+    if (!employee || !capturedPhoto || !isAcceptableFace(capturedPhoto.analysis)) return
+    closedDuringSubmitRef.current = false
+    submitMutation.mutate({
+      generation: generationRef.current,
+      employeeId: employee.id,
+      photo: capturedPhoto,
+    })
+  }
+
+  function handleClose() {
+    if (submitMutation.isPending && !enrollmentId) {
+      closedDuringSubmitRef.current = true
+      onClose()
+      return
+    }
+
+    if (enrollmentId) {
+      const currentStatus = enrollmentStatus?.id === enrollmentId ? enrollmentStatus : null
+      if (!currentStatus || shouldPollEnrollment(currentStatus)) {
+        showRecoveryToast(
+          enrollmentId,
+          currentStatus?.device_pushes ?? immediatePushesRef.current,
+        )
+        onClose()
+        return
+      }
+
+      generationRef.current += 1
+      void queryClient.cancelQueries({ queryKey: ['enrollment', enrollmentId] })
+      enrollmentIdRef.current = null
+      immediatePushesRef.current = []
+      terminalHandledRef.current = null
+      closedDuringSubmitRef.current = false
+      setEnrollmentId(null)
+      clearCapturedPhoto()
+      setTab('hikvision')
+      submitMutation.reset()
+      onClose()
+      return
+    }
+
+    clearCapturedPhoto()
+    closedDuringSubmitRef.current = false
+    setTab('hikvision')
+    submitMutation.reset()
     onClose()
   }
 
-  function handleOpenChange(isOpen: boolean) {
-    if (!isOpen) handleClose()
-  }
-
-  const isSyncing = !!enrollmentId
-  const canSubmit = !!photoBlob && allValidationGreen && !submitMutation.isPending && !isSyncing
-
-  const TABS: Array<{ key: CaptureTab; label: string }> = [
+  const isSyncing = enrollmentId !== null
+  const canSubmit = employee !== null
+    && capturedPhoto !== null
+    && isAcceptableFace(capturedPhoto.analysis)
+    && !analyzing
+    && !submitMutation.isPending
+    && !isSyncing
+  const displayName = employee?.name ?? enrollmentStatus?.employee_name
+  const displayCode = employee?.employee_code ?? enrollmentStatus?.employee_code
+  const tabs: Array<{ key: CaptureTab; label: string }> = [
     { key: 'hikvision', label: 'Lector Hikvision' },
     { key: 'webcam', label: 'Webcam' },
     { key: 'upload', label: 'Subir JPG' },
   ]
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) handleClose() }}>
       <DialogContent
         className="max-w-[700px] p-0 overflow-hidden"
         data-testid="enrollment-modal"
       >
         <div className="flex flex-col max-h-[88vh]">
-          {/* ── Header ──────────────────────────────────────────── */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-[#EEF0F2]">
             <div className="flex flex-col gap-0.5">
-              <h2
+              <DialogTitle
                 className="text-[20px] font-bold text-[#1A1A1A] leading-tight"
                 style={{ fontFamily: 'var(--font-sans)' }}
               >
                 Enrolamiento Facial
-              </h2>
-              {employee && (
+              </DialogTitle>
+              {displayName && (
                 <p
                   className="text-[13px] italic text-[#666666]"
                   style={{ fontFamily: 'var(--font-serif)' }}
                 >
-                  {employee.name}
-                  {employee.employee_code ? ` — ${employee.employee_code}` : ''}
+                  {displayName}
+                  {displayCode ? ` — ${displayCode}` : ''}
                 </p>
               )}
             </div>
             <button
               type="button"
-              aria-label="Cerrar"
+              aria-label="Cerrar enrolamiento"
               onClick={handleClose}
               className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#F3F4F6] transition-colors"
             >
@@ -182,95 +331,88 @@ export function EnrollmentModal({ open, employee, onClose }: EnrollmentModalProp
             </button>
           </div>
 
-          {/* ── Tabs ────────────────────────────────────────────── */}
-          {!isSyncing && (
-            <div className="flex items-center px-6 border-b border-[#EEF0F2]">
-              {TABS.map((t) => {
-                const active = tab === t.key
-                return (
-                  <button
-                    key={t.key}
-                    type="button"
-                    onClick={() => {
-                      setTab(t.key)
-                      setPhotoBlob(null)
-                      setAllValidationGreen(false)
-                    }}
-                    data-testid={`enroll-tab-${t.key}`}
-                    className={`px-4 py-3 text-[13px] transition-colors border-b-2 ${
-                      active
-                        ? 'text-[#1E3FB8] font-semibold border-[#1E3FB8]'
-                        : 'text-[#666666] border-transparent hover:text-[#1A1A1A]'
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                )
-              })}
+          <fieldset disabled={submitMutation.isPending} className="contents">
+            {!isSyncing && employee && (
+              <div className="flex items-center px-6 border-b border-[#EEF0F2]">
+                {tabs.map((nextTab) => {
+                  const active = tab === nextTab.key
+                  return (
+                    <button
+                      key={nextTab.key}
+                      type="button"
+                      disabled={submitMutation.isPending}
+                      onClick={() => handleTabChange(nextTab.key)}
+                      data-testid={`enroll-tab-${nextTab.key}`}
+                      className={`px-4 py-3 text-[13px] transition-colors border-b-2 ${
+                        active
+                          ? 'text-[#1E3FB8] font-semibold border-[#1E3FB8]'
+                          : 'text-[#666666] border-transparent hover:text-[#1A1A1A]'
+                      }`}
+                    >
+                      {nextTab.label}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            <div className="flex-1 px-6 py-5 flex gap-6 overflow-y-auto">
+              <div className="flex-1 min-w-0">
+                {!isSyncing && employee ? (
+                  <>
+                    {tab === 'hikvision' && (
+                      <KioskCaptureTab
+                        employeeId={employee.id}
+                        onCaptured={handleCandidate}
+                        onCleared={clearCapturedPhoto}
+                      />
+                    )}
+                    {tab === 'webcam' && (
+                      <WebcamCaptureTab
+                        onCaptured={handleCandidate}
+                        onCleared={clearCapturedPhoto}
+                      />
+                    )}
+                    {tab === 'upload' && (
+                      <UploadCaptureTab
+                        onCaptured={handleCandidate}
+                        onCleared={clearCapturedPhoto}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[13px] text-[#666666]">
+                    Enrolamiento enviado. Monitoreando sincronización por dispositivo…
+                  </p>
+                )}
+              </div>
+
+              <div className="w-[280px] shrink-0 flex flex-col gap-5">
+                {!isSyncing && (
+                  <ValidationPanel analysis={capturedPhoto?.analysis ?? null} analyzing={analyzing} />
+                )}
+
+                {enrollmentId && enrollmentStatus?.id === enrollmentId && (
+                  <SyncPanel
+                    device_pushes={enrollmentStatus.device_pushes}
+                    enrollmentId={enrollmentId}
+                  />
+                )}
+              </div>
             </div>
-          )}
+          </fieldset>
 
-          {/* ── Body (2 columns) ────────────────────────────────── */}
-          <div className="flex-1 px-6 py-5 flex gap-6 overflow-y-auto">
-            {/* Left column: capture content */}
-            <div className="flex-1 min-w-0">
-              {!isSyncing ? (
-                <>
-                  {tab === 'hikvision' && employee && (
-                    <KioskCaptureTab
-                      employeeId={employee.id}
-                      onCaptured={(blob) => setPhotoBlob(blob)}
-                    />
-                  )}
-                  {tab === 'webcam' && (
-                    <WebcamCaptureTab
-                      onCaptured={(blob) => setPhotoBlob(blob)}
-                      onValidationChange={setAllValidationGreen}
-                    />
-                  )}
-                  {tab === 'upload' && (
-                    <UploadCaptureTab
-                      onCaptured={(file) => {
-                        setPhotoBlob(file)
-                        setAllValidationGreen(true)
-                      }}
-                    />
-                  )}
-                </>
-              ) : (
-                <p className="text-[13px] text-[#666666]">
-                  Enrolamiento enviado. Monitoreando sincronización por dispositivo…
-                </p>
-              )}
-            </div>
-
-            {/* Right column: validation + sync (280px per design) */}
-            <div className="w-[280px] shrink-0 flex flex-col gap-5">
-              {!isSyncing && tab === 'webcam' && (
-                <ValidationPanel
-                  videoRef={videoRef}
-                  onValidationChange={setAllValidationGreen}
-                  active={tab === 'webcam' && !photoBlob}
-                />
-              )}
-
-              {enrollmentId && enrollmentStatus && (
-                <SyncPanel
-                  device_pushes={enrollmentStatus.device_pushes}
-                  enrollmentId={enrollmentId}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* ── Footer ──────────────────────────────────────────── */}
           <div className="flex items-center justify-between px-6 py-3 border-t border-[#EEF0F2] bg-[#FAFBFC]">
             <p className="text-[11px] text-[#666666] flex-1 pr-4">
-              {!photoBlob
-                ? 'Captura una foto para continuar.'
-                : !allValidationGreen && tab !== 'upload'
-                ? 'Espera que las validaciones de IA sean verdes.'
-                : 'Listo para enrolar.'}
+              {isSyncing
+                ? 'La sincronización continúa aunque cierres esta ventana.'
+                : analyzing
+                  ? 'Analizando la calidad de la foto.'
+                  : !capturedPhoto
+                    ? 'Captura una foto para continuar.'
+                    : !isAcceptableFace(capturedPhoto.analysis)
+                      ? 'La foto no cumple las validaciones de IA.'
+                      : 'Listo para enrolar.'}
             </p>
             <div className="flex items-center gap-3">
               <button
@@ -280,13 +422,13 @@ export function EnrollmentModal({ open, employee, onClose }: EnrollmentModalProp
               >
                 Cerrar
               </button>
-              {!isSyncing && (
+              {!isSyncing && employee && (
                 <PrimaryButton
                   type="button"
                   size="md"
                   disabled={!canSubmit}
                   aria-disabled={!canSubmit}
-                  onClick={() => submitMutation.mutate()}
+                  onClick={handleSubmit}
                 >
                   {submitMutation.isPending ? 'Enviando…' : 'Enrolar'}
                 </PrimaryButton>

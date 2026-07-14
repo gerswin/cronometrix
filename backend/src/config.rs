@@ -66,14 +66,14 @@ impl fmt::Debug for Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let database_path = std::env::var("CRONOMETRIX_DB_PATH")
-            .unwrap_or_else(|_| "cronometrix.db".to_string());
+        let database_path =
+            std::env::var("CRONOMETRIX_DB_PATH").unwrap_or_else(|_| "cronometrix.db".to_string());
 
         let turso_url = std::env::var("TURSO_DATABASE_URL").unwrap_or_default();
         let turso_token = std::env::var("TURSO_AUTH_TOKEN").unwrap_or_default();
 
-        let jwt_secret = std::env::var("JWT_SECRET")
-            .context("JWT_SECRET environment variable is required")?;
+        let jwt_secret =
+            std::env::var("JWT_SECRET").context("JWT_SECRET environment variable is required")?;
 
         if jwt_secret.len() < 32 {
             anyhow::bail!(
@@ -82,8 +82,7 @@ impl Config {
             );
         }
 
-        let server_host = std::env::var("SERVER_HOST")
-            .unwrap_or_else(|_| "0.0.0.0".to_string());
+        let server_host = std::env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
 
         let server_port = std::env::var("SERVER_PORT")
             .unwrap_or_else(|_| "3001".to_string())
@@ -99,10 +98,9 @@ impl Config {
 
         let license_jwt_path = std::env::var("LICENSE_JWT_PATH")
             .unwrap_or_else(|_| "/opt/cronometrix/data/license.jwt".to_string());
-        let do_functions_activate_url = std::env::var("DO_FUNCTIONS_ACTIVATE_URL")
-            .unwrap_or_default();
-        let do_functions_renew_url = std::env::var("DO_FUNCTIONS_RENEW_URL")
-            .unwrap_or_default();
+        let do_functions_activate_url =
+            std::env::var("DO_FUNCTIONS_ACTIVATE_URL").unwrap_or_default();
+        let do_functions_renew_url = std::env::var("DO_FUNCTIONS_RENEW_URL").unwrap_or_default();
 
         let cors_allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS")
             .unwrap_or_default()
@@ -121,9 +119,9 @@ impl Config {
         // `America/Caracas` gives unambiguous local-date arithmetic. Any future
         // DST-observing market plugs in by setting TZ.
         let tz_str = std::env::var("TZ").unwrap_or_else(|_| "America/Caracas".to_string());
-        let timezone = tz_str.parse::<chrono_tz::Tz>().map_err(|_| {
-            anyhow::anyhow!("Unknown IANA timezone in TZ env var: {}", tz_str)
-        })?;
+        let timezone = tz_str
+            .parse::<chrono_tz::Tz>()
+            .map_err(|_| anyhow::anyhow!("Unknown IANA timezone in TZ env var: {}", tz_str))?;
 
         Ok(Config {
             database_path,
@@ -166,13 +164,10 @@ fn load_device_creds_key() -> Result<[u8; 32]> {
         .decode(raw.as_bytes())
         .context("DEVICE_CREDS_KEY must be valid base64")?;
 
-    decoded
-        .as_slice()
-        .try_into()
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "DEVICE_CREDS_KEY must decode to exactly 32 bytes (got {} bytes)",
-                decoded.len()
-            )
-        })
+    decoded.as_slice().try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "DEVICE_CREDS_KEY must decode to exactly 32 bytes (got {} bytes)",
+            decoded.len()
+        )
+    })
 }

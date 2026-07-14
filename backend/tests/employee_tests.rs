@@ -2,16 +2,16 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use axum::Router;
 use axum::routing::{delete, get, patch, post};
+use axum::Router;
 use cronometrix_api::auth;
+use cronometrix_api::config::Config;
 use cronometrix_api::departments;
 use cronometrix_api::employees;
-use cronometrix_api::config::Config;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
-use http_body_util::BodyExt;
 
 /// Build a test app with employee + department routes (department needed for FK
 /// constraint tests). Returns (Router, TempDir) per Plan 08-02 D-20: caller binds
@@ -41,7 +41,10 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         .route("/employees", get(employees::handlers::list_employees))
         .route("/employees/{id}", get(employees::handlers::get_employee))
         .route("/departments", get(departments::handlers::list_departments))
-        .route("/departments/{id}", get(departments::handlers::get_department))
+        .route(
+            "/departments/{id}",
+            get(departments::handlers::get_department),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
@@ -50,8 +53,14 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
     // Supervisor+ routes
     let supervisor_routes = Router::new()
         .route("/employees", post(employees::handlers::create_employee))
-        .route("/employees/{id}", patch(employees::handlers::update_employee))
-        .route("/departments", post(departments::handlers::create_department))
+        .route(
+            "/employees/{id}",
+            patch(employees::handlers::update_employee),
+        )
+        .route(
+            "/departments",
+            post(departments::handlers::create_department),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
@@ -59,7 +68,10 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
 
     // Admin-only routes
     let admin_routes = Router::new()
-        .route("/employees/{id}", delete(employees::handlers::deactivate_employee))
+        .route(
+            "/employees/{id}",
+            delete(employees::handlers::deactivate_employee),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,
@@ -139,14 +151,23 @@ async fn crud_employee_endpoints() {
     );
 
     let created = body_to_json(create_resp.into_body()).await;
-    let emp_id = created["id"].as_str().expect("id should be present").to_string();
+    let emp_id = created["id"]
+        .as_str()
+        .expect("id should be present")
+        .to_string();
     assert_eq!(created["employee_code"], "EMP001");
     assert_eq!(created["name"], "Alice Smith");
     assert_eq!(created["department_id"], dept_id);
     assert_eq!(created["status"], "active");
     assert_eq!(created["version"], 1);
-    assert!(created["created_at"].is_string(), "created_at should be ISO 8601 string");
-    assert!(created["updated_at"].is_string(), "updated_at should be ISO 8601 string");
+    assert!(
+        created["created_at"].is_string(),
+        "created_at should be ISO 8601 string"
+    );
+    assert!(
+        created["updated_at"].is_string(),
+        "updated_at should be ISO 8601 string"
+    );
 
     // GET list — employee should appear
     let list_req = Request::builder()
@@ -159,14 +180,20 @@ async fn crud_employee_endpoints() {
     let list_resp = app.clone().oneshot(list_req).await.unwrap();
     assert_eq!(list_resp.status(), StatusCode::OK);
     let list_body = body_to_json(list_resp.into_body()).await;
-    assert!(list_body["total"].as_i64().unwrap() >= 1, "Total should be >= 1");
+    assert!(
+        list_body["total"].as_i64().unwrap() >= 1,
+        "Total should be >= 1"
+    );
     let names: Vec<&str> = list_body["data"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|e| e["name"].as_str())
         .collect();
-    assert!(names.contains(&"Alice Smith"), "Alice Smith should appear in list");
+    assert!(
+        names.contains(&"Alice Smith"),
+        "Alice Smith should appear in list"
+    );
 
     // GET by ID
     let get_req = Request::builder()
@@ -198,7 +225,11 @@ async fn crud_employee_endpoints() {
         .unwrap();
 
     let patch_resp = app.clone().oneshot(patch_req).await.unwrap();
-    assert_eq!(patch_resp.status(), StatusCode::OK, "PATCH should return 200");
+    assert_eq!(
+        patch_resp.status(),
+        StatusCode::OK,
+        "PATCH should return 200"
+    );
     let patched = body_to_json(patch_resp.into_body()).await;
     assert_eq!(patched["name"], "Alice Johnson", "Name should be updated");
     assert_eq!(patched["version"], 2, "Version should increment to 2");
@@ -273,7 +304,7 @@ async fn soft_delete_only_no_hard_delete() {
     // Verify it does NOT appear in the default active listing
     let list_req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/employees?status=active"))
+        .uri("/api/v1/employees?status=active".to_string())
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();
@@ -295,7 +326,7 @@ async fn soft_delete_only_no_hard_delete() {
     // Verify it DOES appear when filtering by status=inactive
     let inactive_req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/v1/employees?status=inactive"))
+        .uri("/api/v1/employees?status=inactive".to_string())
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();
@@ -375,10 +406,7 @@ async fn employee_search_and_filter() {
     let dept_resp = app.clone().oneshot(dept_req).await.unwrap();
     assert_eq!(dept_resp.status(), StatusCode::OK);
     let dept_body = body_to_json(dept_resp.into_body()).await;
-    assert_eq!(
-        dept_body["total"], 1,
-        "Should find 1 employee in dept_b"
-    );
+    assert_eq!(dept_body["total"], 1, "Should find 1 employee in dept_b");
     assert_eq!(dept_body["data"][0]["name"], "Eve Beta");
 
     // Filter by status=active (default) — all 3 should appear
@@ -391,10 +419,7 @@ async fn employee_search_and_filter() {
     let active_resp = app.clone().oneshot(active_req).await.unwrap();
     assert_eq!(active_resp.status(), StatusCode::OK);
     let active_body = body_to_json(active_resp.into_body()).await;
-    assert_eq!(
-        active_body["total"], 3,
-        "Should find 3 active employees"
-    );
+    assert_eq!(active_body["total"], 3, "Should find 3 active employees");
 }
 
 #[tokio::test]

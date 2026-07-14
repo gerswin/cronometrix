@@ -1,54 +1,66 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
-import { Camera, Check, RotateCcw, AlertTriangle } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Camera, Check, RotateCcw } from 'lucide-react'
+import type { CapturedPhotoCandidate } from '@/lib/enrollment-api'
 import { PrimaryButton } from '@/components/ui/primary-button'
 
 interface WebcamCaptureTabProps {
-  onCaptured: (blob: Blob) => void
-  onValidationChange: (allGreen: boolean) => void
+  onCaptured: (candidate: CapturedPhotoCandidate) => void
+  onCleared: () => void
 }
 
-export function WebcamCaptureTab({ onCaptured, onValidationChange }: WebcamCaptureTabProps) {
+const MEDIA_CONSTRAINTS: MediaStreamConstraints = {
+  video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+  audio: false,
+}
+
+export function WebcamCaptureTab({ onCaptured, onCleared }: WebcamCaptureTabProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const mountedRef = useRef(false)
+  const streamGenerationRef = useRef(0)
+  const captureGenerationRef = useRef(0)
+  const previewUrlRef = useRef<string | null>(null)
   const [permissionDenied, setPermissionDenied] = useState(false)
-  const [frozen, setFrozen] = useState(false)
   const [frozenBlob, setFrozenBlob] = useState<Blob | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
-  // Start webcam on mount, stop on unmount (Pitfall 6)
-  useEffect(() => {
-    let cancelled = false
+  const requestStream = useCallback(async (reportAnyError: boolean) => {
+    const generation = ++streamGenerationRef.current
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS)
+      if (!mountedRef.current || generation !== streamGenerationRef.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
 
-    navigator.mediaDevices
-      .getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-        audio: false,
-      })
-      .then((stream) => {
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        streamRef.current = stream
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          videoRef.current.play().catch(() => {})
-        }
-      })
-      .catch((err) => {
-        if (!cancelled && err instanceof DOMException) {
-          setPermissionDenied(true)
-        }
-      })
-
-    return () => {
-      cancelled = true
-      // Pitfall 6: stop all tracks on unmount
-      streamRef.current?.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = stream
+      const video = videoRef.current
+      if (video) {
+        video.srcObject = stream
+        video.play().catch(() => {})
+      }
+    } catch (error) {
+      if (!mountedRef.current || generation !== streamGenerationRef.current) return
+      if (reportAnyError || error instanceof DOMException) setPermissionDenied(true)
     }
   }, [])
+
+  useEffect(() => {
+    mountedRef.current = true
+    queueMicrotask(() => { void requestStream(false) })
+    return () => {
+      mountedRef.current = false
+      streamGenerationRef.current += 1
+      captureGenerationRef.current += 1
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = null
+    }
+  }, [requestStream])
 
   function captureFrame() {
     const video = videoRef.current
@@ -58,48 +70,37 @@ export function WebcamCaptureTab({ onCaptured, onValidationChange }: WebcamCaptu
     captureCanvasRef.current = canvas
     canvas.width = 640
     canvas.height = 480
-    const ctx = canvas.getContext('2d')!
-    ctx.drawImage(video, 0, 0, 640, 480)
+    const context = canvas.getContext('2d')
+    if (!context) return
+    context.drawImage(video, 0, 0, 640, 480)
+    const generation = ++captureGenerationRef.current
 
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return
-        setFrozenBlob(blob)
-        setFrozen(true)
-        // Stop the stream so the camera light turns off
-        streamRef.current?.getTracks().forEach((t) => t.stop())
-        streamRef.current = null
-      },
-      'image/jpeg',
-      0.92
-    )
+    canvas.toBlob((blob) => {
+      if (!blob || !mountedRef.current || generation !== captureGenerationRef.current) return
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      const objectUrl = URL.createObjectURL(blob)
+      previewUrlRef.current = objectUrl
+      setFrozenBlob(blob)
+      setPreviewUrl(objectUrl)
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }, 'image/jpeg', 0.92)
   }
 
   function accept() {
-    if (frozenBlob) {
-      onCaptured(frozenBlob)
-    }
+    if (!frozenBlob) return
+    onCaptured({ blob: frozenBlob, capturedVia: 'webcam', sourceDeviceId: null })
   }
 
   function retake() {
-    setFrozen(false)
+    captureGenerationRef.current += 1
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    previewUrlRef.current = null
     setFrozenBlob(null)
-    onValidationChange(false)
-
-    // Restart stream
-    navigator.mediaDevices
-      .getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-        audio: false,
-      })
-      .then((stream) => {
-        streamRef.current = stream
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          videoRef.current.play().catch(() => {})
-        }
-      })
-      .catch(() => setPermissionDenied(true))
+    setPreviewUrl(null)
+    setPermissionDenied(false)
+    onCleared()
+    void requestStream(true)
   }
 
   if (permissionDenied) {
@@ -114,25 +115,22 @@ export function WebcamCaptureTab({ onCaptured, onValidationChange }: WebcamCaptu
     )
   }
 
+  const frozen = frozenBlob !== null
+
   return (
     <div className="space-y-3">
       <div className="relative rounded-md overflow-hidden bg-slate-900" style={{ width: 320, height: 240 }}>
-        {/* Live preview */}
         <video
           ref={videoRef}
           className={`w-full h-full object-cover ${frozen ? 'hidden' : ''}`}
           muted
           playsInline
         />
-        {/* Frozen frame preview */}
-        {frozen && frozenBlob && (
-          <img
-            src={URL.createObjectURL(frozenBlob)}
-            alt="Captura"
-            className="w-full h-full object-cover"
-          />
+        {frozen && previewUrl && (
+          // Blob-backed user preview cannot use the Next image optimizer.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={previewUrl} alt="Captura" className="w-full h-full object-cover" />
         )}
-        {/* Hidden capture canvas */}
         <canvas ref={captureCanvasRef} className="hidden" />
       </div>
 

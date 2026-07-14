@@ -6,10 +6,13 @@ export const SEL = {
   // Layout
   topBarTitle: 'topbar-title',
 
-  // Login (English copy per D-19 Addendum — login page is English)
-  loginUsername: { role: 'textbox', name: 'Username' } as const,
-  loginPassword: { role: 'textbox', name: 'Password' } as const,
-  loginSubmit: { role: 'button', name: 'Log in' } as const,
+  // Login (Spanish copy per the 2026-07-13 Phase 12 supersession of D-19)
+  loginHeading: { role: 'heading', name: 'Iniciar Sesión' } as const,
+  loginUsername: { role: 'textbox', name: 'Usuario' } as const,
+  loginPassword: { name: 'Contraseña' } as const,
+  loginSubmit: { role: 'button', name: 'Iniciar Sesión' } as const,
+  loginShowPassword: { role: 'button', name: 'Mostrar contraseña' } as const,
+  loginHidePassword: { role: 'button', name: 'Ocultar contraseña' } as const,
 
   // Dashboard KPIs (Spanish UI per D-19)
   kpiPresentes: 'kpi-empleados-presentes',
@@ -70,13 +73,16 @@ export const SEL = {
   newEmpForm: 'new-employee-form',
   newEmpSubmit: 'new-employee-submit',
   empActions: (id: string) => `emp-actions-${id}`,
-  empActionEdit: (id: string) => `emp-action-edit-${id}`,
-  empActionDeactivate: (id: string) => `emp-action-deactivate-${id}`,
+  empActionEdit: (id: string) => `employee-edit-${id}`,
+  empActionDeactivate: (id: string) => `employee-deactivate-${id}`,
 
   // Reports page
   reportsPage: 'reports-page',
-  exportExcelBtn: 'export-excel-btn',
-  exportPdfBtn: 'export-pdf-btn',
+  reportPeriodTab: (period: 'biweekly' | 'weekly' | 'monthly') =>
+    `period-tab-${period}`,
+  exportExcelBtn: 'export-excel',
+  exportPdfBtn: 'export-pdf',
+  exportCsvBtn: 'export-csv',
 
   // RBAC / Access denied
   accessRestricted: 'access-restricted',
@@ -88,4 +94,14 @@ export const SEL = {
   navDevices: 'nav-devices',
   navReports: 'nav-reports',
   navAudit: 'nav-audit',
+
+  // Facial enrollment
+  enrollmentPage: 'enrollment-page',
+  enrollmentModal: 'enrollment-modal',
+  enrollmentDeviceTab: 'enroll-tab-hikvision',
+  enrollmentRow: (id: string) => `enrollment-row-${id}`,
+  enrollmentReopen: (id: string) => `enrollment-reopen-${id}`,
+  enrollmentPushRow: (deviceId: string) => `enrollment-push-row-${deviceId}`,
+  enrollmentPushStatus: (deviceId: string) => `enrollment-push-status-${deviceId}`,
+  enrollmentRetry: (deviceId: string) => `enrollment-retry-${deviceId}`,
 } as const

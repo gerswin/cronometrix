@@ -209,7 +209,8 @@ fn caracas_epoch(date: NaiveDate, hh: u32, mm: u32) -> i64 {
 async fn create_leave_medical_with_evidence() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state.clone());
@@ -217,8 +218,8 @@ async fn create_leave_medical_with_evidence() {
     let token = test_access_token(&admin, "admin");
     // Mini JPEG magic bytes (SOI + JFIF APP0 + EOI).
     let jpeg: &[u8] = &[
-        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01,
-        0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00,
+        0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
     ];
     let (body, ct) = build_leave_multipart(
         &[
@@ -239,7 +240,11 @@ async fn create_leave_medical_with_evidence() {
         .body(Body::from(body))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "medical leave POST should 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "medical leave POST should 201"
+    );
     let body_json = body_to_json(resp.into_body()).await;
     assert_eq!(body_json["leave_type"], "medical");
     assert_eq!(body_json["employee_id"], emp);
@@ -253,14 +258,19 @@ async fn create_leave_medical_with_evidence() {
     // Evidence file must exist at state.paths.leaves_root/{evidence_path}.
     let relpath = body_json["evidence_path"].as_str().unwrap();
     let full = state.paths.leaves_root.join(relpath);
-    assert!(full.exists(), "evidence file should exist on disk at {:?}", full);
+    assert!(
+        full.exists(),
+        "evidence file should exist on disk at {:?}",
+        full
+    );
 }
 
 #[tokio::test]
 async fn create_leave_medical_without_evidence_rejected() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
@@ -299,7 +309,8 @@ async fn create_leave_medical_without_evidence_rejected() {
 async fn create_leave_manual_without_evidence() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
@@ -341,10 +352,12 @@ async fn create_leave_manual_without_evidence() {
 async fn create_leave_overlap_returns_conflict() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     // Seed an existing leave 2026-04-20 to 2026-04-22.
-    let _seeded = create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-22", &admin).await;
+    let _seeded =
+        create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-22", &admin).await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&admin, "admin");
@@ -368,7 +381,11 @@ async fn create_leave_overlap_returns_conflict() {
         .body(Body::from(body))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "overlap must return 409");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "overlap must return 409"
+    );
     let body_json = body_to_json(resp.into_body()).await;
     assert_eq!(body_json["error"]["code"], "LEAVE_OVERLAP");
 }
@@ -381,9 +398,11 @@ async fn create_leave_overlap_returns_conflict() {
 async fn cancel_leave_optimistic_concurrency() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
-    let leave_id = create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-20", &admin).await;
+    let leave_id =
+        create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-20", &admin).await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state.clone());
     let token = test_access_token(&admin, "admin");
@@ -396,7 +415,11 @@ async fn cancel_leave_optimistic_concurrency() {
         .body(Body::empty())
         .unwrap();
     let resp = app.clone().oneshot(stale_req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "stale version must return 409");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "stale version must return 409"
+    );
 
     // Correct version (1) → 204.
     let ok_req = Request::builder()
@@ -406,7 +429,11 @@ async fn cancel_leave_optimistic_concurrency() {
         .body(Body::empty())
         .unwrap();
     let resp = app.clone().oneshot(ok_req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "correct version must return 204");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "correct version must return 204"
+    );
 
     // Verify row is soft-deleted via direct DB access (state.db is Arc, clonable).
     let conn = state.db.connect().expect("connect");
@@ -433,12 +460,14 @@ async fn leave_overlay_suppresses_work_minutes() {
     let db = common::test_db().await;
     ensure_global_rules(&db).await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     seed_device(&db, "dev-1").await;
 
     // Seed leave covering 2026-04-20 AND events on that day.
-    let _leave_id = create_test_leave(&db, &emp, "medical", "2026-04-20", "2026-04-20", &admin).await;
+    let _leave_id =
+        create_test_leave(&db, &emp, "medical", "2026-04-20", "2026-04-20", &admin).await;
     let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
     seed_event(&db, &emp, "dev-1", "entry", caracas_epoch(anchor, 9, 0)).await;
     seed_event(&db, &emp, "dev-1", "exit", caracas_epoch(anchor, 17, 0)).await;
@@ -468,7 +497,10 @@ async fn leave_overlay_suppresses_work_minutes() {
     assert_eq!(ot, 0, "leave overlay must zero overtime_minutes");
     assert_eq!(late, 0, "leave overlay must zero late_minutes");
     assert_eq!(early, 0, "leave overlay must zero early_departure_minutes");
-    assert!(leave_id.is_some(), "leave_id must be set on the DailyRecord");
+    assert!(
+        leave_id.is_some(),
+        "leave_id must be set on the DailyRecord"
+    );
 
     // EVENTS_ON_LEAVE_DAY anomaly must be present.
     let mut arows = conn
@@ -493,7 +525,10 @@ async fn leave_overlay_suppresses_work_minutes() {
         .await
         .unwrap();
     let event_count: i64 = erows.next().await.unwrap().unwrap().get(0).unwrap();
-    assert_eq!(event_count, 2, "raw events must remain in event store (append-only)");
+    assert_eq!(
+        event_count, 2,
+        "raw events must remain in event store (append-only)"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -505,10 +540,12 @@ async fn leave_overlay_medical_flag_preserved() {
     let db = common::test_db().await;
     ensure_global_rules(&db).await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
 
-    let _leave_id = create_test_leave(&db, &emp, "medical", "2026-04-20", "2026-04-20", &admin).await;
+    let _leave_id =
+        create_test_leave(&db, &emp, "medical", "2026-04-20", "2026-04-20", &admin).await;
     let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
 
     let (state, _tmp) = make_state(db);
@@ -544,7 +581,8 @@ async fn leave_overlay_medical_flag_preserved() {
 async fn create_leave_forbidden_for_supervisor() {
     let db = common::test_db().await;
     let supervisor = create_test_supervisor(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
@@ -579,7 +617,8 @@ async fn create_leave_forbidden_for_supervisor() {
 async fn create_leave_forbidden_for_viewer() {
     let db = common::test_db().await;
     let viewer = create_test_viewer(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
@@ -614,7 +653,8 @@ async fn create_leave_forbidden_for_viewer() {
 async fn evidence_path_traversal_rejected() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
 
     // Manually seed a leave row with a CRAFTED evidence_path containing `..`
@@ -661,9 +701,11 @@ async fn list_leaves_accessible_to_viewer() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let viewer = create_test_viewer(&db).await;
-    let dept = create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
+    let dept =
+        create_test_department_with_shift(&db, "D", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "E01").await;
-    let _leave_id = create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-22", &admin).await;
+    let _leave_id =
+        create_test_leave(&db, &emp, "vacation", "2026-04-20", "2026-04-22", &admin).await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
     let token = test_access_token(&viewer, "viewer");

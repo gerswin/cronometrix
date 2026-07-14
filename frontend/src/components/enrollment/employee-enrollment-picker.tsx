@@ -35,7 +35,7 @@ export function EmployeeEnrollmentPicker({ onSelect }: EmployeeEnrollmentPickerP
         <option value="">Selecciona un empleado…</option>
         {employees.map(emp => (
           <option key={emp.id} value={emp.id}>
-            {emp.name} — {emp.cedula}
+            {emp.name} — {emp.employee_code}
           </option>
         ))}
       </select>

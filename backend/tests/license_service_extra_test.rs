@@ -20,11 +20,10 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use cronometrix_api::errors::AppError;
-use cronometrix_api::license;
 use cronometrix_api::license::service::{
     activate_license, load_and_validate_license, renewal_task, LicenseClaims,
 };
@@ -216,7 +215,7 @@ async fn load_and_validate_license_fingerprint_mismatch_returns_false() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn load_and_validate_license_happy_path_on_linux() {
-    let fp = license::fingerprint::collect_fingerprint().expect("linux fp");
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().expect("linux fp");
     let claims = make_claims(&fp, 365 * 24 * 60 * 60);
     let signed = sign_test_jwt(&claims);
     let path = format!("/tmp/cronometrix-ok-{}.jwt", uuid::Uuid::new_v4());
@@ -266,7 +265,7 @@ async fn renewal_task_exits_on_cancel() {
 #[tokio::test]
 async fn activate_license_persists_jwt_on_linux() {
     let mock = MockServer::start().await;
-    let fp = license::fingerprint::collect_fingerprint().unwrap();
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap();
     let claims = make_claims(&fp, 365 * 24 * 60 * 60);
     let signed = sign_test_jwt(&claims);
     Mock::given(wm_method("POST"))

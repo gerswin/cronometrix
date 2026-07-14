@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { ReactNode, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -13,20 +13,35 @@ interface Props {
   hasPhoto: boolean
   className?: string
   alt?: string
+  fallback?: ReactNode
 }
 
-export function EventPhoto({ eventId, hasPhoto, className, alt }: Props) {
+type PhotoViewProps = Omit<Props, 'hasPhoto'>
+
+function PhotoFallback({ className, alt, fallback }: Omit<PhotoViewProps, 'eventId'>) {
+  return (
+    <div
+      data-testid="photo-fallback"
+      className={cn(
+        fallback === undefined &&
+          'bg-slate-200 flex items-center justify-center text-slate-400 text-xs',
+        className,
+      )}
+      aria-label={fallback === undefined ? 'Sin foto' : alt}
+    >
+      {fallback ?? '—'}
+    </div>
+  )
+}
+
+function LoadedEventPhoto({ eventId, className, alt, fallback }: PhotoViewProps) {
   const [src, setSrc] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!hasPhoto) {
-      setSrc(null)
-      return
-    }
     let cancelled = false
     let url: string | null = null
     api
-      .get(`/events/${eventId}/photo`, { responseType: 'blob' })
+      .get(`/events/${encodeURIComponent(eventId)}/photo`, { responseType: 'blob' })
       .then((r) => {
         if (cancelled) return
         url = URL.createObjectURL(r.data as Blob)
@@ -39,26 +54,32 @@ export function EventPhoto({ eventId, hasPhoto, className, alt }: Props) {
       cancelled = true
       if (url) URL.revokeObjectURL(url)
     }
-  }, [eventId, hasPhoto])
+  }, [eventId])
 
-  if (hasPhoto && src) {
+  if (src) {
     return (
       <img
+        data-testid="photo-img"
         src={src}
         alt={alt ?? 'evento'}
         className={cn('object-cover', className)}
       />
     )
   }
+  return <PhotoFallback className={className} alt={alt} fallback={fallback} />
+}
+
+export function EventPhoto({ eventId, hasPhoto, className, alt, fallback }: Props) {
+  if (!hasPhoto) {
+    return <PhotoFallback className={className} alt={alt} fallback={fallback} />
+  }
   return (
-    <div
-      className={cn(
-        'bg-slate-200 flex items-center justify-center text-slate-400 text-xs',
-        className,
-      )}
-      aria-label="Sin foto"
-    >
-      —
-    </div>
+    <LoadedEventPhoto
+      key={eventId}
+      eventId={eventId}
+      className={className}
+      alt={alt}
+      fallback={fallback}
+    />
   )
 }

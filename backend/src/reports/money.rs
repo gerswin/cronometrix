@@ -29,11 +29,7 @@ pub fn work_pay_cents(
 
 /// Overtime pay at +50% premium (LOTTT Art. 118):
 /// `ot_min × base_cents × 150 / (100 × ord_min)`.
-pub fn ot_pay_cents(
-    ot_minutes: i64,
-    base_salary_cents: i64,
-    ordinary_daily_minutes: i64,
-) -> i64 {
+pub fn ot_pay_cents(ot_minutes: i64, base_salary_cents: i64, ordinary_daily_minutes: i64) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
     }
@@ -201,7 +197,10 @@ mod tests {
     #[test]
     fn total_a_pagar_composition() {
         // 50_000 + 18_750 + 30_000 + 0 - 3_125 = 95_625
-        assert_eq!(total_a_pagar_cents(50_000, 18_750, 30_000, 0, 3_125), 95_625);
+        assert_eq!(
+            total_a_pagar_cents(50_000, 18_750, 30_000, 0, 3_125),
+            95_625
+        );
     }
 
     #[test]
@@ -216,7 +215,7 @@ mod tests {
         /// Monotonicity: more work minutes → at least as much pay (never regress).
         #[test]
         fn work_pay_monotonic(
-            b in 0i64..100_000_000_00,
+            b in 0i64..10_000_000_000,
             o in 360i64..600,
             m1 in 0i64..43200,
             m2 in 0i64..43200,
@@ -233,7 +232,7 @@ mod tests {
             work in 0i64..43200,
             ot in 0i64..43200,
             late in 0i64..43200,
-            base in 0i64..100_000_000_00,
+            base in 0i64..10_000_000_000,
             ord in 360i64..600,
         ) {
             // Must not panic on any of the six functions.

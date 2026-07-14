@@ -90,11 +90,7 @@ async fn seed_employee_inactive(db: &libsql::Database) -> String {
     emp_id
 }
 
-async fn seed_device_at(
-    db: &libsql::Database,
-    key: &[u8; 32],
-    base_url: &str,
-) -> String {
+async fn seed_device_at(db: &libsql::Database, key: &[u8; 32], base_url: &str) -> String {
     let parts = url_lite_split(base_url);
     let conn = db.connect().unwrap();
     let enc = crypto::encrypt_password("device-pw", key).unwrap();
@@ -225,7 +221,10 @@ async fn purge_no_mappings_no_panic() {
     let (tx, rx) = mpsc::unbounded_channel::<PurgeRequest>();
     let w = PurgeWorker::new(state.clone(), shutdown.clone());
     let h = tokio::spawn(async move { w.run(rx).await });
-    tx.send(PurgeRequest { employee_id: emp_id }).unwrap();
+    tx.send(PurgeRequest {
+        employee_id: emp_id,
+    })
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     shutdown.cancel();
     let r = tokio::time::timeout(Duration::from_secs(5), h).await;

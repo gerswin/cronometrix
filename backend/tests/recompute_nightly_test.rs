@@ -128,7 +128,10 @@ async fn nightly_task_fires_after_advance_past_2am() {
 
     shutdown.cancel();
     let r = tokio::time::timeout(Duration::from_secs(10), handle).await;
-    assert!(r.is_ok(), "task must exit after advancing past scheduled tick");
+    assert!(
+        r.is_ok(),
+        "task must exit after advancing past scheduled tick"
+    );
 }
 
 // =============================================================================

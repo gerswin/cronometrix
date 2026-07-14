@@ -190,8 +190,8 @@ async fn seed_dr_row(
 #[tokio::test]
 async fn list_no_filter_returns_all() {
     let db = common::test_db().await;
-    let dept = create_test_department_with_shift(&db, "DA", "day", false, 480, "09:00", "17:00")
-        .await;
+    let dept =
+        create_test_department_with_shift(&db, "DA", "day", false, 480, "09:00", "17:00").await;
     let e1 = seed_employee(&db, &dept, "E1", "active").await;
     let e2 = seed_employee(&db, &dept, "E2", "active").await;
     seed_dr_row(&db, &dept, &e1, "2026-04-20").await;
@@ -218,8 +218,8 @@ async fn list_no_filter_returns_all() {
 #[tokio::test]
 async fn list_filter_by_employee_id() {
     let db = common::test_db().await;
-    let dept = create_test_department_with_shift(&db, "DB", "day", false, 480, "09:00", "17:00")
-        .await;
+    let dept =
+        create_test_department_with_shift(&db, "DB", "day", false, 480, "09:00", "17:00").await;
     let e1 = seed_employee(&db, &dept, "E1", "active").await;
     let e2 = seed_employee(&db, &dept, "E2", "active").await;
     seed_dr_row(&db, &dept, &e1, "2026-04-20").await;
@@ -243,15 +243,57 @@ async fn list_filter_by_employee_id() {
     assert_eq!(result.data[0].employee_id, e1);
     // The list query LEFT JOINs employees so the table can show a name, not the raw id.
     assert_eq!(result.data[0].employee_name.as_deref(), Some("Emp"));
+    assert_eq!(result.data[0].department_name.as_deref(), Some("DB"));
+}
+
+#[tokio::test]
+async fn list_uses_historical_daily_record_department_name() {
+    let db = common::test_db().await;
+    let historical =
+        create_test_department_with_shift(&db, "Historical", "day", false, 480, "09:00", "17:00")
+            .await;
+    let current =
+        create_test_department_with_shift(&db, "Current", "day", false, 480, "09:00", "17:00")
+            .await;
+    let employee = seed_employee(&db, &historical, "E-HISTORY", "active").await;
+    seed_dr_row(&db, &historical, &employee, "2026-04-20").await;
+    db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET department_id = ?1 WHERE id = ?2",
+            params![current, employee],
+        )
+        .await
+        .unwrap();
+
+    let result = dr_service::list(
+        &db.connect().unwrap(),
+        DailyRecordListQuery {
+            limit: None,
+            offset: None,
+            employee_id: None,
+            department_id: None,
+            from_date: None,
+            to_date: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.data[0].department_id, historical);
+    assert_eq!(
+        result.data[0].department_name.as_deref(),
+        Some("Historical")
+    );
 }
 
 #[tokio::test]
 async fn list_filter_by_department() {
     let db = common::test_db().await;
-    let dept_a = create_test_department_with_shift(&db, "DA", "day", false, 480, "09:00", "17:00")
-        .await;
-    let dept_b = create_test_department_with_shift(&db, "DB", "day", false, 480, "09:00", "17:00")
-        .await;
+    let dept_a =
+        create_test_department_with_shift(&db, "DA", "day", false, 480, "09:00", "17:00").await;
+    let dept_b =
+        create_test_department_with_shift(&db, "DB", "day", false, 480, "09:00", "17:00").await;
     let e1 = seed_employee(&db, &dept_a, "E1", "active").await;
     let e2 = seed_employee(&db, &dept_b, "E2", "active").await;
     seed_dr_row(&db, &dept_a, &e1, "2026-04-20").await;
@@ -278,8 +320,8 @@ async fn list_filter_by_department() {
 #[tokio::test]
 async fn list_filter_by_date_range() {
     let db = common::test_db().await;
-    let dept = create_test_department_with_shift(&db, "DC", "day", false, 480, "09:00", "17:00")
-        .await;
+    let dept =
+        create_test_department_with_shift(&db, "DC", "day", false, 480, "09:00", "17:00").await;
     let e1 = seed_employee(&db, &dept, "E1", "active").await;
     seed_dr_row(&db, &dept, &e1, "2026-04-19").await;
     seed_dr_row(&db, &dept, &e1, "2026-04-21").await;
@@ -338,8 +380,8 @@ async fn get_by_id_404_unknown() {
 #[tokio::test]
 async fn get_by_id_returns_anomalies_attached() {
     let db = common::test_db().await;
-    let dept = create_test_department_with_shift(&db, "DD", "day", false, 480, "09:00", "17:00")
-        .await;
+    let dept =
+        create_test_department_with_shift(&db, "DD", "day", false, 480, "09:00", "17:00").await;
     let e = seed_employee(&db, &dept, "E1", "active").await;
     let dr = seed_dr_row(&db, &dept, &e, "2026-04-20").await;
     let conn = db.connect().unwrap();
@@ -363,8 +405,9 @@ async fn get_by_id_returns_anomalies_attached() {
 async fn recompute_for_day_silently_skips_inactive_employee() {
     let db = common::test_db().await;
     ensure_global_rules(&db).await;
-    let dept = create_test_department_with_shift(&db, "DInactive", "day", false, 480, "09:00", "17:00")
-        .await;
+    let dept =
+        create_test_department_with_shift(&db, "DInactive", "day", false, 480, "09:00", "17:00")
+            .await;
     let inactive_emp = seed_employee(&db, &dept, "EI", "inactive").await;
 
     let (state, _tmp) = make_state(db);
@@ -406,8 +449,7 @@ async fn recompute_for_day_with_active_leave_overlay_zeros_work_minutes() {
     ensure_global_rules(&db).await;
     let admin = seed_admin(&db).await;
     let dept =
-        create_test_department_with_shift(&db, "DLeave", "day", false, 480, "09:00", "17:00")
-            .await;
+        create_test_department_with_shift(&db, "DLeave", "day", false, 480, "09:00", "17:00").await;
     let emp = seed_employee(&db, &dept, "EL", "active").await;
     seed_device(&db, "dev-leave-1").await;
 
@@ -416,8 +458,22 @@ async fn recompute_for_day_with_active_leave_overlay_zeros_work_minutes() {
 
     // Even with seeded events, leave overlay wins and zeros work_minutes.
     let anchor = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
-    seed_event(&db, &emp, "dev-leave-1", "entry", caracas_epoch(anchor, 9, 0)).await;
-    seed_event(&db, &emp, "dev-leave-1", "exit", caracas_epoch(anchor, 17, 0)).await;
+    seed_event(
+        &db,
+        &emp,
+        "dev-leave-1",
+        "entry",
+        caracas_epoch(anchor, 9, 0),
+    )
+    .await;
+    seed_event(
+        &db,
+        &emp,
+        "dev-leave-1",
+        "exit",
+        caracas_epoch(anchor, 17, 0),
+    )
+    .await;
 
     let (state, _tmp) = make_state(db);
     dr_service::recompute_for_day(&state, &emp, anchor)

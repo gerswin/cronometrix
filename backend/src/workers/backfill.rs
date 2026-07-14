@@ -118,7 +118,12 @@ impl BackfillWorker {
                     Err(e) => {
                         tracing::warn!(employee_id = %employee_id, err = %e, "BackfillWorker: name query failed, using id as name");
                         // Use employee_id as fallback name rather than skipping.
-                        resolved.push((employee_id.clone(), face_id, employee_id.clone(), String::new()));
+                        resolved.push((
+                            employee_id.clone(),
+                            face_id,
+                            employee_id.clone(),
+                            String::new(),
+                        ));
                         continue;
                     }
                 };
@@ -129,7 +134,9 @@ impl BackfillWorker {
             };
 
             // Current photo path.
-            let photo_path = match enrollment_service::get_current_photo_path(&conn, &employee_id).await {
+            let photo_path = match enrollment_service::get_current_photo_path(&conn, &employee_id)
+                .await
+            {
                 Ok(Some(p)) => p,
                 Ok(None) => {
                     tracing::warn!(employee_id = %employee_id, "BackfillWorker: no photo_path — skipping");

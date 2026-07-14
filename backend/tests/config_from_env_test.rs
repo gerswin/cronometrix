@@ -67,10 +67,7 @@ fn from_env_with_all_defaults_uses_documented_defaults() {
     assert_eq!(c.server_host, "0.0.0.0");
     assert_eq!(c.server_port, 3001);
     assert_eq!(c.turso_sync_interval_secs, 300);
-    assert_eq!(
-        c.license_jwt_path,
-        "/opt/cronometrix/data/license.jwt"
-    );
+    assert_eq!(c.license_jwt_path, "/opt/cronometrix/data/license.jwt");
     assert_eq!(c.do_functions_activate_url, "");
     assert_eq!(c.do_functions_renew_url, "");
     assert_eq!(c.timezone.name(), "America/Caracas");

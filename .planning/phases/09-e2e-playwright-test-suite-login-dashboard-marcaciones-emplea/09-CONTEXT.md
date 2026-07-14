@@ -207,6 +207,15 @@ Original D-14 wording mentioned `/api/v1/webhooks/hikvision`. That endpoint does
 ### D-19 Login UI Language → Test English Copy Now (LOCKED, supersedes original D-19 for login screen only)
 `frontend/src/app/login/page.tsx` currently uses English ("Username", "Password", "Log in", error strings). Phase 9 tests the **current English copy** of the login form. Spanish i18n for the login screen is deferred to a future phase. Other dashboard routes (Marcaciones, Empleados, Dispositivos, Reportes, Auditoría, KPI tile labels) ARE Spanish today and tests assert Spanish copy where load-bearing.
 
+### 2026-07-13 Phase 12 supersession
+
+The D-19 addendum above remains historical evidence of the Phase 9 state and
+is not rewritten. Phase 12 supersedes it for `/login` only: the authoritative
+contract is now Spanish (`Iniciar Sesión`, `Usuario`, `Contraseña`, `Mostrar
+contraseña` / `Ocultar contraseña`, the Spanish credential, fallback, and
+required-field errors) with root `<html lang="es-VE">`. Current tests and
+operator documentation must follow the Phase 12 contract.
+
 These three resolutions DO expand Phase 9 scope (audit endpoint + UI in Wave 0). Planner sizes additional plans accordingly.
 
 ---

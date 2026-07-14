@@ -46,6 +46,8 @@ pub struct Claims {
     pub exp: i64,
     /// Issued-at timestamp (epoch seconds)
     pub iat: i64,
+    /// Unique token identifier (UUID v4)
+    pub jti: String,
     /// Token type: "access" or "refresh"
     pub token_type: String,
 }

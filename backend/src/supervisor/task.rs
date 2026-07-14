@@ -113,7 +113,7 @@ mod tests {
     fn sleep_ms_with_jitter_handles_small_backoff() {
         // 1s backoff: jitter ≤ 250ms, total ∈ [1000, 1250]
         let total = sleep_ms_with_jitter(1_000);
-        assert!(total >= 1_000 && total <= 1_250);
+        assert!((1_000..=1_250).contains(&total));
     }
 
     #[test]

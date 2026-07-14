@@ -4,6 +4,7 @@ import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { CommandModal } from '../command-modal'
 import type { Device } from '@/types/api'
+import deviceFixture from './fixtures/device.json'
 
 const { toastSuccess, toastError, postMock } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
@@ -13,16 +14,7 @@ const { toastSuccess, toastError, postMock } = vi.hoisted(() => ({
 vi.mock('sonner', () => ({ toast: { success: toastSuccess, error: toastError } }))
 vi.mock('@/lib/api', () => ({ api: { post: (...a: unknown[]) => postMock(...a) } }))
 
-const DEVICE: Device = {
-  id: 'dev-1',
-  name: 'Entrada Principal',
-  ip_address: '10.0.0.10',
-  direction: 'entry',
-  status: 'online',
-  last_seen_at: null,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-}
+const DEVICE = deviceFixture as Device
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({
@@ -41,7 +33,7 @@ describe('CommandModal', () => {
     render(wrap(<CommandModal open={true} device={DEVICE} onClose={() => {}} />))
     expect(screen.getByText('Enviar Comando ISAPI')).toBeTruthy()
     expect(screen.getByText('Entrada Principal')).toBeTruthy()
-    expect(screen.getByText(/10.0.0.10/)).toBeTruthy()
+    expect(screen.getByText(/127.0.0.1/)).toBeTruthy()
   })
 
   it('renders all three Spanish command labels in the select', () => {
@@ -67,7 +59,7 @@ describe('CommandModal', () => {
     const submit = screen.getByRole('button', { name: /Enviar Comando/i })
     await act(async () => { fireEvent.click(submit) })
     await waitFor(() => expect(postMock).toHaveBeenCalled())
-    expect(postMock).toHaveBeenCalledWith('/devices/dev-1/commands', { command: 'door_open' })
+    expect(postMock).toHaveBeenCalledWith('/devices/dev-entry/commands', { command: 'door_open' })
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled())
     expect(onClose).toHaveBeenCalled()
   })
@@ -103,7 +95,7 @@ describe('CommandModal', () => {
     const submit = screen.getByRole('button', { name: /Enviar Comando/i })
     await act(async () => { fireEvent.click(submit) })
     await waitFor(() => expect(postMock).toHaveBeenCalled())
-    expect(postMock).toHaveBeenCalledWith('/devices/dev-1/commands', { command: 'enrollment_mode' })
+    expect(postMock).toHaveBeenCalledWith('/devices/dev-entry/commands', { command: 'enrollment_mode' })
   })
 
   it('selecting reboot then switching back to door_open hides the warning copy again', () => {
@@ -121,7 +113,7 @@ describe('CommandModal', () => {
   })
 
   it('button shows Enviando… while pending; remains disabled until resolution', async () => {
-    let resolveCommand: ((v: unknown) => void) | null = null
+    let resolveCommand: (v: unknown) => void = () => {}
     postMock.mockImplementationOnce(() => new Promise((r) => { resolveCommand = r }))
     render(wrap(<CommandModal open={true} device={DEVICE} onClose={() => {}} />))
     const submit = screen.getByRole('button', { name: /Enviar Comando/i }) as HTMLButtonElement

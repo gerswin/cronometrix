@@ -3,8 +3,19 @@
 //! 30.77% baseline gap from Plan 03 (08-04A bucket row 3).
 
 use cronometrix_api::auth::models::{Claims, LoginRequest, LoginResponse, Role, UserInfo};
+use jsonwebtoken::{decode, DecodingKey, Validation};
 use std::str::FromStr;
 use validator::Validate;
+
+fn decode_token_claims(token: &str) -> serde_json::Value {
+    decode::<serde_json::Value>(
+        token,
+        &DecodingKey::from_secret(b"test-secret-key-at-least-32-characters-long!!"),
+        &Validation::default(),
+    )
+    .expect("issued token must decode")
+    .claims
+}
 
 #[test]
 fn role_display_admin_supervisor_viewer() {
@@ -75,6 +86,7 @@ fn claims_serialize_deserialize_roundtrip() {
         role: Role::Admin,
         exp: 1_700_000_000,
         iat: 1_700_000_000 - 1200,
+        jti: uuid::Uuid::new_v4().to_string(),
         token_type: "access".into(),
     };
     let s = serde_json::to_string(&c).unwrap();
@@ -83,6 +95,7 @@ fn claims_serialize_deserialize_roundtrip() {
     assert_eq!(back.role, c.role);
     assert_eq!(back.exp, c.exp);
     assert_eq!(back.iat, c.iat);
+    assert_eq!(back.jti, c.jti);
     assert_eq!(back.token_type, c.token_type);
 }
 
@@ -93,11 +106,75 @@ fn claims_clone_preserves_fields() {
         role: Role::Viewer,
         exp: 0,
         iat: 0,
+        jti: uuid::Uuid::new_v4().to_string(),
         token_type: "refresh".into(),
     };
     let c2 = c.clone();
     assert_eq!(c.sub, c2.sub);
     assert_eq!(c.role, c2.role);
+    assert_eq!(c.jti, c2.jti);
+}
+
+#[test]
+fn claims_deserialization_rejects_missing_jti() {
+    let claims_without_jti = serde_json::json!({
+        "sub": "user-1",
+        "role": "admin",
+        "exp": 1_900_000_000,
+        "iat": 1_800_000_000,
+        "token_type": "access"
+    });
+
+    let result = serde_json::from_value::<Claims>(claims_without_jti);
+    assert!(result.is_err(), "jti must be a required claim");
+}
+
+#[test]
+fn token_issuers_emit_non_empty_uuid_jtis() {
+    let secret = b"test-secret-key-at-least-32-characters-long!!";
+    let access =
+        cronometrix_api::auth::service::issue_access_token("user-1", &Role::Admin, secret).unwrap();
+    let refresh =
+        cronometrix_api::auth::service::issue_refresh_token("user-1", &Role::Admin, secret)
+            .unwrap();
+
+    for token in [&access, &refresh] {
+        let claims = decode_token_claims(token);
+        let jti = claims["jti"]
+            .as_str()
+            .expect("every issued token must carry a string jti");
+        assert!(!jti.is_empty(), "issued jti must not be empty");
+        let parsed = uuid::Uuid::parse_str(jti).expect("issued jti must be a UUID");
+        assert_eq!(
+            parsed.get_version(),
+            Some(uuid::Version::Random),
+            "issued jti must specifically be UUID v4"
+        );
+    }
+}
+
+#[test]
+fn back_to_back_access_and_refresh_tokens_have_distinct_jtis() {
+    let secret = b"test-secret-key-at-least-32-characters-long!!";
+    let tokens = [
+        cronometrix_api::auth::service::issue_access_token("user-1", &Role::Admin, secret).unwrap(),
+        cronometrix_api::auth::service::issue_access_token("user-1", &Role::Admin, secret).unwrap(),
+        cronometrix_api::auth::service::issue_refresh_token("user-1", &Role::Admin, secret)
+            .unwrap(),
+        cronometrix_api::auth::service::issue_refresh_token("user-1", &Role::Admin, secret)
+            .unwrap(),
+    ];
+    let jtis: std::collections::HashSet<String> = tokens
+        .iter()
+        .map(|token| {
+            decode_token_claims(token)["jti"]
+                .as_str()
+                .expect("every issued token must carry a jti")
+                .to_string()
+        })
+        .collect();
+
+    assert_eq!(jtis.len(), tokens.len(), "every issued jti must be unique");
 }
 
 #[test]
@@ -117,7 +194,10 @@ fn login_request_validate_rejects_empty_username() {
     };
     let err = body.validate().expect_err("empty username must fail");
     let msg = err.to_string();
-    assert!(msg.contains("username"), "validator must mention field: {msg}");
+    assert!(
+        msg.contains("username"),
+        "validator must mention field: {msg}"
+    );
 }
 
 #[test]
@@ -128,7 +208,10 @@ fn login_request_validate_rejects_empty_password() {
     };
     let err = body.validate().expect_err("empty password must fail");
     let msg = err.to_string();
-    assert!(msg.contains("password"), "validator must mention field: {msg}");
+    assert!(
+        msg.contains("password"),
+        "validator must mention field: {msg}"
+    );
 }
 
 #[test]

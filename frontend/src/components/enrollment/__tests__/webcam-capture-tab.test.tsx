@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import React from 'react'
 import { WebcamCaptureTab } from '../webcam-capture-tab'
 
 describe('WebcamCaptureTab', () => {
   const mockOnCaptured = vi.fn()
-  const mockOnValidationChange = vi.fn()
+  const mockOnCleared = vi.fn()
 
   // Mock getUserMedia
   const mockStop = vi.fn()
@@ -28,7 +28,7 @@ describe('WebcamCaptureTab', () => {
       render(
         <WebcamCaptureTab
           onCaptured={mockOnCaptured}
-          onValidationChange={mockOnValidationChange}
+          onCleared={mockOnCleared}
         />
       )
     })
@@ -49,7 +49,7 @@ describe('WebcamCaptureTab', () => {
       const result = render(
         <WebcamCaptureTab
           onCaptured={mockOnCaptured}
-          onValidationChange={mockOnValidationChange}
+          onCleared={mockOnCleared}
         />
       )
       unmount = result.unmount
@@ -72,7 +72,7 @@ describe('WebcamCaptureTab', () => {
       render(
         <WebcamCaptureTab
           onCaptured={mockOnCaptured}
-          onValidationChange={mockOnValidationChange}
+          onCleared={mockOnCleared}
         />
       )
     })

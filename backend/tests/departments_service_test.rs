@@ -58,7 +58,10 @@ async fn create_department_fixed_mode_requires_duration() {
     .await
     .expect_err("fixed mode without duration must fail");
     let s = err.to_string();
-    assert!(s.contains("validation") || s.contains("required") || s.contains("LUNCH"), "err: {s}");
+    assert!(
+        s.contains("validation") || s.contains("required") || s.contains("LUNCH"),
+        "err: {s}"
+    );
 }
 
 #[tokio::test]

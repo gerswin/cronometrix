@@ -7,10 +7,7 @@ use axum::{
 };
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tower_http::{
-    cors::{AllowOrigin, CorsLayer},
-    trace::TraceLayer,
-};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use cronometrix_api::anomalies;
 use cronometrix_api::audit;
@@ -24,6 +21,7 @@ use cronometrix_api::employees;
 use cronometrix_api::enrollments;
 use cronometrix_api::errors::AppError;
 use cronometrix_api::events;
+use cronometrix_api::http_trace;
 use cronometrix_api::leaves;
 use cronometrix_api::license;
 use cronometrix_api::recompute::{self, RecomputeRequest};
@@ -34,11 +32,7 @@ use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
 use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
 use cronometrix_api::users;
-use cronometrix_api::workers::{
-    backfill::BackfillWorker,
-    db_write,
-    purge::PurgeWorker,
-};
+use cronometrix_api::workers::{backfill::BackfillWorker, db_write, purge::PurgeWorker};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,9 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tracing — pretty format for development
     tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
-        )
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
         .init();
 
     let config = Config::from_env()?;
@@ -68,7 +60,8 @@ async fn main() -> anyhow::Result<()> {
     let (recompute_tx, recompute_rx) = mpsc::unbounded_channel::<RecomputeRequest>();
 
     // Single-writer channel for SQLite/libSQL mutations.
-    let (db_write_tx, db_write_rx) = mpsc::unbounded_channel::<cronometrix_api::db::write_queue::WriteCommand>();
+    let (db_write_tx, db_write_rx) =
+        mpsc::unbounded_channel::<cronometrix_api::db::write_queue::WriteCommand>();
 
     // Event broadcast: attendance service -> SSE stream clients. Buffer 256 events;
     // lagged subscribers (slow clients) simply drop missed events — non-fatal for a
@@ -87,10 +80,10 @@ async fn main() -> anyhow::Result<()> {
     // This prevents the test-only flag from leaking into a production deploy and
     // silently disabling the hardware-bound license gate (LIC-05).
     // The exit code 2 contract is locked by backend/tests/license_bypass_safety.rs.
-    let license_valid = std::sync::Arc::new(
-        std::sync::atomic::AtomicBool::new(false)
-    );
+    let license_valid = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let e2e = std::env::var("CRONOMETRIX_E2E").as_deref() == Ok("true");
+    let test_reset_enabled =
+        e2e && std::env::var("CRONOMETRIX_TEST_RESET_ENABLED").as_deref() == Ok("true");
     let bypass = std::env::var("CRONOMETRIX_LICENSE_BYPASS").as_deref() == Ok("true");
     match license::service::evaluate_bypass(e2e, bypass) {
         license::service::BypassDecision::AbortMisconfigured => {
@@ -98,9 +91,7 @@ async fn main() -> anyhow::Result<()> {
                 "FATAL: CRONOMETRIX_LICENSE_BYPASS set without CRONOMETRIX_E2E. \
                  Refusing to start — bypass flag is test-only and must not appear in production env."
             );
-            eprintln!(
-                "FATAL: CRONOMETRIX_LICENSE_BYPASS set without CRONOMETRIX_E2E. Aborting."
-            );
+            eprintln!("FATAL: CRONOMETRIX_LICENSE_BYPASS set without CRONOMETRIX_E2E. Aborting.");
             std::process::exit(2);
         }
         license::service::BypassDecision::AllowBypass => {
@@ -114,14 +105,18 @@ async fn main() -> anyhow::Result<()> {
                 license_valid.store(true, std::sync::atomic::Ordering::Relaxed);
                 tracing::info!("license valid — system fully operational");
             } else {
-                tracing::warn!("license invalid or missing — system gated, /setup/activate available");
+                tracing::warn!(
+                    "license invalid or missing — system gated, /setup/activate available"
+                );
             }
         }
     }
 
     // Phase 7: purge and backfill worker channels.
-    let (purge_tx, purge_rx) = mpsc::unbounded_channel::<cronometrix_api::workers::purge::PurgeRequest>();
-    let (backfill_tx, backfill_rx) = mpsc::unbounded_channel::<cronometrix_api::workers::backfill::BackfillRequest>();
+    let (purge_tx, purge_rx) =
+        mpsc::unbounded_channel::<cronometrix_api::workers::purge::PurgeRequest>();
+    let (backfill_tx, backfill_rx) =
+        mpsc::unbounded_channel::<cronometrix_api::workers::backfill::BackfillRequest>();
 
     let paths = Arc::new(cronometrix_api::state::Paths::from_env());
 
@@ -137,6 +132,8 @@ async fn main() -> anyhow::Result<()> {
         purge_tx: Some(purge_tx),
         backfill_tx: Some(backfill_tx),
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
+        e2e_enabled: e2e,
+        test_reset_enabled,
     };
 
     // Start the supervisor: one tokio task per active device for alertStream
@@ -229,18 +226,30 @@ async fn main() -> anyhow::Result<()> {
         .route("/employees", get(employees::handlers::list_employees))
         .route("/employees/{id}", get(employees::handlers::get_employee))
         .route("/departments", get(departments::handlers::list_departments))
-        .route("/departments/{id}", get(departments::handlers::get_department))
+        .route(
+            "/departments/{id}",
+            get(departments::handlers::get_department),
+        )
         .route("/rules", get(rules::handlers::get_rules))
         .route("/devices", get(devices::handlers::list_devices))
         .route("/devices/{id}", get(devices::handlers::get_device))
         .route("/events", get(events::handlers::list_events))
         .route("/events/{id}", get(events::handlers::get_event))
         .route("/events/{id}/photo", get(events::handlers::get_event_photo))
-        .route("/daily-records", get(daily_records::handlers::list_daily_records))
-        .route("/daily-records/{id}", get(daily_records::handlers::get_daily_record))
+        .route(
+            "/daily-records",
+            get(daily_records::handlers::list_daily_records),
+        )
+        .route(
+            "/daily-records/{id}",
+            get(daily_records::handlers::get_daily_record),
+        )
         .route("/leaves", get(leaves::handlers::list_leaves))
         .route("/leaves/{id}", get(leaves::handlers::get_leave))
-        .route("/leaves/{id}/evidence", get(leaves::handlers::get_leave_evidence))
+        .route(
+            "/leaves/{id}/evidence",
+            get(leaves::handlers::get_leave_evidence),
+        )
         .route("/tenant-info", get(tenant_info::handlers::get_tenant_info))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -254,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
     // Supervisor-or-above read routes: supervisor queue for anomalies (T-3-04).
     let supervisor_read_routes = Router::new()
         .route("/anomalies", get(anomalies::handlers::list_anomalies))
-        .route("/audit", get(audit::handlers::list_audit))   // NEW Plan 09-04
+        .route("/audit", get(audit::handlers::list_audit)) // NEW Plan 09-04
         .route("/audit/actors", get(audit::handlers::list_actors))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -268,7 +277,10 @@ async fn main() -> anyhow::Result<()> {
     // Supervisor+ routes: create/edit employees
     let supervisor_routes = Router::new()
         .route("/employees", post(employees::handlers::create_employee))
-        .route("/employees/{id}", patch(employees::handlers::update_employee))
+        .route(
+            "/employees/{id}",
+            patch(employees::handlers::update_employee),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
@@ -300,12 +312,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Phase 7: enrollment routes (admin-only, D-18). Wrapped with a 3 MB body
     // limit (RequestBodyLimitLayer) to bound multipart photo uploads (T-7-03).
-    // capture_from_device and get_capture are read/trigger paths with small bodies
+    // Capture start/poll are read/trigger paths with small bodies
     // and are included in the same limit for simplicity.
     let enrollment_routes = Router::new()
         .route(
             "/enrollments",
-            post(enrollments::handlers::create_enrollment),
+            get(enrollments::handlers::list_enrollments)
+                .post(enrollments::handlers::create_enrollment),
         )
         .route(
             "/enrollments/{id}",
@@ -323,7 +336,15 @@ async fn main() -> anyhow::Result<()> {
             "/enrollments/captures/{capture_id}",
             get(enrollments::handlers::get_capture),
         )
-        .route_layer(tower_http::limit::RequestBodyLimitLayer::new(3 * 1024 * 1024))
+        // Fail closed for the obsolete capture URL. Without this narrow
+        // tombstone Axum matches `{id}` and returns 405 instead of 404.
+        .route(
+            "/enrollments/capture-from-device",
+            post(|| async { axum::http::StatusCode::NOT_FOUND }),
+        )
+        .route_layer(tower_http::limit::RequestBodyLimitLayer::new(
+            3 * 1024 * 1024,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_admin,
@@ -335,18 +356,39 @@ async fn main() -> anyhow::Result<()> {
 
     // Admin-only routes: delete employees, manage departments and rules, manage devices + command dispatch
     let admin_routes = Router::new()
-        .route("/employees/{id}", delete(employees::handlers::deactivate_employee))
-        .route("/departments", post(departments::handlers::create_department))
-        .route("/departments/{id}", patch(departments::handlers::update_department))
+        .route(
+            "/employees/{id}",
+            delete(employees::handlers::deactivate_employee),
+        )
+        .route(
+            "/departments",
+            post(departments::handlers::create_department),
+        )
+        .route(
+            "/departments/{id}",
+            patch(departments::handlers::update_department),
+        )
         .route("/rules", patch(rules::handlers::update_rules))
         .route("/devices", post(devices::handlers::create_device))
         .route("/devices/{id}", patch(devices::handlers::update_device))
-        .route("/devices/{id}", delete(devices::handlers::deactivate_device))
-        .route("/devices/{id}/commands", post(devices::handlers::dispatch_command))
+        .route(
+            "/devices/{id}",
+            delete(devices::handlers::deactivate_device),
+        )
+        .route(
+            "/devices/{id}/commands",
+            post(devices::handlers::dispatch_command),
+        )
         .route("/leaves", post(leaves::handlers::create_leave))
         .route("/leaves/{id}", delete(leaves::handlers::cancel_leave))
-        .route("/daily-records/{id}/overrides", post(daily_records::handlers::create_override))
-        .route("/tenant-info", patch(tenant_info::handlers::patch_tenant_info))
+        .route(
+            "/daily-records/{id}/overrides",
+            post(daily_records::handlers::create_override),
+        )
+        .route(
+            "/tenant-info",
+            patch(tenant_info::handlers::patch_tenant_info),
+        )
         .route("/users", post(users::handlers::create_user))
         .route("/users", get(users::handlers::list_users))
         .route("/users/{id}", get(users::handlers::get_user))
@@ -361,12 +403,10 @@ async fn main() -> anyhow::Result<()> {
             license::middleware::require_license,
         ));
 
-    // Phase 9: __test_reset route — gated at REGISTRATION time by CRONOMETRIX_E2E=true.
-    // Defense in depth: the handler (test_reset::test_reset) ALSO re-checks the env.
-    // Both guards must hold. Without CRONOMETRIX_E2E the route does not exist at all,
-    // so clients receive 404 from the router — not from the handler. This is the
-    // strongest possible gate short of compile-time exclusion (which is not possible
-    // for a runtime env var). Locked by backend/tests/test_reset_gating.rs (T-09-02).
+    // Phase 9: __test_reset route — gated at registration time by two distinct
+    // startup-captured capabilities. The handler re-checks both as defense in
+    // depth. Without both flags the route does not exist, so clients receive
+    // 404 from the router. Locked by backend/tests/test_reset_gating.rs (T-09-02).
     let mut api_v1 = public_routes
         .merge(cookie_auth_routes)
         .merge(viewer_routes)
@@ -376,15 +416,15 @@ async fn main() -> anyhow::Result<()> {
         .merge(admin_routes)
         .merge(enrollment_routes);
 
-    if std::env::var("CRONOMETRIX_E2E").as_deref() == Ok("true") {
+    if state.e2e_enabled && state.test_reset_enabled {
         tracing::warn!(
-            "registering /__test_reset route — CRONOMETRIX_E2E=true detected; \
+            "registering /__test_reset route — E2E + test-reset capabilities enabled; \
              this route MUST NOT be reachable in production"
         );
-        api_v1 = api_v1.merge(
-            Router::new()
-                .route("/__test_reset", post(cronometrix_api::test_reset::test_reset)),
-        );
+        api_v1 = api_v1.merge(Router::new().route(
+            "/__test_reset",
+            post(cronometrix_api::test_reset::test_reset),
+        ));
     }
 
     let cors = build_cors_layer(&config.cors_allowed_origins);
@@ -392,7 +432,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .nest("/api/v1", api_v1)
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(http_trace::layer())
         .layer(cors);
 
     let addr = format!("{}:{}", config.server_host, config.server_port);
@@ -469,9 +509,7 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
 
 /// Health check endpoint. Performs a SELECT 1 database connectivity check
 /// to verify the database is reachable, not just HTTP liveness.
-async fn health(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
+async fn health(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
     let conn = state
         .db
         .connect()

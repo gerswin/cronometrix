@@ -66,11 +66,7 @@ fn url_lite_split(url: &str) -> (String, u16, String) {
     (host.to_string(), port, scheme)
 }
 
-async fn seed_device_at(
-    db: &libsql::Database,
-    key: &[u8; 32],
-    base_url: &str,
-) -> String {
+async fn seed_device_at(db: &libsql::Database, key: &[u8; 32], base_url: &str) -> String {
     let parts = url_lite_split(base_url);
     let conn = db.connect().unwrap();
     let enc = crypto::encrypt_password("device-pw", key).unwrap();

@@ -174,7 +174,10 @@ async fn list_anomalies_200_for_supervisor_with_no_data() {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/api/v1/anomalies")
-        .header(header::AUTHORIZATION, format!("Bearer {}", supervisor_token()))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", supervisor_token()),
+        )
         .body(Body::empty())
         .unwrap();
 
@@ -194,8 +197,7 @@ async fn list_anomalies_200_for_supervisor_with_no_data() {
 #[tokio::test]
 async fn list_anomalies_200_returns_seeded_rows_for_admin() {
     let db = common::test_db().await;
-    let (_dr_id, _emp_id) =
-        seed_record(&db, "MISSING_EXIT", "2026-04-20", "E001").await;
+    let (_dr_id, _emp_id) = seed_record(&db, "MISSING_EXIT", "2026-04-20", "E001").await;
     let (state, _tmp) = make_state(db);
     let app = build_test_app(state);
 
@@ -305,10 +307,7 @@ async fn list_anomalies_pagination_clamps_excessive_limit() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp.into_body()).await;
-    assert_eq!(
-        body["limit"], 100,
-        "limit must clamp to upper bound 100"
-    );
+    assert_eq!(body["limit"], 100, "limit must clamp to upper bound 100");
     assert_eq!(body["offset"], 0, "negative offset must clamp to 0");
 }
 

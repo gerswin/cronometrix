@@ -1,15 +1,14 @@
 use libsql::{params, Connection};
 use uuid::Uuid;
 
-use crate::state::AppState;
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::errors::AppError;
+use crate::state::AppState;
 
 use super::crypto;
 use super::models::{
     validate_direction, validate_ip, validate_scheme, validate_status, Command,
-    CreateDeviceRequest, DeviceListQuery, DeviceResponse, DeviceWithPlaintext,
-    UpdateDeviceRequest,
+    CreateDeviceRequest, DeviceListQuery, DeviceResponse, DeviceWithPlaintext, UpdateDeviceRequest,
 };
 
 /// Outcome tag written to `command_audit_log.outcome`.
@@ -17,10 +16,7 @@ use super::models::{
 #[derive(Debug)]
 pub enum CommandAuditOutcome {
     Ok(String),
-    Error {
-        code: &'static str,
-        message: String,
-    },
+    Error { code: &'static str, message: String },
     Timeout,
 }
 
@@ -83,7 +79,7 @@ pub async fn create(
     validate_direction(&req.direction).map_err(val_err)?;
 
     let encrypted_password =
-        crypto::encrypt_password(&req.password, key).map_err(|e| AppError::Internal(e.into()))?;
+        crypto::encrypt_password(&req.password, key).map_err(AppError::Internal)?;
 
     let id = Uuid::new_v4().to_string();
     let allow_int: i64 = if req.allow_insecure_tls { 1 } else { 0 };
@@ -111,25 +107,19 @@ pub async fn create(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            // SQLite reports the partial unique index by index name when it fires.
-            if msg.contains("UNIQUE constraint failed")
-                && (msg.contains("idx_devices_ip_port_active")
-                    || (msg.contains("devices.ip") && msg.contains("devices.port")))
-            {
-                return Err(AppError::Conflict {
-                    code: "DEVICE_IP_EXISTS",
-                    message: format!(
-                        "Device with IP {}:{} is already active",
-                        req.ip, req.port
-                    ),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        // SQLite reports the partial unique index by index name when it fires.
+        if msg.contains("UNIQUE constraint failed")
+            && (msg.contains("idx_devices_ip_port_active")
+                || (msg.contains("devices.ip") && msg.contains("devices.port")))
+        {
+            return Err(AppError::Conflict {
+                code: "DEVICE_IP_EXISTS",
+                message: format!("Device with IP {}:{} is already active", req.ip, req.port),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e.into()));
     }
 
     get_by_id(conn, &id).await
@@ -145,7 +135,7 @@ pub async fn create_queued(
     validate_direction(&req.direction).map_err(val_err)?;
 
     let encrypted_password =
-        crypto::encrypt_password(&req.password, key).map_err(|e| AppError::Internal(e.into()))?;
+        crypto::encrypt_password(&req.password, key).map_err(AppError::Internal)?;
     let id = Uuid::new_v4().to_string();
     let allow_int: i64 = if req.allow_insecure_tls { 1 } else { 0 };
 
@@ -173,24 +163,24 @@ pub async fn create_queued(
         )
         .await;
 
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed")
-                && (msg.contains("idx_devices_ip_port_active")
-                    || (msg.contains("devices.ip") && msg.contains("devices.port")))
-            {
-                return Err(AppError::Conflict {
-                    code: "DEVICE_IP_EXISTS",
-                    message: format!("Device with IP {}:{} is already active", req.ip, req.port),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed")
+            && (msg.contains("idx_devices_ip_port_active")
+                || (msg.contains("devices.ip") && msg.contains("devices.port")))
+        {
+            return Err(AppError::Conflict {
+                code: "DEVICE_IP_EXISTS",
+                message: format!("Device with IP {}:{} is already active", req.ip, req.port),
+            });
         }
-        Ok(_) => {}
+        return Err(AppError::Internal(e));
     }
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     get_by_id(&conn, &id).await
 }
 
@@ -256,11 +246,20 @@ pub async fn list(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut data = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         data.push(row_to_device(row)?);
     }
 
-    Ok(PaginatedResponse { data, total, limit, offset })
+    Ok(PaginatedResponse {
+        data,
+        total,
+        limit,
+        offset,
+    })
 }
 
 pub async fn get_by_id(conn: &Connection, id: &str) -> Result<DeviceResponse, AppError> {
@@ -330,8 +329,7 @@ pub async fn update(
         values.push(libsql::Value::Text(username));
     }
     if let Some(password) = req.password {
-        let encrypted =
-            crypto::encrypt_password(&password, key).map_err(|e| AppError::Internal(e.into()))?;
+        let encrypted = crypto::encrypt_password(&password, key).map_err(AppError::Internal)?;
         sets.push(format!("encrypted_password = ?{}", values.len() + 1));
         values.push(libsql::Value::Text(encrypted));
     }
@@ -367,9 +365,7 @@ pub async fn update(
         set_clause, id_param, version_param
     );
 
-    let result = conn
-        .execute(&sql, libsql::params_from_iter(values))
-        .await;
+    let result = conn.execute(&sql, libsql::params_from_iter(values)).await;
 
     let rows_affected = match result {
         Ok(n) => n,
@@ -390,7 +386,10 @@ pub async fn update(
 
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM devices WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM devices WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -456,8 +455,7 @@ pub async fn update_queued(
         values.push(libsql::Value::Text(username));
     }
     if let Some(password) = req.password {
-        let encrypted =
-            crypto::encrypt_password(&password, key).map_err(|e| AppError::Internal(e.into()))?;
+        let encrypted = crypto::encrypt_password(&password, key).map_err(AppError::Internal)?;
         sets.push(format!("encrypted_password = ?{}", values.len() + 1));
         values.push(libsql::Value::Text(encrypted));
     }
@@ -474,7 +472,10 @@ pub async fn update_queued(
         values.push(libsql::Value::Text(status));
     }
     if sets.is_empty() {
-        let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+        let conn = state
+            .db
+            .connect()
+            .map_err(|e| AppError::Internal(e.into()))?;
         return get_by_id(&conn, id).await;
     }
 
@@ -504,14 +505,20 @@ pub async fn update_queued(
                     message: "Another active device already uses this IP:port".to_string(),
                 });
             }
-            return Err(AppError::Internal(e.into()));
+            return Err(AppError::Internal(e));
         }
     };
 
-    let conn = state.db.connect().map_err(|e| AppError::Internal(e.into()))?;
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
     if rows_affected == 0 {
         let exists = conn
-            .query("SELECT id FROM devices WHERE id = ?1", params![id.to_string()])
+            .query(
+                "SELECT id FROM devices WHERE id = ?1",
+                params![id.to_string()],
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?
             .next()
@@ -617,8 +624,7 @@ pub async fn get_decrypted(
     let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
     let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
 
-    let password =
-        crypto::decrypt_password(&encrypted, key).map_err(|e| AppError::Internal(e.into()))?;
+    let password = crypto::decrypt_password(&encrypted, key).map_err(AppError::Internal)?;
 
     Ok(DeviceWithPlaintext {
         id: device_id,
@@ -658,7 +664,11 @@ pub async fn list_active(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut out = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::Internal(e.into()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
         let device_id: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
         let name: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
         let ip: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
@@ -707,11 +717,9 @@ pub async fn write_command_audit(
 ) -> Result<(), AppError> {
     let (result, error_code, error_message) = match outcome {
         CommandAuditOutcome::Ok(body) => (Some(body.clone()), None, None),
-        CommandAuditOutcome::Error { code, message } => (
-            None,
-            Some(code.to_string()),
-            Some(message.clone()),
-        ),
+        CommandAuditOutcome::Error { code, message } => {
+            (None, Some(code.to_string()), Some(message.clone()))
+        }
         CommandAuditOutcome::Timeout => (
             None,
             Some("DEVICE_TIMEOUT".to_string()),
@@ -756,11 +764,9 @@ pub async fn write_command_audit_queued(
 ) -> Result<(), AppError> {
     let (result, error_code, error_message) = match outcome {
         CommandAuditOutcome::Ok(body) => (Some(body.clone()), None, None),
-        CommandAuditOutcome::Error { code, message } => (
-            None,
-            Some(code.to_string()),
-            Some(message.clone()),
-        ),
+        CommandAuditOutcome::Error { code, message } => {
+            (None, Some(code.to_string()), Some(message.clone()))
+        }
         CommandAuditOutcome::Timeout => (
             None,
             Some("DEVICE_TIMEOUT".to_string()),
@@ -782,9 +788,15 @@ pub async fn write_command_audit_queued(
                 libsql::Value::Text(device_id.to_string()),
                 libsql::Value::Text(command.as_str().to_string()),
                 libsql::Value::Text(outcome.outcome_str().to_string()),
-                result.map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
-                error_code.map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
-                error_message.map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
+                result
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
+                error_code
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
+                error_message
+                    .map(libsql::Value::Text)
+                    .unwrap_or(libsql::Value::Null),
                 libsql::Value::Integer(dispatched_at),
                 libsql::Value::Integer(completed_at),
             ],

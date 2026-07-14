@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
 import { Bell, Settings, LogOut } from 'lucide-react'
 import { toast } from 'sonner'
-import { api, setAccessToken } from '@/lib/api'
+import { api, logoutCurrentSession } from '@/lib/api'
 import { aggregateKPIs } from '@/lib/kpi-utils'
 import { useAuth } from '@/hooks/use-auth'
 import { KPITile } from '@/components/dashboard/kpi-tile'
@@ -13,12 +13,49 @@ import { ActivityFeed } from '@/components/dashboard/activity-feed'
 import { DeptChart } from '@/components/dashboard/dept-chart'
 import type { PaginatedResponse, DailyRecord, Device, Department, RawAttendanceEvent } from '@/types/api'
 
+const DEVICE_PAGE_LIMIT = 100
+
 // ── Caracas UTC-4 (no DST) epoch helpers ────────────────────────────────────
 function getTodayCaracasEpochs(): { from: number; to: number } {
   const today = format(new Date(), 'yyyy-MM-dd') // date-fns uses local TZ (set to America/Caracas)
   const from = Date.parse(`${today}T00:00:00-04:00`) / 1000
   const to   = Date.parse(`${today}T23:59:59-04:00`) / 1000
   return { from, to }
+}
+
+async function fetchDevicesByStatus(status: Device['status']): Promise<Device[]> {
+  const devices: Device[] = []
+  let offset = 0
+  let total: number | undefined
+
+  while (total === undefined || offset < total) {
+    const page = await api
+      .get('/devices', { params: { status, limit: DEVICE_PAGE_LIMIT, offset } })
+      .then(r => r.data as PaginatedResponse<Device>)
+
+    total = page.total
+    if (page.data.length === 0) break
+
+    devices.push(...page.data)
+    offset += page.data.length
+  }
+
+  return devices
+}
+
+async function fetchAllDevices(): Promise<PaginatedResponse<Device>> {
+  const [active, inactive] = await Promise.all([
+    fetchDevicesByStatus('active'),
+    fetchDevicesByStatus('inactive'),
+  ])
+  const data = [...active, ...inactive]
+
+  return {
+    data,
+    total: data.length,
+    limit: data.length,
+    offset: 0,
+  }
 }
 
 export default function DashboardPage() {
@@ -40,7 +77,7 @@ export default function DashboardPage() {
 
   const { data: devicesData } = useQuery<PaginatedResponse<Device>>({
     queryKey: ['devices'],
-    queryFn: () => api.get('/devices').then(r => r.data),
+    queryFn: fetchAllDevices,
     refetchInterval: 30_000,
   })
 
@@ -81,16 +118,27 @@ export default function DashboardPage() {
     ? `de ${totalActiveEmployees} registrados`
     : 'de — registrados'
 
-  const onlineCount = devices.filter(d => d.status !== 'offline').length
+  const activeDevices = devices.filter(d => d.status === 'active')
+  const inactiveCount = devices.length - activeDevices.length
+  const onlineCount = activeDevices.filter(d => d.connection_state === 'online').length
+  const activeProblemCount = activeDevices.length - onlineCount
   const deviceValueColor =
-    devices.length === 0         ? '#1A1A1A' :
-    onlineCount === devices.length ? '#22C55E' :
+    activeDevices.length === 0     ? '#1A1A1A' :
+    onlineCount === activeDevices.length ? '#22C55E' :
     onlineCount === 0             ? '#EF4444' :
     '#F59E0B'
   const deviceSub =
-    devices.length === 0          ? 'sin dispositivos' :
-    onlineCount === devices.length ? 'todos operativos' :
-    `${devices.length - onlineCount} con problemas`
+    devices.length === 0 ? 'sin dispositivos' :
+    activeDevices.length === 0 ? `${inactiveCount} inactivo${inactiveCount > 1 ? 's' : ''}` :
+    activeProblemCount === 0 && inactiveCount === 0 ? 'todos operativos' :
+    [
+      activeProblemCount > 0
+        ? `${activeProblemCount} activo${activeProblemCount > 1 ? 's' : ''} con problemas`
+        : null,
+      inactiveCount > 0
+        ? `${inactiveCount} inactivo${inactiveCount > 1 ? 's' : ''}`
+        : null,
+    ].filter(Boolean).join(' · ')
 
   const unknownCount = unknownEventsData?.data.filter(e => e.is_unknown).length ?? 0
 
@@ -105,9 +153,8 @@ export default function DashboardPage() {
     if (isLoggingOut) return
     setIsLoggingOut(true)
     try {
-      await api.post('/auth/logout').catch(() => undefined)
+      await logoutCurrentSession()
     } finally {
-      setAccessToken(null)
       router.push('/login')
     }
   }
@@ -205,7 +252,7 @@ export default function DashboardPage() {
           <KPITile
             testId="kpi-dispositivos-activos"
             title="Dispositivos Activos"
-            value={`${onlineCount}/${devices.length}`}
+            value={`${onlineCount}/${activeDevices.length}`}
             valueColor={deviceValueColor}
             sub={deviceSub}
           />
