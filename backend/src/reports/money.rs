@@ -184,6 +184,12 @@ mod tests {
     }
 
     #[test]
+    fn rest_day_surcharge_misconfig_returns_zero() {
+        assert_eq!(rest_day_surcharge_cents(480, 100_000, 0), 0);
+        assert_eq!(rest_day_surcharge_cents(480, 100_000, -1), 0);
+    }
+
+    #[test]
     fn late_deduction_quarter_hour() {
         // 15 late min × $1000 / 480 = $31.25
         assert_eq!(late_deduction_cents(15, 100_000, 480), 3_125);
@@ -192,6 +198,12 @@ mod tests {
     #[test]
     fn late_deduction_zero() {
         assert_eq!(late_deduction_cents(0, 100_000, 480), 0);
+    }
+
+    #[test]
+    fn late_deduction_misconfig_returns_zero() {
+        assert_eq!(late_deduction_cents(15, 100_000, 0), 0);
+        assert_eq!(late_deduction_cents(15, 100_000, -1), 0);
     }
 
     #[test]

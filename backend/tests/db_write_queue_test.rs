@@ -639,3 +639,104 @@ async fn background_admission_retries_busy_three_times_and_no_other_error() {
     assert_eq!(closed_queue.stats().closed_rejections, 1);
     assert_eq!(closed_queue.stats().busy_rejections, 0);
 }
+
+#[tokio::test]
+async fn queued_connection_query_returns_rows_from_the_writer_connection() {
+    let db = test_db().await;
+    db.connect()
+        .unwrap()
+        .execute("CREATE TABLE query_values (value TEXT NOT NULL)", ())
+        .await
+        .unwrap();
+    let (queue, rx) = DbWriteQueue::channel(config(2, Duration::from_secs(1)));
+    let worker = tokio::spawn(run_write_worker(db, rx));
+
+    let value = queue
+        .job("query-writer", |conn| {
+            Box::pin(async move {
+                conn.statement("INSERT INTO query_values VALUES ('visible')", ())
+                    .await?;
+                let mut rows = conn.query("SELECT value FROM query_values", ()).await?;
+                Ok(rows.next().await?.unwrap().get::<String>(0)?)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(value, "visible");
+
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn flush_times_out_when_queue_capacity_is_exhausted() {
+    let (queue, _rx) = DbWriteQueue::channel(config(1, Duration::from_millis(20)));
+    let producer_queue = queue.clone();
+    let producer = tokio::spawn(async move {
+        producer_queue
+            .job("fills-control-capacity", |_conn| {
+                Box::pin(async { Ok::<_, anyhow::Error>(()) })
+            })
+            .await
+    });
+    wait_for_accepted(&queue, 1).await;
+
+    assert!(matches!(queue.flush().await, Err(DbWriteError::Busy)));
+    assert_eq!(queue.stats().busy_rejections, 1);
+    producer.abort();
+}
+
+#[tokio::test]
+async fn flush_times_out_while_an_admission_waiter_holds_the_lock() {
+    let timeout = Duration::from_millis(80);
+    let (queue, _rx) = DbWriteQueue::channel(config(1, timeout));
+    let first_queue = queue.clone();
+    let first = tokio::spawn(async move {
+        first_queue
+            .job("fills-capacity-before-flush", |_conn| {
+                Box::pin(async { Ok::<_, anyhow::Error>(()) })
+            })
+            .await
+    });
+    wait_for_accepted(&queue, 1).await;
+
+    let waiting_queue = queue.clone();
+    let waiting = tokio::spawn(async move {
+        waiting_queue
+            .job("holds-lock-before-flush", |_conn| {
+                Box::pin(async { Ok::<_, anyhow::Error>(()) })
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    assert!(matches!(queue.flush().await, Err(DbWriteError::Busy)));
+    assert!(matches!(waiting.await.unwrap(), Err(DbWriteError::Busy)));
+    first.abort();
+}
+
+#[tokio::test]
+async fn dropped_worker_receiver_rejects_jobs_and_control_commands() {
+    let (job_queue, job_rx) = DbWriteQueue::channel(config(1, Duration::from_secs(1)));
+    drop(job_rx);
+    let job_error = job_queue
+        .job("stopped-job", |_conn| {
+            Box::pin(async { Ok::<_, anyhow::Error>(()) })
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(job_error, DbWriteError::WorkerStopped));
+
+    let (flush_queue, flush_rx) = DbWriteQueue::channel(config(1, Duration::from_secs(1)));
+    drop(flush_rx);
+    assert!(matches!(
+        flush_queue.flush().await,
+        Err(DbWriteError::WorkerStopped)
+    ));
+}
+
+#[test]
+#[should_panic(expected = "write queue capacity must be positive")]
+fn zero_capacity_is_rejected() {
+    let _ = DbWriteQueue::channel(config(0, Duration::from_secs(1)));
+}

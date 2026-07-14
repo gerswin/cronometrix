@@ -237,7 +237,12 @@ pub async fn renewal_task(
     }
 }
 
-async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> {
+/// Attempt one best-effort renewal cycle for a cached license.
+///
+/// This is public so operators and integration tests can exercise the exact
+/// renewal transaction independently from the 24-hour scheduler. Callers that
+/// want the scheduler should use [`renewal_task`].
+pub async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> {
     let token = std::fs::read_to_string(jwt_path)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("read license: {}", e)))?;
     let claims = verify_license_jwt(token.trim())?;

@@ -23,14 +23,15 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 
 use cronometrix_api::config::Config;
 use cronometrix_api::devices::crypto;
 use cronometrix_api::devices::models::DeviceWithPlaintext;
 use cronometrix_api::enrollments::pusher::{
     push_one_device, push_one_device_for_backfill, push_one_device_for_backfill_with_timeout,
-    push_one_device_with_timeout, spawn_enrollment_pushes,
+    push_one_device_with_timeout, spawn_enrollment_pushes, EnrollmentTaskTracker,
 };
 use cronometrix_api::enrollments::service;
 use libsql::params;
@@ -44,6 +45,30 @@ const MINI_JPEG: &[u8] = &[
     0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
     0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
 ];
+
+#[derive(Clone, Default)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+struct GuardedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for GuardedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+    type Writer = GuardedWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        GuardedWriter(self.0.clone())
+    }
+}
 
 fn make_config() -> Arc<Config> {
     Arc::new(Config {
@@ -888,6 +913,213 @@ async fn push_one_device_for_backfill_5xx_returns_err_scrubbed() {
 // =============================================================================
 // spawn_enrollment_pushes — driver fan-out
 // =============================================================================
+
+#[tokio::test]
+async fn default_tracker_drains_tasks_and_rejects_admission_after_shutdown() {
+    let tracker = EnrollmentTaskTracker::default();
+    tracker.spawn(async {}).await.unwrap();
+    tracker.stop_and_join().await.unwrap();
+
+    let error = tracker.spawn(async {}).await.unwrap_err();
+    assert!(error.to_string().contains("admission is closed"));
+}
+
+#[tokio::test]
+async fn cancelled_driver_marks_the_push_failed_without_calling_the_device() {
+    let server = MockServer::start().await;
+    mount_successful_face_push(&server).await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_department_id, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "device",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+
+    state.enrollment_tasks.cancellation().cancel();
+    spawn_enrollment_pushes(
+        state.clone(),
+        started.enrollment_id.clone(),
+        started.face_id.clone(),
+        Arc::new(MINI_JPEG.to_vec()),
+        employee_id,
+        "Cancelled Employee".to_string(),
+        vec![make_plain_device(&device_id, &server.uri())],
+    )
+    .await
+    .unwrap();
+    state.enrollment_tasks.stop_and_join().await.unwrap();
+
+    assert!(server.received_requests().await.unwrap().is_empty());
+    let row = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT status, error_message FROM enrollment_device_pushes WHERE id=?1",
+            params![started.device_pushes[0].id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert!(row
+        .get::<Option<String>>(1)
+        .unwrap()
+        .unwrap()
+        .contains("stopped before device call"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn driver_records_push_and_finalize_errors_for_missing_database_rows() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let missing_device = make_plain_device("missing-device", "http://127.0.0.1:1");
+    let writer = SharedWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .without_time()
+        .with_writer(writer.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    spawn_enrollment_pushes(
+        state.clone(),
+        "missing-enrollment".to_string(),
+        "missing-face".to_string(),
+        Arc::new(MINI_JPEG.to_vec()),
+        "missing-employee".to_string(),
+        "Missing Employee".to_string(),
+        vec![missing_device],
+    )
+    .await
+    .unwrap();
+    let logs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let logs = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+            if logs.contains("push task returned error")
+                && logs.contains("push driver: finalize failed")
+            {
+                break logs;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("driver must report both failures before shutdown");
+    state.enrollment_tasks.stop_and_join().await.unwrap();
+
+    assert!(
+        logs.contains("push task returned error"),
+        "missing push row must be reported by the driver; logs: {logs}"
+    );
+    assert!(
+        logs.contains("push driver: finalize failed"),
+        "missing enrollment row must make finalization report an error; logs: {logs}"
+    );
+}
+
+#[tokio::test]
+async fn transport_error_with_empty_password_preserves_the_error_text() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_department_id, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, "http://127.0.0.1:1").await;
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "device",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+    clear_initial_checkpoint(&state, &started.device_pushes[0].id).await;
+    let mut device = make_plain_device(&device_id, "not a valid URL");
+    device.password.clear();
+
+    let error = push_one_device(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &Arc::new(MINI_JPEG.to_vec()),
+        &employee_id,
+        "Empty Password",
+        &device,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("ISAPI push failed"));
+}
+
+#[tokio::test]
+async fn authorized_dispatch_admission_failure_terminalizes_the_committed_push() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_department_id, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device_at(&state.db, &config.device_creds_key, "http://127.0.0.1:1").await;
+    state.enrollment_tasks.stop_and_join().await.unwrap();
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "device",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+
+    let dispatcher = state
+        .enrollment_dispatcher
+        .start(state.clone())
+        .await
+        .unwrap();
+    state.enrollment_dispatcher.close().unwrap();
+    dispatcher.await.unwrap().unwrap();
+
+    let row = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT e.status, p.status, p.error_message \
+             FROM enrollments e JOIN enrollment_device_pushes p ON p.enrollment_id=e.id \
+             WHERE e.id=?1",
+            params![started.enrollment_id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert_eq!(row.get::<String>(1).unwrap(), "failed");
+    assert!(row
+        .get::<Option<String>>(2)
+        .unwrap()
+        .unwrap()
+        .contains("could not be admitted"));
+}
 
 #[tokio::test]
 async fn spawn_enrollment_pushes_zero_devices_finalises_failed() {
