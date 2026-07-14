@@ -471,6 +471,12 @@ describe('lib/api single-flight refresh', () => {
     await import('../api')
 
     expect(mocks.axiosCreateConfigs).toHaveLength(2)
+    expect(mocks.axiosCreateConfigs[0]).toEqual(
+      expect.objectContaining({
+        baseURL: 'http://localhost:3001/api/v1',
+        withCredentials: true,
+      })
+    )
     expect(mocks.axiosCreateConfigs[1]).toEqual(
       expect.objectContaining({ withCredentials: true })
     )

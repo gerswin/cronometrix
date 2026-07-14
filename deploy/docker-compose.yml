@@ -1,22 +1,22 @@
-# Cronometrix v1 deployment — Phase 6
-# Services: api (Rust/Axum), web (Next.js), cloudflared (Cloudflare Tunnel)
+# Cronometrix v1 deployment — private, digest-pinned release topology.
+# Browser traffic enters only through gateway:8080; api/web stay internal.
 # Generated/copied by deploy/install.sh; lives at /opt/cronometrix/docker-compose.yml
 # on each client server. .env file in the same directory provides secrets.
 
 services:
   api:
-    image: ghcr.io/cronometrix/api:${VERSION:-latest}
+    image: ${API_IMAGE:?API_IMAGE digest required}
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       - CRONOMETRIX_DB_PATH=/opt/cronometrix/data/cronometrix.db
       - LICENSE_JWT_PATH=/opt/cronometrix/data/license.jwt
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=3001
-    ports:
-      # Bind to localhost only — cloudflared (or operator's reverse proxy)
-      # is the only entry point from the public internet.
-      - "127.0.0.1:3001:3001"
+    expose:
+      - "3001"
     volumes:
       - ./data:/opt/cronometrix/data
     healthcheck:
@@ -27,27 +27,45 @@ services:
       start_period: 15s
 
   web:
-    image: ghcr.io/cronometrix/web:${VERSION:-latest}
+    image: ${WEB_IMAGE:?WEB_IMAGE digest required}
     restart: unless-stopped
     environment:
-      - NEXT_PUBLIC_API_URL=http://api:3001
       - NODE_ENV=production
-    ports:
-      - "127.0.0.1:3000:3000"
+      - INTERNAL_API_URL=http://api:3001
+    expose:
+      - "3000"
     depends_on:
       api:
+        condition: service_healthy
+
+  gateway:
+    image: ${GATEWAY_IMAGE:?GATEWAY_IMAGE digest required}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/gateway-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   cloudflared:
-    image: cloudflare/cloudflared:2026.3.0
+    image: ${CLOUDFLARED_IMAGE:?CLOUDFLARED_IMAGE digest required}
     restart: unless-stopped
-    # `tunnel run` with no tunnel name uses the embedded TUNNEL_TOKEN to
-    # connect to the pre-created tunnel in CF Zero Trust (D-13).
+    # The remotely managed public hostname must use http://gateway:8080 as
+    # its service. `TUNNEL_TOKEN` connects to that pre-created tunnel.
     command: tunnel --no-autoupdate run
     environment:
       # `${VAR:?msg}` syntax: docker compose hard-fails if unset, surfacing
       # config errors at boot instead of silently running a broken tunnel
       # (RESEARCH § Pitfall 6).
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN required — re-run installer or edit .env}
-    # No `depends_on: web` constraint — DEPL-04: api/web must boot even if
-    # cloudflared is unavailable (e.g. operator activated offline).
+    depends_on:
+      gateway:
+        condition: service_healthy

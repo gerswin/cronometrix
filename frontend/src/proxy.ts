@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { resolveInternalApiBase } from '@/lib/api-base'
 
 const PROTECTED_PATHS = ['/dashboard', '/timesheet', '/employees', '/devices', '/enrollment']
 
@@ -22,7 +23,10 @@ export async function proxy(req: NextRequest) {
   void PROTECTED_PATHS
 
   try {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+    const apiUrl = resolveInternalApiBase(
+      process.env.INTERNAL_API_URL,
+      process.env.NEXT_PUBLIC_API_URL,
+    )
     // Note: fetch cache options (next.revalidate) have no effect in proxy — omitted
     const res = await fetch(`${apiUrl}/api/v1/setup/status`)
     const { initialized } = await res.json()

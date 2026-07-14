@@ -10,12 +10,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useSSE } from '../use-sse'
 
-const { getAccessTokenMock, onAccessTokenChangeMock } = vi.hoisted(() => ({
+const { apiBaseState, getAccessTokenMock, onAccessTokenChangeMock } = vi.hoisted(() => ({
+  apiBaseState: { value: 'https://api.example.test' },
   getAccessTokenMock: vi.fn(),
   onAccessTokenChangeMock: vi.fn(),
 }))
 vi.mock('@/lib/api', () => ({
-  API_BASE: 'https://api.example.test',
+  get API_BASE() { return apiBaseState.value },
   getAccessToken: () => getAccessTokenMock(),
   onAccessTokenChange: (listener: () => void) => onAccessTokenChangeMock(listener),
 }))
@@ -48,6 +49,7 @@ class FakeEventSource implements FakeESInstance {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  apiBaseState.value = 'https://api.example.test'
   createdInstances = []
   tokenListener = null
   unsubscribeMock = vi.fn()
@@ -84,6 +86,18 @@ describe('useSSE', () => {
     )
     expect(onAccessTokenChangeMock.mock.invocationCallOrder[0]).toBeLessThan(
       getAccessTokenMock.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('uses a relative same-origin URL when the public API base is explicitly empty', () => {
+    apiBaseState.value = ''
+    getAccessTokenMock.mockReturnValue('test-token')
+
+    renderHook(() => useSSE('/events/stream', vi.fn()))
+
+    expect(createdInstances).toHaveLength(1)
+    expect(createdInstances[0].url).toBe(
+      '/api/v1/events/stream?token=test-token',
     )
   })
 
