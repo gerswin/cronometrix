@@ -25,6 +25,7 @@ use cronometrix_api::devices::crypto;
 use cronometrix_api::enrollments::handlers::{self, CaptureState};
 use cronometrix_api::enrollments::service;
 use cronometrix_api::state::AppState;
+use cronometrix_api::storage::atomic_file::inspect_owned_file;
 use http_body_util::BodyExt;
 use libsql::params;
 use serde_json::Value;
@@ -1281,6 +1282,11 @@ async fn get_capture_does_not_hold_capture_map_lock_during_slow_file_read() {
         .await
         .unwrap();
     let fifo = state.paths.captures_tmp_root.join("slow.jpg");
+    tokio::fs::write(&fifo, b"original").await.unwrap();
+    let original_identity = inspect_owned_file(&state.paths.captures_tmp_root, &fifo)
+        .unwrap()
+        .identity();
+    tokio::fs::remove_file(&fifo).await.unwrap();
     assert!(std::process::Command::new("mkfifo")
         .arg(&fifo)
         .status()
@@ -1292,7 +1298,7 @@ async fn get_capture_does_not_hold_capture_map_lock_during_slow_file_read() {
             status: "captured".into(),
             source_device_id: "device".into(),
             photo_path: Some(fifo.to_string_lossy().into_owned()),
-            photo_identity: None,
+            photo_identity: Some(original_identity),
             error_message: None,
             created_at: Instant::now(),
             terminal_at: Some(Instant::now()),
@@ -1335,6 +1341,9 @@ async fn get_capture_returns_photo_b64_when_captured() {
         .unwrap();
     let path = state.paths.captures_tmp_root.join("cap-ok.jpg");
     tokio::fs::write(&path, MINI_JPEG).await.unwrap();
+    let identity = inspect_owned_file(&state.paths.captures_tmp_root, &path)
+        .unwrap()
+        .identity();
     {
         let mut map = state.captures.write().await;
         map.insert(
@@ -1343,7 +1352,7 @@ async fn get_capture_returns_photo_b64_when_captured() {
                 status: "captured".into(),
                 source_device_id: "dev-source".into(),
                 photo_path: Some(path.to_string_lossy().into_owned()),
-                photo_identity: None,
+                photo_identity: Some(identity),
                 error_message: None,
                 created_at: Instant::now(),
                 terminal_at: Some(Instant::now()),
@@ -1365,6 +1374,60 @@ async fn get_capture_returns_photo_b64_when_captured() {
     assert_eq!(json["source_device_id"], "dev-source");
     let b64 = json["photo_b64"].as_str().expect("photo_b64 set");
     assert!(!b64.is_empty());
+}
+
+#[tokio::test]
+async fn get_capture_rejects_regular_file_replacement_with_same_path() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (_emp_id, _admin_id, token) = seed_full(&state.db).await;
+    let cap_id = "cap-replaced".to_string();
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+    let path = state.paths.captures_tmp_root.join("cap-replaced.jpg");
+    tokio::fs::write(&path, MINI_JPEG).await.unwrap();
+    let original_identity = inspect_owned_file(&state.paths.captures_tmp_root, &path)
+        .unwrap()
+        .identity();
+    state.captures.write().await.insert(
+        cap_id.clone(),
+        CaptureState {
+            status: "captured".into(),
+            source_device_id: "dev-source".into(),
+            photo_path: Some(path.to_string_lossy().into_owned()),
+            photo_identity: Some(original_identity),
+            error_message: None,
+            created_at: Instant::now(),
+            terminal_at: Some(Instant::now()),
+        },
+    );
+    let replacement = state.paths.captures_tmp_root.join("foreign.jpg");
+    tokio::fs::write(&replacement, b"foreign-capture-bytes")
+        .await
+        .unwrap();
+    tokio::fs::rename(&replacement, &path).await.unwrap();
+    let app = build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/enrollments/captures/{cap_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_to_json(response.into_body()).await;
+    assert!(json.get("photo_b64").is_none());
+    assert!(!json.to_string().contains("foreign-capture-bytes"));
+    assert_eq!(
+        tokio::fs::read(&path).await.unwrap(),
+        b"foreign-capture-bytes"
+    );
 }
 
 #[tokio::test]

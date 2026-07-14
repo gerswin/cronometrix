@@ -656,9 +656,93 @@ async fn startup_recovery_completes_device_applied_push_without_replay() {
         .unwrap()
         .get(0)
         .unwrap();
+    let enrollment_status: String = conn
+        .query(
+            "SELECT status FROM enrollments WHERE id=?1",
+            params![started.enrollment_id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
     assert_eq!(push_status, "success");
     assert_eq!(mapping_count, 1);
     assert_eq!(checkpoint_count, 0);
+    assert_eq!(enrollment_status, "success");
+}
+
+#[tokio::test]
+async fn startup_recovery_finalization_failure_keeps_device_applied_checkpoint() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &state.config.device_creds_key).await;
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let push_id = started.device_pushes[0].id.clone();
+    let checkpoint_key = service::enrollment_checkpoint_key(&push_id);
+    service::mark_device_operation(
+        &state,
+        &checkpoint_key,
+        service::DeviceOperationState::DeviceApplied,
+    )
+    .await
+    .unwrap();
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_recovered_enrollment_finalize \
+             BEFORE UPDATE ON enrollments \
+             BEGIN SELECT RAISE(ABORT, 'forced recovered finalization failure'); END;",
+        )
+        .await
+        .unwrap();
+
+    cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .expect_err("startup must fail closed when aggregate finalization cannot commit");
+    let conn = state.db.connect().unwrap();
+    let row = conn
+        .query(
+            "SELECT p.status, c.state, e.status \
+             FROM enrollment_device_pushes p \
+             JOIN enrollments e ON e.id=p.enrollment_id \
+             JOIN device_operation_checkpoints c ON c.operation_key=?1 \
+             WHERE p.id=?2",
+            params![checkpoint_key, push_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    let mapping_count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM device_face_mappings WHERE device_id=?1",
+            params![device_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "pending");
+    assert_eq!(row.get::<String>(1).unwrap(), "device_applied");
+    assert_eq!(row.get::<String>(2).unwrap(), "in_progress");
+    assert_eq!(mapping_count, 0);
 }
 
 #[tokio::test]

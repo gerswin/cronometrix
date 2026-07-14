@@ -57,7 +57,7 @@ pub async fn recover_startup_checkpoints(state: &AppState) -> anyhow::Result<()>
                 let conn = state.db.connect()?;
                 let mut rows = conn
                     .query(
-                        "SELECT p.device_id, enr.employee_id, emp.face_id \
+                        "SELECT p.device_id, enr.employee_id, emp.face_id, p.enrollment_id \
                          FROM enrollment_device_pushes p \
                          JOIN enrollments enr ON enr.id=p.enrollment_id \
                          JOIN employees emp ON emp.id=enr.employee_id WHERE p.id=?1",
@@ -70,14 +70,16 @@ pub async fn recover_startup_checkpoints(state: &AppState) -> anyhow::Result<()>
                 let device_id: String = row.get(0)?;
                 let employee_id: String = row.get(1)?;
                 let face_id: Option<String> = row.get(2)?;
+                let enrollment_id: String = row.get(3)?;
                 let face_id = face_id.ok_or_else(|| {
                     anyhow::anyhow!("checkpoint enrollment employee has no face id")
                 })?;
                 drop(rows);
                 drop(conn);
                 if state_value == DeviceOperationState::DeviceApplied {
-                    service::complete_push_success(
+                    service::complete_recovered_push_success(
                         state,
+                        &enrollment_id,
                         push_id,
                         &device_id,
                         &face_id,

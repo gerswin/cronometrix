@@ -553,12 +553,18 @@ pub async fn get_capture(
     // Inline photo_b64 when status == "captured" (T-7-13 mitigated: admin-only endpoint).
     let photo_b64 = if capture_state.status == "captured" {
         if let Some(ref path) = capture_state.photo_path {
+            let identity = capture_state.photo_identity.ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!("capture file identity is unavailable"))
+            })?;
             let root = state.paths.captures_tmp_root.clone();
             let path = std::path::PathBuf::from(path);
-            let bytes = tokio::task::spawn_blocking(move || read_owned_file(&root, &path))
-                .await
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("capture read task failed: {e}")))?
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("read capture file: {e}")))?;
+            let bytes =
+                tokio::task::spawn_blocking(move || read_owned_file(&root, &path, identity))
+                    .await
+                    .map_err(|e| {
+                        AppError::Internal(anyhow::anyhow!("capture read task failed: {e}"))
+                    })?
+                    .map_err(|e| AppError::Internal(anyhow::anyhow!("read capture file: {e}")))?;
             Some(B64.encode(&bytes))
         } else {
             None

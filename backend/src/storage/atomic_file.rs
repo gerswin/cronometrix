@@ -119,11 +119,19 @@ impl Drop for AtomicFileGuard {
 /// Read a regular file that is a direct child of `root` without following a
 /// final-component symlink. The opened descriptor is read directly, so a
 /// concurrent pathname replacement cannot redirect the read.
-pub fn read_owned_file(root: &Path, path: &Path) -> anyhow::Result<Vec<u8>> {
+pub fn read_owned_file(
+    root: &Path,
+    path: &Path,
+    expected_identity: FileIdentity,
+) -> anyhow::Result<Vec<u8>> {
     validate_direct_child(root, path)?;
     let mut file = open_nofollow(path)?;
-    if !file.metadata()?.file_type().is_file() {
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
         bail!("owned path is not a regular file");
+    }
+    if file_identity(&metadata)? != expected_identity {
+        bail!("owned file identity mismatch");
     }
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
@@ -292,7 +300,7 @@ fn warn_cleanup_failure(stage: &'static str, identity: FileIdentity) {
 }
 
 #[cfg(not(unix))]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileIdentity;
 
 #[derive(Clone, Copy, Debug)]
@@ -465,8 +473,8 @@ mod tests {
         std::fs::write(&target, b"secret").unwrap();
         symlink(&target, &link).unwrap();
 
-        assert!(read_owned_file(tmp.path(), &link).is_err());
         let identity = file_identity(&std::fs::metadata(&target).unwrap()).unwrap();
+        assert!(read_owned_file(tmp.path(), &link, identity).is_err());
         assert!(remove_owned_file(tmp.path(), &link, identity).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"secret");
         assert!(std::fs::symlink_metadata(&link)

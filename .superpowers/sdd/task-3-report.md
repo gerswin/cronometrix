@@ -72,6 +72,14 @@ DONE
   catches target panics, terminalizes exact push IDs, finalizes enrollment, and
   reports the error. Main shutdown executes every drain phase best-effort and
   returns the first recorded failure.
+- Startup `device_applied` enrollment recovery now commits push success,
+  mapping, aggregate enrollment finalization, and checkpoint deletion in one
+  transaction. A finalization failure rolls back every change and preserves
+  the checkpoint for fail-closed retry on the next startup.
+- Capture reads now require the `FileIdentity` retained in `CaptureState` and
+  compare it with `fstat` metadata from the same no-follow descriptor before
+  reading. A regular-file pathname replacement returns a stable identity error
+  and no foreign bytes.
 
 ## TDD evidence
 
@@ -104,18 +112,22 @@ Raw logs:
 - `/tmp/cronometrix-12-03-task3-remediation-capture-red.txt`
 - `/tmp/cronometrix-12-03-task3-signals-red.txt`
 - `/tmp/cronometrix-12-03-task3-dispatch-abort-red.txt`
+- `/tmp/cronometrix-t3-finalize-red.txt`
+- `/tmp/cronometrix-t3-capture-identity-red.txt`
 
 ### GREEN
 
 - Rollback, mapping, finalize, cancellation ownership, capture lifecycle,
   pusher recovery, and purge recovery focused tests all pass.
-- Final exact eight-suite command (including `multi_device_push_test`): 154
+- Final exact eight-suite command (including `multi_device_push_test`): 156
   passed, 0 failed, 7 existing ignored stubs.
 - Library unit suite: 96 passed, 0 failed, 0 ignored.
 - Focused two-cycle recovery tests assert exactly one external operation for
   enrollment, backfill, and purge after a post-device DB failure.
 - Focused shutdown-during-ISAPI test proves the tracker waits for the device
   response and terminal DB state.
+- The capture replacement focal and the full enrollment-handler suite each
+  passed 20 consecutive runs after one non-reproducible harness SIGABRT.
 - Capture focal tests cover fresh/expired orphans, fail-closed startup,
   cancellation while map admission is blocked, slow filesystem reads without a
   map lock, deterministic delete-to-compare-remove replacement, and symlink

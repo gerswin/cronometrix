@@ -658,6 +658,102 @@ pub async fn complete_push_success(
         .map_err(AppError::from)
 }
 
+/// Startup-only DB recovery for a confirmed device side effect. Push state,
+/// mapping, aggregate enrollment status, and checkpoint deletion commit as one
+/// transaction so a finalization failure rolls everything back and leaves the
+/// `device_applied` checkpoint available for the next fail-closed startup.
+pub async fn complete_recovered_push_success(
+    state: &AppState,
+    enrollment_id: &str,
+    push_id: &str,
+    device_id: &str,
+    face_id: &str,
+    employee_id: &str,
+) -> Result<(), AppError> {
+    let enrollment_id = enrollment_id.to_string();
+    let push_id = push_id.to_string();
+    let device_id = device_id.to_string();
+    let face_id = face_id.to_string();
+    let employee_id = employee_id.to_string();
+    let mapping_id = Uuid::new_v4().to_string();
+    let checkpoint_key = enrollment_checkpoint_key(&push_id);
+    state
+        .db_write
+        .background_transact("enrollments.recover-device-push", move |tx| {
+            Box::pin(async move {
+                let push_updated = tx
+                    .statement(
+                        "UPDATE enrollment_device_pushes \
+                         SET status='success', error_message=NULL, completed_at=unixepoch() \
+                         WHERE id=?1 AND enrollment_id=?2",
+                        params![push_id, enrollment_id.clone()],
+                    )
+                    .await?;
+                if push_updated != 1 {
+                    anyhow::bail!("push row not found during recovered completion");
+                }
+                tx.statement(
+                    "INSERT INTO device_face_mappings \
+                     (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch()) \
+                     ON CONFLICT(device_id, face_id) DO UPDATE SET \
+                       employee_id=excluded.employee_id, state='active', \
+                       version=device_face_mappings.version+1, updated_at=unixepoch()",
+                    params![mapping_id, device_id, face_id, employee_id],
+                )
+                .await?;
+
+                let mut rows = tx
+                    .query(
+                        "SELECT \
+                           SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
+                           SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), \
+                           COUNT(*), \
+                           SUM(CASE WHEN status IN ('pending','in_progress') THEN 1 ELSE 0 END) \
+                         FROM enrollment_device_pushes WHERE enrollment_id=?1",
+                        params![enrollment_id.clone()],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("recovered enrollment aggregate missing"))?;
+                let success = row.get::<Option<i64>>(0)?.unwrap_or(0);
+                let failed = row.get::<Option<i64>>(1)?.unwrap_or(0);
+                let total = row.get::<Option<i64>>(2)?.unwrap_or(0);
+                let nonterminal = row.get::<Option<i64>>(3)?.unwrap_or(0);
+                drop(rows);
+                if nonterminal == 0 {
+                    let final_status = if total == 0 || success == 0 {
+                        "failed"
+                    } else if failed == 0 {
+                        "success"
+                    } else {
+                        "partial"
+                    };
+                    let enrollment_updated = tx
+                        .statement(
+                            "UPDATE enrollments SET status=?1, completed_at=unixepoch(), \
+                             version=version+1 WHERE id=?2",
+                            params![final_status, enrollment_id],
+                        )
+                        .await?;
+                    if enrollment_updated != 1 {
+                        anyhow::bail!("enrollment row not found during recovered finalization");
+                    }
+                }
+                tx.statement(
+                    "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+                    params![checkpoint_key],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
 /// Persist a terminal push failure through the background admission policy.
 pub async fn complete_push_failure(
     state: &AppState,
