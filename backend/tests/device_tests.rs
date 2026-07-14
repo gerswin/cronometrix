@@ -139,6 +139,166 @@ async fn register_device(
 // =============================================================================
 
 #[tokio::test]
+async fn missing_device_paths_return_not_found_for_get_patch_and_deactivate() {
+    let db = common::test_db().await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_admin_id, token) = admin_token();
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/devices/missing-device")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_response.status(), StatusCode::NOT_FOUND);
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri("/api/v1/devices/missing-device")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({"name": "Still Missing", "version": 1}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(patch_response.status(), StatusCode::NOT_FOUND);
+
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/v1/devices/missing-device")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete_response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn patch_to_another_active_device_ip_port_returns_conflict() {
+    let db = common::test_db().await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_admin_id, token) = admin_token();
+    register_device(&app, &token, "First", "10.20.0.1", 8443, "https").await;
+    let second = register_device(&app, &token, "Second", "10.20.0.2", 9443, "https").await;
+    let second_id = second["id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri(format!("/api/v1/devices/{second_id}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({"ip": "10.20.0.1", "port": 8443, "version": 1}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_to_json(response.into_body()).await["error"]["code"],
+        "DEVICE_IP_EXISTS"
+    );
+}
+
+#[tokio::test]
+async fn list_active_skips_a_device_with_corrupt_credentials() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    let key = common::test_device_creds_key();
+    let encrypted = devices::crypto::encrypt_password("valid-secret", &key).unwrap();
+    conn.execute(
+        "INSERT INTO devices \
+         (id, name, ip, port, scheme, username, encrypted_password, direction, \
+          allow_insecure_tls, connection_state, status, version, created_at, updated_at) \
+         VALUES ('valid-device', 'Valid', '10.30.0.1', 80, 'http', 'admin', ?1, 'entry', \
+                 1, 'offline', 'active', 1, unixepoch(), unixepoch())",
+        libsql::params![encrypted],
+    )
+    .await
+    .unwrap();
+    conn.execute(
+        "INSERT INTO devices \
+         (id, name, ip, port, scheme, username, encrypted_password, direction, \
+          allow_insecure_tls, connection_state, status, version, created_at, updated_at) \
+         VALUES ('corrupt-device', 'Corrupt', '10.30.0.2', 80, 'http', 'admin', \
+                 'not-base64', 'exit', 0, 'offline', 'active', 1, unixepoch(), unixepoch())",
+        (),
+    )
+    .await
+    .unwrap();
+
+    let active = devices::service::list_active(&conn, &key).await.unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, "valid-device");
+    assert_eq!(active[0].password, "valid-secret");
+    assert!(active[0].allow_insecure_tls);
+}
+
+#[tokio::test]
+async fn unexpected_create_database_failure_is_not_misreported_as_a_duplicate() {
+    let db = common::test_db().await;
+    db.connect()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER force_device_insert_failure \
+             BEFORE INSERT ON devices BEGIN SELECT RAISE(ABORT, 'forced device failure'); END;",
+        )
+        .await
+        .unwrap();
+    let (app, _tmp) = build_test_app(db).await;
+    let (_admin_id, token) = admin_token();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/devices")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "name": "Forced Failure",
+                        "ip": "10.40.0.1",
+                        "port": 80,
+                        "scheme": "http",
+                        "username": "admin",
+                        "password": "valid-password",
+                        "direction": "entry",
+                        "allow_insecure_tls": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_ne!(
+        body_to_json(response.into_body()).await["error"]["code"],
+        "DEVICE_IP_EXISTS"
+    );
+}
+
+#[tokio::test]
 async fn create_device_encrypts_password() {
     let db = common::test_db().await;
     let (app, _tmp) = build_test_app(db).await;
