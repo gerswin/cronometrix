@@ -11,6 +11,7 @@
 
 test-ci-config:
 	bash scripts/tests/test-ci-node-version-files.sh
+	bash scripts/tests/test-ci-node-version-files-portability.sh
 	bash scripts/test-e2e-harness-config.sh
 
 coverage: test-ci-config coverage-backend coverage-frontend

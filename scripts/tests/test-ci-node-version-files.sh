@@ -50,7 +50,7 @@ jobs:
       - name: Decoy field on another step
         node-version-file: .nvmrc')"
 test "$(run_guard "$misassociated_root" "$tmp_root/misassociated.log")" -ne 0
-rg -q 'setup-node step 2 has 0 node-version-file entries' "$tmp_root/misassociated.log"
+grep -Fq 'setup-node step 2 has 0 node-version-file entries' "$tmp_root/misassociated.log"
 
 duplicate_root="$(write_repo duplicate 'name: CI
 jobs:
@@ -61,7 +61,7 @@ jobs:
           node-version-file: .nvmrc
           node-version-file: .nvmrc')"
 test "$(run_guard "$duplicate_root" "$tmp_root/duplicate.log")" -ne 0
-rg -q 'setup-node step 1 has 2 node-version-file entries' "$tmp_root/duplicate.log"
+grep -Fq 'setup-node step 1 has 2 node-version-file entries' "$tmp_root/duplicate.log"
 
 missing_root="$(write_repo missing 'name: CI
 jobs:
@@ -71,7 +71,7 @@ jobs:
         with:
           node-version-file: frontend/.nvmrc')"
 test "$(run_guard "$missing_root" "$tmp_root/missing.log")" -ne 0
-rg -q 'references missing node-version-file: frontend/.nvmrc' "$tmp_root/missing.log"
+grep -Fq 'references missing node-version-file: frontend/.nvmrc' "$tmp_root/missing.log"
 
 escape_root="$(write_repo escape 'name: CI
 jobs:
@@ -81,7 +81,7 @@ jobs:
         with:
           node-version-file: ../outside/.nvmrc')"
 test "$(run_guard "$escape_root" "$tmp_root/escape.log")" -ne 0
-rg -q 'escapes the repository: ../outside/.nvmrc' "$tmp_root/escape.log"
+grep -Fq 'escapes the repository: ../outside/.nvmrc' "$tmp_root/escape.log"
 
 no_setup_root="$(write_repo no-setup 'name: CI
 jobs:
@@ -89,7 +89,7 @@ jobs:
     steps:
       - run: node --version')"
 test "$(run_guard "$no_setup_root" "$tmp_root/no-setup.log")" -ne 0
-rg -q 'has no setup-node steps' "$tmp_root/no-setup.log"
+grep -Fq 'has no setup-node steps' "$tmp_root/no-setup.log"
 
 bash "$guard"
 printf 'PASS: CI node-version-file association guard\n'
