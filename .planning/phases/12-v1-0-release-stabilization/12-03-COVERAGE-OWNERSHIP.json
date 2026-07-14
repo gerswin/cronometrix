@@ -28,6 +28,7 @@
     "backend/src/enrollments/service.rs",
     "backend/src/errors.rs",
     "backend/src/events/service.rs",
+    "backend/src/isapi/client.rs",
     "backend/src/leaves/handlers.rs",
     "backend/src/leaves/service.rs",
     "backend/src/recompute/worker.rs",

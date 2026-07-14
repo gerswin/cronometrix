@@ -614,7 +614,7 @@ async fn push_one_device_5xx_marks_push_failed() {
 }
 
 #[tokio::test]
-async fn explicit_face_upload_rejection_is_retryable() {
+async fn explicit_face_upload_auth_rejection_is_retryable() {
     let server = MockServer::start().await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
@@ -623,7 +623,7 @@ async fn explicit_face_upload_rejection_is_retryable() {
         .await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("upload failed"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("authentication rejected"))
         .mount(&server)
         .await;
     let db = common::test_db().await;

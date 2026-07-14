@@ -192,6 +192,14 @@ impl DeviceConnection {
             .unwrap_or("")
             .to_string();
 
+        let rejected_auth = |detail: &str| DeviceResponseError {
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            body: format!("device rejected digest authentication: {detail}"),
+        };
+        if www_auth.is_empty() {
+            return Err(rejected_auth("missing WWW-Authenticate challenge").into());
+        }
+
         let path = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json".to_string();
         let context = digest_auth::AuthContext::new_with_method(
             &self.username,
@@ -200,8 +208,11 @@ impl DeviceConnection {
             None::<&[u8]>, // body bytes not used for multipart digest
             digest_auth::HttpMethod::POST,
         );
-        let mut prompt = digest_auth::parse(&www_auth).context("parse WWW-Authenticate")?;
-        let auth_header = prompt.respond(&context).context("compute digest auth")?;
+        let mut prompt = digest_auth::parse(&www_auth)
+            .map_err(|error| rejected_auth(&format!("invalid challenge: {error}")))?;
+        let auth_header = prompt
+            .respond(&context)
+            .map_err(|error| rejected_auth(&format!("challenge response failed: {error}")))?;
 
         let resp2 = self
             .client
