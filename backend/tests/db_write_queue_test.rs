@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,6 +86,133 @@ async fn typed_transaction_returns_a_string_and_commits() {
             .unwrap(),
         "committed"
     );
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn after_commit_runs_with_cancelled_reply_before_flush_and_shutdown() {
+    let db = test_db().await;
+    let conn = db.connect().unwrap();
+    conn.execute("CREATE TABLE writes (value TEXT NOT NULL)", ())
+        .await
+        .unwrap();
+    let (queue, rx) = DbWriteQueue::channel(config(8, Duration::from_secs(1)));
+    let worker = tokio::spawn(run_write_worker(db, rx));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (callback_tx, mut callback_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let producer_queue = queue.clone();
+    let producer = tokio::spawn(async move {
+        producer_queue
+            .transact("cancelled-reply-post-commit", move |tx| {
+                tx.after_commit(move || {
+                    callback_tx.send("committed").unwrap();
+                });
+                Box::pin(async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    tx.statement("INSERT INTO writes (value) VALUES ('kept')", ())
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await
+    });
+    started_rx.await.unwrap();
+    producer.abort();
+    assert!(producer.await.unwrap_err().is_cancelled());
+    release_tx.send(()).unwrap();
+
+    queue.flush().await.unwrap();
+    assert_eq!(callback_rx.try_recv().unwrap(), "committed");
+    let count: i64 = conn
+        .query("SELECT COUNT(*) FROM writes", ())
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 1);
+
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn after_commit_is_dropped_without_running_on_transaction_rollback() {
+    let db = test_db().await;
+    let (queue, rx) = DbWriteQueue::channel(config(8, Duration::from_secs(1)));
+    let worker = tokio::spawn(run_write_worker(db, rx));
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let callback_count = callbacks.clone();
+
+    let error = queue
+        .transact::<(), _>("rollback-post-commit", move |tx| {
+            tx.after_commit(move || {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            });
+            Box::pin(async { anyhow::bail!("force rollback") })
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, DbWriteError::Job(_)));
+    queue.flush().await.unwrap();
+    assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn after_commit_is_dropped_without_running_when_commit_fails() {
+    let db = test_db().await;
+    let conn = db.connect().unwrap();
+    conn.execute("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ())
+        .await
+        .unwrap();
+    conn.execute(
+        "CREATE TABLE children (parent_id INTEGER, \
+         FOREIGN KEY(parent_id) REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED)",
+        (),
+    )
+    .await
+    .unwrap();
+    let (queue, rx) = DbWriteQueue::channel(config(8, Duration::from_secs(1)));
+    let worker = tokio::spawn(run_write_worker(db, rx));
+    queue
+        .job("enable-foreign-keys", |conn| {
+            Box::pin(async move {
+                conn.statement("PRAGMA foreign_keys = ON", ()).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let callback_count = callbacks.clone();
+
+    let error = queue
+        .transact::<(), _>("commit-failure-post-commit", move |tx| {
+            tx.after_commit(move || {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            });
+            Box::pin(async move {
+                tx.statement("INSERT INTO children (parent_id) VALUES (999)", ())
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, DbWriteError::Job(_)));
+    queue.flush().await.unwrap();
+    assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+
     queue.close_and_flush().await.unwrap();
     worker.await.unwrap().unwrap();
 }

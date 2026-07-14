@@ -193,9 +193,30 @@ impl QueuedConnection<'_> {
 /// Commit and rollback remain owned by the queue worker.
 pub struct QueuedTransaction<'a> {
     transaction: &'a libsql::Transaction,
+    after_commit: std::sync::Mutex<Vec<AfterCommitCallback>>,
 }
 
+type AfterCommitCallback = Box<dyn FnOnce() + Send + 'static>;
+
 impl QueuedTransaction<'_> {
+    /// Register synchronous work that the single-writer worker runs only after
+    /// this transaction commits, before replying or processing the next command.
+    pub fn after_commit(&self, callback: impl FnOnce() + Send + 'static) {
+        self.after_commit
+            .lock()
+            .expect("after_commit callback registry poisoned")
+            .push(Box::new(callback));
+    }
+
+    fn take_after_commit(&self) -> Vec<AfterCommitCallback> {
+        std::mem::take(
+            &mut *self
+                .after_commit
+                .lock()
+                .expect("after_commit callback registry poisoned"),
+        )
+    }
+
     pub async fn statement(
         &self,
         sql: &str,
@@ -609,12 +630,30 @@ pub async fn run_write_worker(
                     Ok(transaction) => {
                         let queued = QueuedTransaction {
                             transaction: &transaction,
+                            after_commit: std::sync::Mutex::new(Vec::new()),
                         };
                         match job.run(&queued).await {
-                            Ok(output) => match transaction.commit().await {
-                                Ok(()) => Ok(output),
-                                Err(error) => Err(error.into()),
-                            },
+                            Ok(output) => {
+                                let after_commit = queued.take_after_commit();
+                                match transaction.commit().await {
+                                    Ok(()) => {
+                                        for callback in after_commit {
+                                            if std::panic::catch_unwind(
+                                                std::panic::AssertUnwindSafe(callback),
+                                            )
+                                            .is_err()
+                                            {
+                                                tracing::error!(
+                                                    operation,
+                                                    "database after_commit callback panicked"
+                                                );
+                                            }
+                                        }
+                                        Ok(output)
+                                    }
+                                    Err(error) => Err(error.into()),
+                                }
+                            }
                             Err(error) => {
                                 if let Err(rollback_error) = transaction.rollback().await {
                                     tracing::error!(

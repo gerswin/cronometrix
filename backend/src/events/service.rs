@@ -11,33 +11,13 @@ use crate::storage::atomic_file::AtomicFileGuard;
 
 use super::models::{AttendanceEventResponse, EventListQuery, NewAttendanceEvent, PersistOutcome};
 
-/// Publish a recompute request for the (employee_id, anchor_date) pair derived
-/// from a just-inserted event.
-///
-/// Guards (Phase 3 D-02):
-/// - Pitfall 7: never publish when `event.employee_id.is_none()` — unknown-face
-///   events would flood the worker with NULL employee ids.
-/// - No-op when `state.recompute_tx` is None (test setups without a worker).
-/// - Pitfall 2: captured_at is UTC epoch; we compute the local anchor date via
-///   `state.config.timezone` before publishing.
+/// Compatibility entry point retained for the ISAPI stream. Queued persistence
+/// now publishes recompute as a worker-owned post-commit callback.
 pub fn publish_recompute_if_employee(state: &AppState, event: &NewAttendanceEvent) {
-    let Some(emp_id) = event.employee_id.as_ref() else {
-        return;
-    };
-    let Some(tx) = state.recompute_tx.as_ref() else {
-        return;
-    };
-    let tz = state.config.timezone;
-    let anchor = match chrono::Utc.timestamp_opt(event.captured_at, 0) {
-        chrono::LocalResult::Single(dt) => dt.with_timezone(&tz).date_naive(),
-        _ => return,
-    };
-    if let Err(e) = tx.send(RecomputeRequest {
-        employee_id: emp_id.clone(),
-        anchor_date: anchor,
-    }) {
-        tracing::warn!(err = %e, "recompute_tx send failed (worker down?)");
-    }
+    // Persistence owns recompute publication as a post-commit callback. Keep
+    // this compatibility entry point for the ISAPI stream without duplicating
+    // the request after a successful insert.
+    let _ = (state, event);
 }
 
 fn base_sse_payload(event: &NewAttendanceEvent, has_photo: bool) -> AttendanceEventSSEPayload {
@@ -240,9 +220,19 @@ pub async fn persist_attendance_event_queued(
     };
 
     let queued_photo_relpath = photo_relpath.clone();
-    let db_write = state.db_write.clone();
-    let transaction = tokio::spawn(async move {
-        let result = db_write
+    let recompute_tx = state.recompute_tx.clone();
+    let recompute_request = event.employee_id.as_ref().and_then(|employee_id| {
+        Utc.timestamp_opt(event.captured_at, 0)
+            .single()
+            .map(|captured_at| RecomputeRequest {
+                employee_id: employee_id.clone(),
+                anchor_date: captured_at
+                    .with_timezone(&state.config.timezone)
+                    .date_naive(),
+            })
+    });
+    let rows_affected = state
+        .db_write
             .transact("events.ingest-attendance", move |tx| {
                 Box::pin(async move {
                     let rows_affected = tx
@@ -266,27 +256,30 @@ pub async fn persist_attendance_event_queued(
                             ],
                         )
                         .await?;
-                    Ok((rows_affected, photo_guard))
+                    if rows_affected > 0 {
+                        tx.after_commit(move || {
+                            if let Some(guard) = photo_guard {
+                                guard.keep();
+                            }
+                            if let (Some(sender), Some(request)) =
+                                (recompute_tx, recompute_request)
+                            {
+                                let _ = sender.send(request);
+                            }
+                        });
+                    }
+                    Ok(rows_affected)
                 })
             })
-            .await;
-        match result {
-            Ok((0, _guard)) => Ok(PersistOutcome::Deduplicated),
-            Ok((_rows_affected, guard)) => {
-                if let Some(guard) = guard {
-                    guard.keep();
-                }
-                Ok(PersistOutcome::Inserted {
-                    photo_path: photo_relpath,
-                })
-            }
-            Err(error) => Err(error),
-        }
-    });
-    transaction
-        .await
-        .map_err(|error| AppError::Internal(anyhow::anyhow!("event transaction task: {error}")))?
-        .map_err(AppError::from)
+            .await
+            .map_err(AppError::from)?;
+    if rows_affected == 0 {
+        Ok(PersistOutcome::Deduplicated)
+    } else {
+        Ok(PersistOutcome::Inserted {
+            photo_path: photo_relpath,
+        })
+    }
 }
 
 /// Compatibility wrapper for non-transactional enrollment photo callers.

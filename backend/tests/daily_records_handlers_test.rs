@@ -690,9 +690,11 @@ async fn failed_override_write_removes_evidence_file() {
 #[tokio::test]
 async fn cancelled_request_after_override_job_admission_keeps_committed_evidence() {
     let db = common::test_db().await;
-    let (_, _, dr_id) = seed_dr(&db, "2026-04-21").await;
+    let (_, emp_id, dr_id) = seed_dr(&db, "2026-04-21").await;
     let (_admin_id, token) = admin_user_with_token(&db).await;
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
     let overrides_root = state.paths.overrides_root.clone();
     let app = build_test_app(state.clone());
 
@@ -755,5 +757,13 @@ async fn cancelled_request_after_override_job_admission_keeps_committed_evidence
     assert!(
         overrides_root.join(evidence_path).exists(),
         "committed override row must retain its evidence after request cancellation"
+    );
+    let recompute = recompute_rx
+        .try_recv()
+        .expect("committed override must publish recompute after request cancellation");
+    assert_eq!(recompute.employee_id, emp_id);
+    assert_eq!(
+        recompute.anchor_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 4, 21).unwrap()
     );
 }

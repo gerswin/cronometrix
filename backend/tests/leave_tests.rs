@@ -512,7 +512,7 @@ async fn closed_queue_after_leave_evidence_write_leaves_no_row_or_file() {
     let count: i64 = conn
         .query(
             "SELECT COUNT(*) FROM leaves WHERE employee_id = ?1",
-            params![emp],
+            params![emp.clone()],
         )
         .await
         .unwrap()
@@ -544,7 +544,9 @@ async fn cancelled_request_after_leave_job_admission_keeps_committed_evidence() 
     )
     .await;
     let emp = seed_employee(&db, &dept, "E-CANCELLED-REQUEST").await;
-    let (state, _tmp) = make_state(db);
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
     let leaves_root = state.paths.leaves_root.clone();
     let app = build_test_app(state.clone());
 
@@ -600,7 +602,7 @@ async fn cancelled_request_after_leave_job_admission_keeps_committed_evidence() 
     let evidence_path: String = conn
         .query(
             "SELECT evidence_path FROM leaves WHERE employee_id = ?1",
-            params![emp],
+            params![emp.clone()],
         )
         .await
         .unwrap()
@@ -613,6 +615,14 @@ async fn cancelled_request_after_leave_job_admission_keeps_committed_evidence() 
     assert!(
         leaves_root.join(evidence_path).exists(),
         "committed leave row must retain its evidence after request cancellation"
+    );
+    let recompute = recompute_rx
+        .try_recv()
+        .expect("committed leave must publish recompute after request cancellation");
+    assert_eq!(recompute.employee_id, emp);
+    assert_eq!(
+        recompute.anchor_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap()
     );
 }
 

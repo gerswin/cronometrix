@@ -187,9 +187,10 @@ pub async fn create_leave_queued_guarded(
     let overlap_to = to.format("%Y-%m-%d").to_string();
     let overlap_from = from.format("%Y-%m-%d").to_string();
     let select_sql = format!("SELECT {} FROM leaves WHERE id = ?1", LEAVE_SELECT_COLS);
-    let db_write = state.db_write.clone();
-    let transaction = tokio::spawn(async move {
-        let result = db_write
+    let recompute_tx = state.recompute_tx.clone();
+    let recompute_employee_id = req.employee_id.clone();
+    state
+        .db_write
         .transact(
             "leaves.create",
             move |tx| {
@@ -242,24 +243,26 @@ pub async fn create_leave_queued_guarded(
                         .await?
                         .ok_or_else(|| anyhow::anyhow!("inserted leave vanished"))?;
                     let leave = row_to_leave(row).map_err(anyhow::Error::new)?;
-                    Ok((leave, evidence_guard))
+                    tx.after_commit(move || {
+                        if let Some(guard) = evidence_guard {
+                            guard.keep();
+                        }
+                        if let Some(sender) = recompute_tx {
+                            let mut anchor_date = from;
+                            while anchor_date <= to {
+                                let _ = sender.send(crate::recompute::RecomputeRequest {
+                                    employee_id: recompute_employee_id.clone(),
+                                    anchor_date,
+                                });
+                                anchor_date += chrono::Duration::days(1);
+                            }
+                        }
+                    });
+                    Ok(leave)
                 })
             },
         )
-        .await;
-        match result {
-            Ok((leave, guard)) => {
-                if let Some(guard) = guard {
-                    guard.keep();
-                }
-                Ok(leave)
-            }
-            Err(error) => Err(error),
-        }
-    });
-    transaction
         .await
-        .map_err(|error| AppError::Internal(anyhow::anyhow!("leave transaction task: {error}")))?
         .map_err(AppError::from)
 }
 

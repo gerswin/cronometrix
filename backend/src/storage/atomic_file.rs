@@ -148,14 +148,39 @@ fn file_identity(metadata: &fs::Metadata) -> anyhow::Result<FileIdentity> {
 
 #[cfg(unix)]
 fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("atomic file has no parent: {}", path.display()))?;
+    let quarantine = parent.join(format!(".atomic-quarantine-{}.tmp", Uuid::new_v4()));
+    match claim_noreplace(path, &quarantine) {
+        Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    if file_identity(&metadata)? == identity {
-        fs::remove_file(path)
-            .with_context(|| format!("remove owned atomic file {}", path.display()))?;
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "claim atomic file {} as {}",
+                    path.display(),
+                    quarantine.display()
+                )
+            })
+        }
+    }
+
+    let claimed_identity = file_identity(&fs::symlink_metadata(&quarantine)?)?;
+    if claimed_identity == identity {
+        fs::remove_file(&quarantine)
+            .with_context(|| format!("remove owned atomic quarantine {}", quarantine.display()))?;
+    } else if let Err(error) = claim_noreplace(&quarantine, path) {
+        // A concurrent writer now owns the public path. Preserve the claimed
+        // foreign entry under its unique quarantine name for recovery rather
+        // than unlinking either writer's file.
+        return Err(error).with_context(|| {
+            format!(
+                "restore foreign atomic entry {} -> {}; retained for recovery",
+                quarantine.display(),
+                path.display()
+            )
+        });
     }
     Ok(())
 }
@@ -177,7 +202,7 @@ fn remove_if_owned(_path: &Path, _identity: FileIdentity) -> anyhow::Result<()> 
 }
 
 #[cfg(target_os = "linux")]
-fn publish_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::ffi::CString;
     use std::os::raw::{c_char, c_int, c_uint};
     use std::os::unix::ffi::OsStrExt;
@@ -218,10 +243,87 @@ fn publish_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int, c_uint};
+    use std::os::unix::ffi::OsStrExt;
+
+    const RENAME_EXCL: c_uint = 0x0000_0004;
+
+    extern "C" {
+        fn renamex_np(old: *const c_char, new: *const c_char, flags: c_uint) -> c_int;
+    }
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in source path"))?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in destination path")
+    })?;
+    // SAFETY: both C strings are NUL-terminated and live for the call;
+    // RENAME_EXCL is the Darwin renamex_np no-replace flag.
+    let result = unsafe { renamex_np(source.as_ptr(), destination.as_ptr(), RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn publish_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
-    // Portable std has no no-replace rename. A same-directory hard link is an
-    // atomic no-clobber publication fallback on Unix development platforms;
-    // the caller removes the temporary name after syncing the directory.
+    rename_noreplace(source, destination)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn claim_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    rename_noreplace(source, destination)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn publish_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
     fs::hard_link(source, destination)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn claim_noreplace(_source: &Path, _destination: &Path) -> std::io::Result<()> {
+    // Safe compensation requires a true atomic no-replace rename. Preserve the
+    // public entry on unsupported platforms rather than risk unlinking a swap.
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace claim is unavailable on this platform",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::claim_noreplace;
+
+    #[test]
+    fn quarantine_claim_moves_source_without_clobbering() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let quarantine = tmp.path().join("quarantine");
+        std::fs::write(&source, b"owned").unwrap();
+
+        claim_noreplace(&source, &quarantine).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&quarantine).unwrap(), b"owned");
+    }
+
+    #[test]
+    fn quarantine_claim_refuses_existing_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let quarantine = tmp.path().join("quarantine");
+        std::fs::write(&source, b"owned").unwrap();
+        std::fs::write(&quarantine, b"foreign").unwrap();
+
+        let error = claim_noreplace(&source, &quarantine).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&source).unwrap(), b"owned");
+        assert_eq!(std::fs::read(&quarantine).unwrap(), b"foreign");
+    }
 }

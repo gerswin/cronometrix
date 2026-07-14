@@ -166,6 +166,29 @@ fn atomic_file_guard_drop_preserves_replacement_owned_by_someone_else() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn atomic_file_guard_drop_preserves_foreign_symlink_and_target() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    let final_path = root.join("2026-07-14/event.jpg");
+    let guard = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"guard-owned").unwrap();
+    let target = tmp.path().join("foreign-target.jpg");
+    std::fs::write(&target, b"foreign-target").unwrap();
+    std::fs::remove_file(&final_path).unwrap();
+    symlink(&target, &final_path).unwrap();
+
+    drop(guard);
+
+    assert!(std::fs::symlink_metadata(&final_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), b"foreign-target");
+}
+
 // =============================================================================
 // Test data seeding helpers
 // =============================================================================
@@ -311,7 +334,9 @@ async fn duplicate_queued_event_leaves_no_second_photo() {
 #[tokio::test]
 async fn cancelled_event_future_after_job_admission_keeps_committed_photo() {
     let db = common::test_db().await;
-    let (_app, state, _tmp) = build_test_app(db).await;
+    let (_app, mut state, _tmp) = build_test_app(db).await;
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
     let conn = state.db.connect().unwrap();
     seed_device(&conn, "d-cancelled", "10.9.8.8", 8443).await;
     seed_employee(&conn, "e-cancelled", "EMP-CANCELLED").await;
@@ -377,6 +402,14 @@ async fn cancelled_event_future_after_job_admission_keeps_committed_photo() {
     assert!(
         state.paths.events_root.join(photo_path).exists(),
         "committed event row must retain its photo after future cancellation"
+    );
+    let recompute = recompute_rx
+        .try_recv()
+        .expect("committed event must publish recompute after future cancellation");
+    assert_eq!(recompute.employee_id, "e-cancelled");
+    assert_eq!(
+        recompute.anchor_date,
+        chrono::NaiveDate::from_ymd_opt(2023, 11, 14).unwrap()
     );
 }
 

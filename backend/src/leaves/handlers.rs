@@ -188,11 +188,6 @@ pub async fn create_leave(
     )
     .await?;
 
-    // 4. Publish recompute for every anchor_date in [from_date, to_date] so
-    //    existing daily_records pick up the new overlay. Safe if recompute_tx
-    //    is None (tests) — publish is a no-op.
-    publish_recompute_for_range(&state, &employee_id, &from_date, &to_date);
-
     Ok((StatusCode::CREATED, Json(leave)))
 }
 
