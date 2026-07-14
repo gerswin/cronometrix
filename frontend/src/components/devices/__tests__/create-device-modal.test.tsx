@@ -100,9 +100,11 @@ describe('CreateDeviceModal', () => {
     )
 
     await waitFor(() => expect(screen.getByTestId('device-name')).toHaveValue(''))
+    expect(screen.getByTestId('device-ip')).toHaveValue('')
     expect(screen.getByTestId('device-port')).toHaveValue(80)
     expect(screen.getByTestId('device-scheme')).toHaveValue('http')
     expect(screen.getByTestId('device-username')).toHaveValue('admin')
+    expect(screen.getByTestId('device-password')).toHaveValue('')
     expect(screen.getByTestId('device-direction')).toHaveValue('entry')
     expect(screen.getByTestId('device-insecure-tls')).not.toBeChecked()
   })
