@@ -122,6 +122,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_and_truncated_jpeg_headers() {
+        for input in [&[][..], &[0xFF][..], &[0xFF, 0xD8][..]] {
+            let err = normalize_face_jpeg(input).unwrap_err();
+            assert!(err.to_string().contains("not a JPEG"), "got: {err}");
+        }
+    }
+
+    #[test]
     fn passes_through_50kb_with_reencode_canonicalization() {
         let jpeg = make_jpeg(100, 100, 90);
         assert!(

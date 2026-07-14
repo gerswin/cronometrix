@@ -13,6 +13,7 @@
 
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::Path;
 
 /// Collect a deterministic hardware fingerprint from Linux pseudo-filesystems.
 /// SHA256(cpu_model + mac + disk_serial), no salt (D-05).
@@ -41,14 +42,18 @@ fn read_cpu_model() -> Result<String, anyhow::Error> {
 }
 
 fn read_primary_mac() -> Result<String, anyhow::Error> {
-    let net_dir = fs::read_dir("/sys/class/net")
-        .map_err(|e| anyhow::anyhow!("read /sys/class/net: {}", e))?;
+    read_primary_mac_from(Path::new("/sys/class/net"))
+}
+
+fn read_primary_mac_from(root: &Path) -> Result<String, anyhow::Error> {
+    let net_dir =
+        fs::read_dir(root).map_err(|e| anyhow::anyhow!("read {}: {}", root.display(), e))?;
     for entry in net_dir.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name == "lo" {
             continue;
         }
-        let mac_path = format!("/sys/class/net/{}/address", name);
+        let mac_path = entry.path().join("address");
         if let Ok(mac) = fs::read_to_string(&mac_path) {
             let mac = mac.trim().to_string();
             if mac != "00:00:00:00:00:00" && !mac.is_empty() {
@@ -57,6 +62,37 @@ fn read_primary_mac() -> Result<String, anyhow::Error> {
         }
     }
     Ok(String::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_primary_mac_from;
+
+    fn interface_root(name: &str, address: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let interface = root.path().join(name);
+        std::fs::create_dir(&interface).unwrap();
+        std::fs::write(interface.join("address"), address).unwrap();
+        root
+    }
+
+    #[test]
+    fn primary_mac_skips_loopback_zero_and_empty_addresses() {
+        let loopback = interface_root("lo", "11:22:33:44:55:66\n");
+        assert_eq!(read_primary_mac_from(loopback.path()).unwrap(), "");
+
+        let zero = interface_root("eth0", "00:00:00:00:00:00\n");
+        assert_eq!(read_primary_mac_from(zero.path()).unwrap(), "");
+
+        let empty = interface_root("eth0", "\n");
+        assert_eq!(read_primary_mac_from(empty.path()).unwrap(), "");
+
+        let valid = interface_root("eth0", "AA:BB:CC:DD:EE:FF\n");
+        assert_eq!(
+            read_primary_mac_from(valid.path()).unwrap(),
+            "AA:BB:CC:DD:EE:FF"
+        );
+    }
 }
 
 fn read_primary_disk_serial() -> Result<String, anyhow::Error> {

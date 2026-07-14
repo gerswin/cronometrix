@@ -24,6 +24,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use cronometrix_api::errors::AppError;
+#[cfg(target_os = "linux")]
+use cronometrix_api::license::service::try_renew;
 use cronometrix_api::license::service::{
     activate_license, load_and_validate_license, renewal_task, LicenseClaims,
 };
@@ -254,6 +256,319 @@ async fn renewal_task_exits_on_cancel() {
     // Must exit promptly (not wait 24h).
     let r = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
     assert!(r.is_ok(), "renewal_task must exit on cancel within 5s");
+}
+
+// =============================================================================
+// try_renew + renewal_task — Linux behavior coverage
+// =============================================================================
+
+#[cfg(target_os = "linux")]
+fn write_license(path: &std::path::Path, fingerprint: &str, exp_offset_secs: i64) -> String {
+    let token = sign_test_jwt(&make_claims(fingerprint, exp_offset_secs));
+    std::fs::write(path, &token).unwrap();
+    token
+}
+
+#[cfg(target_os = "linux")]
+fn assert_bad_gateway(result: Result<(), AppError>, expected_code: &str) {
+    match result {
+        Err(AppError::BadGateway { code, .. }) => assert_eq!(code, expected_code),
+        other => panic!("expected BadGateway {expected_code}, got {other:?}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn try_renew_skips_license_outside_renewal_window() {
+    let mock = MockServer::start().await;
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let jwt_path = tmp.path().join("license.jwt");
+    let original = write_license(&jwt_path, &fp, 60 * 24 * 60 * 60);
+
+    try_renew(jwt_path.to_str().unwrap(), &format!("{}/renew", mock.uri()))
+        .await
+        .unwrap();
+
+    assert_eq!(std::fs::read_to_string(&jwt_path).unwrap(), original);
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn try_renew_maps_transport_and_upstream_failures() {
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let jwt_path = tmp.path().join("license.jwt");
+    write_license(&jwt_path, &fp, 24 * 60 * 60);
+
+    let unreachable = try_renew(jwt_path.to_str().unwrap(), "http://127.0.0.1:1/renew").await;
+    assert_bad_gateway(unreachable, "RENEWAL_UNREACHABLE");
+
+    let mock = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/renew"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&mock)
+        .await;
+    let rejected = try_renew(jwt_path.to_str().unwrap(), &format!("{}/renew", mock.uri())).await;
+    assert_bad_gateway(rejected, "RENEWAL_FAILED");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn try_renew_rejects_malformed_missing_and_untrusted_tokens() {
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let jwt_path = tmp.path().join("license.jwt");
+    let original = write_license(&jwt_path, &fp, 24 * 60 * 60);
+    let mock = MockServer::start().await;
+
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/malformed"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+        .mount(&mock)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/missing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .mount(&mock)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/untrusted"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "not.a.jwt"})),
+        )
+        .mount(&mock)
+        .await;
+
+    let malformed = try_renew(
+        jwt_path.to_str().unwrap(),
+        &format!("{}/malformed", mock.uri()),
+    )
+    .await;
+    assert_bad_gateway(malformed, "RENEWAL_FAILED");
+    let missing = try_renew(
+        jwt_path.to_str().unwrap(),
+        &format!("{}/missing", mock.uri()),
+    )
+    .await;
+    assert_bad_gateway(missing, "RENEWAL_FAILED");
+    assert!(matches!(
+        try_renew(
+            jwt_path.to_str().unwrap(),
+            &format!("{}/untrusted", mock.uri())
+        )
+        .await,
+        Err(AppError::Unlicensed)
+    ));
+    assert_eq!(std::fs::read_to_string(&jwt_path).unwrap(), original);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn try_renew_enforces_fingerprint_and_atomically_persists_success() {
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let jwt_path = tmp.path().join("license.jwt");
+    let original = write_license(&jwt_path, &fp, 24 * 60 * 60);
+    let mismatch = sign_test_jwt(&make_claims(
+        "NOT-THE-LOCAL-FINGERPRINT",
+        365 * 24 * 60 * 60,
+    ));
+    let renewed = sign_test_jwt(&make_claims(&fp, 365 * 24 * 60 * 60));
+    let mock = MockServer::start().await;
+
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/mismatch"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": mismatch})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/success"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": renewed})),
+        )
+        .mount(&mock)
+        .await;
+
+    assert!(matches!(
+        try_renew(
+            jwt_path.to_str().unwrap(),
+            &format!("{}/mismatch", mock.uri())
+        )
+        .await,
+        Err(AppError::Forbidden)
+    ));
+    assert_eq!(std::fs::read_to_string(&jwt_path).unwrap(), original);
+
+    try_renew(
+        jwt_path.to_str().unwrap(),
+        &format!("{}/success", mock.uri()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&jwt_path).unwrap(), renewed);
+    assert!(!jwt_path.with_extension("jwt.tmp").exists());
+}
+
+#[cfg(target_os = "linux")]
+async fn drive_one_renewal_tick(
+    jwt_path: String,
+    renew_url: String,
+    license_valid: Arc<AtomicBool>,
+) -> (tokio::task::JoinHandle<()>, CancellationToken) {
+    let cancel = CancellationToken::new();
+    let task_cancel = cancel.clone();
+    let task = tokio::spawn(async move {
+        renewal_task(jwt_path, renew_url, license_valid, task_cancel).await;
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    (task, cancel)
+}
+
+#[cfg(target_os = "linux")]
+async fn stop_renewal_task(task: tokio::task::JoinHandle<()>, cancel: CancellationToken) {
+    cancel.cancel();
+    tokio::task::yield_now().await;
+    task.await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_request_path(mock: &MockServer, expected_path: &str) {
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if mock
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| request.url.path() == expected_path)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        observed.is_ok(),
+        "renewal endpoint did not receive a request at {expected_path}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_file_content(path: &std::path::Path, expected: &str) {
+    let persisted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if std::fs::read_to_string(path).unwrap() == expected {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        persisted.is_ok(),
+        "renewal task did not persist the expected JWT"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(start_paused = true)]
+async fn renewal_task_skips_when_license_is_invalid_or_url_is_empty() {
+    let mock = MockServer::start().await;
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let jwt_path = tmp.path().join("license.jwt");
+    let original = write_license(&jwt_path, &fp, 24 * 60 * 60);
+
+    let (task, cancel) = drive_one_renewal_tick(
+        jwt_path.to_string_lossy().into_owned(),
+        format!("{}/renew", mock.uri()),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await;
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    stop_renewal_task(task, cancel).await;
+
+    let (task, cancel) = drive_one_renewal_tick(
+        jwt_path.to_string_lossy().into_owned(),
+        String::new(),
+        Arc::new(AtomicBool::new(true)),
+    )
+    .await;
+    assert_eq!(std::fs::read_to_string(&jwt_path).unwrap(), original);
+    stop_renewal_task(task, cancel).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(start_paused = true)]
+async fn renewal_task_attempts_failure_and_success_without_stopping() {
+    let mock = MockServer::start().await;
+    let fp = cronometrix_api::license::fingerprint::collect_fingerprint().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let failed_path = tmp.path().join("failed.jwt");
+    let success_path = tmp.path().join("success.jwt");
+    let failed_original = write_license(&failed_path, &fp, 24 * 60 * 60);
+    write_license(&success_path, &fp, 24 * 60 * 60);
+    let renewed = sign_test_jwt(&make_claims(&fp, 365 * 24 * 60 * 60));
+
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/failure"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&mock)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/success"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": renewed})),
+        )
+        .mount(&mock)
+        .await;
+
+    let (failure_task, failure_cancel) = drive_one_renewal_tick(
+        failed_path.to_string_lossy().into_owned(),
+        format!("{}/failure", mock.uri()),
+        Arc::new(AtomicBool::new(true)),
+    )
+    .await;
+    // Resume real time while reqwest and wiremock complete their socket I/O.
+    // Keeping Tokio time paused here can auto-advance reqwest's timeout before
+    // the loopback response is processed.
+    tokio::time::resume();
+    wait_for_request_path(&mock, "/failure").await;
+    assert_eq!(
+        std::fs::read_to_string(&failed_path).unwrap(),
+        failed_original
+    );
+    stop_renewal_task(failure_task, failure_cancel).await;
+
+    tokio::time::pause();
+    let (success_task, success_cancel) = drive_one_renewal_tick(
+        success_path.to_string_lossy().into_owned(),
+        format!("{}/success", mock.uri()),
+        Arc::new(AtomicBool::new(true)),
+    )
+    .await;
+    tokio::time::resume();
+    wait_for_request_path(&mock, "/success").await;
+    wait_for_file_content(&success_path, &renewed).await;
+    stop_renewal_task(success_task, success_cancel).await;
+
+    let requests = mock.received_requests().await.unwrap();
+    assert!(requests
+        .iter()
+        .any(|request| request.url.path() == "/failure"));
+    assert!(requests
+        .iter()
+        .any(|request| request.url.path() == "/success"));
 }
 
 // =============================================================================

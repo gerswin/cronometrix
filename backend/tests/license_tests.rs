@@ -476,6 +476,59 @@ mod gate_behavior_tests {
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
+    /// The explicit format guard must reject every malformed 19-character
+    /// shape before any activation network request is attempted.
+    #[tokio::test]
+    async fn test_setup_activate_rejects_malformed_full_length_keys() {
+        for key in [
+            "ABCDEFGHIJKLMNOPQRS",
+            "ABC-DEFG-HIJK-LMNOP",
+            "AB!D-EFGH-IJKL-MNOP",
+        ] {
+            let db = common::test_db().await;
+            let (app, _lv, _tmp) =
+                build_gated_app(db, false, "http://127.0.0.1:1/unused".to_string()).await;
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/setup/activate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({"license_key": key}).to_string(),
+                ))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "key: {key}"
+            );
+            let body = body_to_json(resp.into_body()).await;
+            assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "key: {key}");
+        }
+    }
+
+    /// A valid key on an already activated installation is idempotently
+    /// rejected without contacting the activation server.
+    #[tokio::test]
+    async fn test_setup_activate_rejects_second_activation() {
+        let db = common::test_db().await;
+        let (app, lv, _tmp) =
+            build_gated_app(db, true, "http://127.0.0.1:1/unused".to_string()).await;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/setup/activate")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({"license_key":"ABCD-EFGH-IJKL-MNOP"}).to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = body_to_json(resp.into_body()).await;
+        assert_eq!(body["error"]["code"], "ALREADY_ACTIVATED");
+        assert!(lv.load(Ordering::Relaxed));
+    }
+
     /// LIC-03 round-trip: wiremock returns a valid signed JWT, handler verifies
     /// + persists + flips license_valid → true.
     /// Platform note: on macOS dev hosts collect_fingerprint() errors out
