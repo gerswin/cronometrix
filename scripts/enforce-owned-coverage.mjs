@@ -4,7 +4,6 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 
-const EXPECTED_PLAN = '12-02'
 const EXPECTED_THRESHOLDS = {
   backend: { lines: 70, branches: 60 },
   frontend: { statements: 70, branches: 60, functions: 70, lines: 70 },
@@ -55,14 +54,24 @@ function sameKeysAndValues(actual, expected) {
     && actualKeys.every((key, index) => key === expectedKeys[index] && actual[key] === expected[key])
 }
 
-function validateManifest(raw, errors) {
+function validateManifest(raw, manifestPath, errors) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     errors.push('manifest must be a JSON object')
     return undefined
   }
-  if (raw.plan !== EXPECTED_PLAN) errors.push(`manifest plan must be ${EXPECTED_PLAN}`)
+  const filenameMatch = path.basename(manifestPath).match(/^(\d{2}-\d{2})-COVERAGE-OWNERSHIP\.json$/)
+  if (filenameMatch === null) {
+    errors.push('manifest filename must be NN-NN-COVERAGE-OWNERSHIP.json')
+  }
+  if (typeof raw.plan !== 'string' || !/^\d{2}-\d{2}$/.test(raw.plan)) {
+    errors.push('manifest plan must use NN-NN format')
+  } else if (filenameMatch !== null && raw.plan !== filenameMatch[1]) {
+    errors.push(`manifest plan ${raw.plan} does not match filename plan ${filenameMatch[1]}`)
+  }
   if (typeof raw.base_sha !== 'string' || raw.base_sha.length === 0) {
     errors.push('manifest base_sha is missing')
+  } else if (!/^[a-f0-9]{40}$/.test(raw.base_sha)) {
+    errors.push('manifest base_sha must be a full lowercase 40-character commit SHA')
   }
   if (!sameKeysAndValues(raw.thresholds?.backend, EXPECTED_THRESHOLDS.backend)) {
     errors.push('manifest backend thresholds must exactly match lines=70 branches=60')
@@ -182,7 +191,28 @@ function frontendMetric(metrics, metric, file, errors) {
     errors.push(`frontend ${metric} metric is missing for ${file}`)
     return undefined
   }
-  const value = metrics[metric]?.pct
+  const rawMetric = metrics[metric]
+  if (rawMetric === null || typeof rawMetric !== 'object' || Array.isArray(rawMetric)) {
+    errors.push(`frontend ${metric} metric is malformed for ${file}`)
+    return undefined
+  }
+  const counts = {}
+  for (const countName of ['total', 'covered', 'skipped']) {
+    const count = rawMetric[countName]
+    if (!Number.isSafeInteger(count) || count < 0) {
+      errors.push(`frontend ${metric} count ${countName} is malformed for ${file}`)
+    } else {
+      counts[countName] = count
+    }
+  }
+  if (Object.keys(counts).length === 3
+    && (counts.covered > counts.total
+      || counts.skipped > counts.total
+      || counts.covered + counts.skipped > counts.total)) {
+    errors.push(`frontend ${metric} count relationship is invalid for ${file}`)
+  }
+
+  const value = rawMetric.pct
   if (value === 'Unknown') {
     errors.push(`frontend ${metric} metric is Unknown for ${file}`)
     return undefined
@@ -199,6 +229,20 @@ function frontendMetric(metrics, metric, file, errors) {
     errors.push(`frontend ${metric} metric is out of range for ${file}: ${value}`)
     return undefined
   }
+  if (Object.keys(counts).length === 3
+    && counts.covered <= counts.total
+    && counts.skipped <= counts.total
+    && counts.covered + counts.skipped <= counts.total) {
+    const expectedPct = counts.total === 0
+      ? 100
+      : Math.floor((counts.covered / counts.total) * 10_000) / 100
+    if (value !== expectedPct) {
+      errors.push(
+        `frontend ${metric} pct ${value.toFixed(2)} is inconsistent with counts for ${file}; expected ${expectedPct.toFixed(2)}`,
+      )
+      return undefined
+    }
+  }
   return value
 }
 
@@ -210,6 +254,15 @@ function parseFrontendSummary(filePath, repoRoot, errors) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     errors.push('frontend coverage summary JSON must be an object')
     return files
+  }
+  if (raw.total === undefined) {
+    errors.push('frontend coverage summary total metrics are missing')
+  } else if (raw.total === null || typeof raw.total !== 'object' || Array.isArray(raw.total)) {
+    errors.push('frontend coverage summary total metrics are malformed')
+  } else {
+    for (const metric of Object.keys(EXPECTED_THRESHOLDS.frontend)) {
+      frontendMetric(raw.total, metric, 'total', errors)
+    }
   }
   for (const [rawPath, metrics] of Object.entries(raw)) {
     if (rawPath === 'total') continue
@@ -243,6 +296,26 @@ function changedFiles(repoRoot, baseSha, errors) {
     errors.push(`manifest base_sha is invalid: ${baseSha}`)
     return new Set()
   }
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  }).trim()
+  if (baseSha === head) {
+    errors.push('manifest base_sha must precede HEAD')
+    return new Set()
+  }
+  const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', baseSha, 'HEAD'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  })
+  if (ancestor.status === 1) {
+    errors.push(`manifest base_sha is not an ancestor of HEAD: ${baseSha}`)
+    return new Set()
+  }
+  if (ancestor.status !== 0) {
+    errors.push(`unable to verify manifest base_sha ancestry: ${baseSha}`)
+    return new Set()
+  }
   const diff = spawnSync('git', ['diff', '--name-only', `${baseSha}...HEAD`], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -256,6 +329,13 @@ function changedFiles(repoRoot, baseSha, errors) {
 
 function enforceSide(side, manifestFiles, artifactFiles, changed, thresholds, errors) {
   const owned = new Set(manifestFiles)
+  const relevantCoveredFiles = [...artifactFiles.keys()].filter((file) => changed.has(file))
+  if (manifestFiles.length === 0 && relevantCoveredFiles.length > 0) {
+    errors.push(
+      `${side} artifact contains changed covered files and requires a nonempty manifest; omitted: ${relevantCoveredFiles.join(', ')}`,
+    )
+    return
+  }
   for (const file of artifactFiles.keys()) {
     if (changed.has(file) && !owned.has(file)) {
       errors.push(`${side} changed covered file omitted from manifest: ${file}`)
@@ -295,7 +375,9 @@ function main() {
 
   const manifestPath = path.resolve(process.cwd(), flags.get('--manifest'))
   const rawManifest = readJson(manifestPath, 'manifest', errors)
-  const manifest = rawManifest === undefined ? undefined : validateManifest(rawManifest, errors)
+  const manifest = rawManifest === undefined
+    ? undefined
+    : validateManifest(rawManifest, manifestPath, errors)
   if (manifest === undefined) return fail(errors)
   if (errors.length > 0) return fail(errors)
 
@@ -303,13 +385,9 @@ function main() {
   const backendPath = flags.get('--backend-lcov')
   if (manifest.frontend.length > 0 && frontendPath === undefined) {
     errors.push('frontend coverage artifact is required for a nonempty manifest')
-  } else if (manifest.frontend.length === 0 && frontendPath !== undefined) {
-    errors.push('frontend artifact was provided while the frontend manifest is empty')
   }
   if (manifest.backend.length > 0 && backendPath === undefined) {
     errors.push('backend coverage artifact is required for a nonempty manifest')
-  } else if (manifest.backend.length === 0 && backendPath !== undefined) {
-    errors.push('backend artifact was provided while the backend manifest is empty')
   }
 
   const changed = changedFiles(repoRoot, manifest.base_sha, errors)

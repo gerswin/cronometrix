@@ -45,7 +45,7 @@ function makeRepo(changedFiles = [], baseFiles = []) {
 }
 
 function frontendMetrics(overrides = {}) {
-  const metric = (pct) => ({ total: 10, covered: pct / 10, skipped: 0, pct })
+  const metric = (pct) => ({ total: 10_000, covered: pct * 100, skipped: 0, pct })
   return {
     statements: metric(70),
     branches: metric(60),
@@ -109,7 +109,7 @@ function manifest(baseSha, overrides = {}) {
 }
 
 function runChecker({ root, manifest: data, frontendSummary, backendLcov }) {
-  const manifestPath = path.join(root, 'manifest.json')
+  const manifestPath = path.join(root, `${data.plan}-COVERAGE-OWNERSHIP.json`)
   writeFileSync(manifestPath, `${JSON.stringify(data)}\n`)
   const args = [checker, '--manifest', manifestPath]
   if (frontendSummary !== undefined) args.push('--frontend-summary', frontendSummary)
@@ -117,11 +117,11 @@ function runChecker({ root, manifest: data, frontendSummary, backendLcov }) {
   return spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8' })
 }
 
-function expectPass(result, backend, frontend) {
+function expectPass(result, backend, frontend, plan = '12-02') {
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.equal(
     result.stdout.trim(),
-    `PASS owned-coverage plan=12-02 backend=${backend} frontend=${frontend}`,
+    `PASS owned-coverage plan=${plan} backend=${backend} frontend=${frontend}`,
   )
   assert.equal(result.stderr, '')
 }
@@ -155,6 +155,20 @@ test('passes exact boundaries with backend and frontend artifacts', () => {
     frontendSummary,
     backendLcov,
   }), 1, 1)
+})
+
+test('accepts the same manifest schema for later release plans', () => {
+  const frontendFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([frontendFile])
+  const frontendSummary = writeFrontendSummary(root, {
+    [frontendFile]: frontendMetrics(),
+  })
+
+  expectPass(runChecker({
+    root,
+    manifest: manifest(baseSha, { plan: '12-03', frontend: [frontendFile] }),
+    frontendSummary,
+  }), 0, 1, '12-03')
 })
 
 test('passes a frontend-only manifest and artifact', () => {
@@ -365,7 +379,12 @@ for (const [metric, threshold] of Object.entries({
     const { root, baseSha } = makeRepo([frontendFile])
     const frontendSummary = writeFrontendSummary(root, {
       [frontendFile]: frontendMetrics({
-        [metric]: { total: 10, covered: 1, skipped: 0, pct: threshold - 0.01 },
+        [metric]: {
+          total: 10_000,
+          covered: (threshold - 0.01) * 100,
+          skipped: 0,
+          pct: threshold - 0.01,
+        },
       }),
     })
 
@@ -405,7 +424,9 @@ test('rejects frontend pct metrics outside the inclusive zero-to-100 range', () 
     const frontendFile = 'frontend/src/lib/api.ts'
     const { root, baseSha } = makeRepo([frontendFile])
     const frontendSummary = writeFrontendSummary(root, {
-      [frontendFile]: frontendMetrics({ lines: { pct: value } }),
+      [frontendFile]: frontendMetrics({
+        lines: { total: 10_000, covered: value * 100, skipped: 0, pct: value },
+      }),
     })
 
     expectFail(runChecker({
@@ -486,14 +507,14 @@ test('requires an artifact when the corresponding manifest side is nonempty', ()
   }), /FAIL:.*frontend.*artifact.*required/i)
 })
 
-test('rejects an artifact flag when the corresponding manifest side is empty', () => {
-  const { root, baseSha } = makeRepo()
+test('allows an artifact for an empty side when it contains no relevant changed file', () => {
+  const { root, baseSha } = makeRepo(['README.md'])
   const frontendSummary = writeFrontendSummary(root, {})
-  expectFail(runChecker({
+  expectPass(runChecker({
     root,
     manifest: manifest(baseSha),
     frontendSummary,
-  }), /FAIL:.*frontend.*manifest.*empty/i)
+  }), 0, 0)
 })
 
 test('treats zero measured backend branches as 100 percent', () => {
@@ -524,4 +545,78 @@ test('fails when base_sha does not resolve to a commit', () => {
     root,
     manifest: manifest('0000000000000000000000000000000000000000'),
   }), /FAIL:.*base_sha.*invalid/i)
+})
+
+test('fails when base_sha is HEAD even with an empty owned manifest', () => {
+  const { root } = makeRepo()
+  const head = git(root, 'rev-parse', 'HEAD')
+  expectFail(runChecker({
+    root,
+    manifest: manifest(head),
+  }), /FAIL:.*base_sha.*must precede HEAD/i)
+})
+
+test('fails explicitly when base_sha is not an ancestor of HEAD', () => {
+  const { root, baseSha } = makeRepo()
+  git(root, 'checkout', '--orphan', 'unrelated')
+  git(root, 'rm', '-rf', '.')
+  writeFileSync(path.join(root, '.gitignore'), 'coverage-summary.json\nlcov.info\n')
+  git(root, 'add', '.gitignore')
+  git(root, 'commit', '-qm', 'unrelated head')
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha),
+  }), /FAIL:.*base_sha.*not an ancestor of HEAD/i)
+})
+
+test('fails vacuous empty ownership when an artifact has a relevant changed covered file', () => {
+  const frontendFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([frontendFile])
+  const frontendSummary = writeFrontendSummary(root, {
+    [frontendFile]: frontendMetrics(),
+  })
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha),
+    frontendSummary,
+  }), /FAIL:.*frontend.*covered files.*nonempty manifest/i)
+})
+
+test('rejects malformed frontend count fields and relationships', () => {
+  const invalidMetrics = [
+    { total: 10.5, covered: 7, skipped: 0, pct: 70 },
+    { total: 10, covered: -1, skipped: 0, pct: 70 },
+    { total: 10, covered: 11, skipped: 0, pct: 70 },
+    { total: 10, covered: 7, skipped: 4, pct: 70 },
+  ]
+  for (const lines of invalidMetrics) {
+    const frontendFile = 'frontend/src/lib/api.ts'
+    const { root, baseSha } = makeRepo([frontendFile])
+    const frontendSummary = writeFrontendSummary(root, {
+      [frontendFile]: frontendMetrics({ lines }),
+    })
+    expectFail(runChecker({
+      root,
+      manifest: manifest(baseSha, { frontend: [frontendFile] }),
+      frontendSummary,
+    }), /FAIL:.*frontend lines.*(count|relationship)/i)
+  }
+})
+
+test('rejects frontend pct inconsistent with counts at two-decimal coverage semantics', () => {
+  const frontendFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([frontendFile])
+  const frontendSummary = writeFrontendSummary(root, {
+    [frontendFile]: frontendMetrics({
+      lines: { total: 3, covered: 2, skipped: 0, pct: 66.67 },
+    }),
+  })
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha, { frontend: [frontendFile] }),
+    frontendSummary,
+  }), /FAIL:.*frontend lines.*pct.*counts.*66\.66/i)
 })
