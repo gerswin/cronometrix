@@ -205,6 +205,46 @@ async fn rules_bonus_minutes_config() {
 }
 
 #[tokio::test]
+async fn rules_reject_invalid_and_stale_updates_and_allow_noop() {
+    let db = common::test_db().await;
+    let token = common::test_access_token(&uuid::Uuid::new_v4().to_string(), "admin");
+    let (app, _tmp) = build_test_app(db).await;
+
+    let invalid = Request::builder()
+        .method(Method::PATCH)
+        .uri("/api/v1/rules")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(
+            json!({ "late_arrival_tolerance_min": 61, "version": 1 }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(invalid).await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let noop = Request::builder()
+        .method(Method::PATCH)
+        .uri("/api/v1/rules")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(json!({ "version": 1 }).to_string()))
+        .unwrap();
+    let noop_response = app.clone().oneshot(noop).await.unwrap();
+    assert_eq!(noop_response.status(), StatusCode::OK);
+    assert_eq!(body_to_json(noop_response.into_body()).await["version"], 1);
+
+    let stale = Request::builder()
+        .method(Method::PATCH)
+        .uri("/api/v1/rules")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(
+            json!({ "bonus_minutes": 5, "version": 0 }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(app.oneshot(stale).await.unwrap().status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn rules_effective_from_updates_on_change() {
     let db = common::test_db().await;
     let admin_id = uuid::Uuid::new_v4().to_string();
