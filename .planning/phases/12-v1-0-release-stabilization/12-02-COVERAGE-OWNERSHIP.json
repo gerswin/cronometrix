@@ -1,0 +1,57 @@
+{
+  "plan": "12-02",
+  "base_sha": "5f877fe445dfb18e555870d22a37201c1a4ee483",
+  "thresholds": {
+    "backend": {
+      "lines": 70,
+      "branches": 60
+    },
+    "frontend": {
+      "statements": 70,
+      "branches": 60,
+      "functions": 70,
+      "lines": 70
+    }
+  },
+  "backend": [
+    "backend/src/auth/handlers.rs",
+    "backend/src/auth/models.rs",
+    "backend/src/auth/service.rs",
+    "backend/src/bin/mock_hikvision.rs",
+    "backend/src/bin/seed_e2e.rs",
+    "backend/src/daily_records/service.rs",
+    "backend/src/enrollments/handlers.rs",
+    "backend/src/enrollments/models.rs",
+    "backend/src/enrollments/service.rs",
+    "backend/src/events/service.rs",
+    "backend/src/http_trace.rs",
+    "backend/src/isapi/stream.rs"
+  ],
+  "frontend": [
+    "frontend/src/components/auth/session-gate.tsx",
+    "frontend/src/components/dashboard/activity-feed.tsx",
+    "frontend/src/components/dashboard/device-banner.tsx",
+    "frontend/src/components/devices/command-modal.tsx",
+    "frontend/src/components/devices/create-device-modal.tsx",
+    "frontend/src/components/devices/device-card.tsx",
+    "frontend/src/components/devices/device-table.tsx",
+    "frontend/src/components/enrollment/employee-enrollment-picker.tsx",
+    "frontend/src/components/enrollment/enrollment-modal.tsx",
+    "frontend/src/components/enrollment/in-progress-list.tsx",
+    "frontend/src/components/enrollment/kiosk-capture-tab.tsx",
+    "frontend/src/components/enrollment/sync-panel.tsx",
+    "frontend/src/components/enrollment/sync-row.tsx",
+    "frontend/src/components/enrollment/upload-capture-tab.tsx",
+    "frontend/src/components/enrollment/validation-panel.tsx",
+    "frontend/src/components/enrollment/webcam-capture-tab.tsx",
+    "frontend/src/components/events/event-photo.tsx",
+    "frontend/src/components/timesheet/novedad-modal.tsx",
+    "frontend/src/components/timesheet/timesheet-table.tsx",
+    "frontend/src/hooks/use-sse.ts",
+    "frontend/src/lib/api.ts",
+    "frontend/src/lib/daily-record-key.ts",
+    "frontend/src/lib/enrollment-api.ts",
+    "frontend/src/lib/face-detection.ts",
+    "frontend/src/lib/validations.ts"
+  ]
+}
