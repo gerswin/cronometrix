@@ -22,8 +22,11 @@
 - A plan is complete only when its summary records the tested SHA, exact commands, exit codes, and remaining risks.
 - Plans 12-02 through 12-04 close scoped checkpoints, not the release gate. Their
   summaries may record `Verdict: PASS — scoped <name> checkpoint` only when
-  their owned behavior and every production file they modified meet the
-  repository per-file floors. Raw project-wide coverage failures remain
+  their owned behavior and every coverage-included production file they
+  modified meet the repository per-file floors. Production files outside the
+  established coverage denominator remain governed by their affected/E2E
+  suites; this rule does not add or legitimize a new exclusion. Raw
+  project-wide coverage failures remain
   `Release gate: FAIL — deferred to 12-05`; they are never normalized away.
 - Plan 12-05 is the only plan allowed to record an unqualified release `PASS`.
 
