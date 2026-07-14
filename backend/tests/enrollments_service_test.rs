@@ -12,7 +12,7 @@ use std::sync::Arc;
 use cronometrix_api::config::Config;
 use cronometrix_api::db::write_queue::{run_write_worker, DbWriteQueue, DbWriteQueueConfig};
 use cronometrix_api::enrollments::models::EnrollmentListQuery;
-use cronometrix_api::enrollments::service;
+use cronometrix_api::enrollments::service::{self, DeviceOperationState};
 use cronometrix_api::errors::AppError;
 use libsql::params;
 use tokio::sync::Notify;
@@ -104,6 +104,242 @@ const MINI_JPEG: &[u8] = &[
     0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
     0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
 ];
+
+#[tokio::test]
+async fn checkpoint_admission_exercises_every_state_and_clear_transition() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let key = service::backfill_checkpoint_key("device-1", "face-1");
+
+    let first = service::admit_device_operation(&state, &key, "backfill_push")
+        .await
+        .unwrap();
+    assert!(first.fresh);
+    assert_eq!(first.state, DeviceOperationState::Prepared);
+
+    service::mark_device_operation(&state, &key, DeviceOperationState::Prepared)
+        .await
+        .unwrap();
+    let prepared = service::admit_device_operation(&state, &key, "backfill_push")
+        .await
+        .unwrap();
+    assert!(!prepared.fresh);
+    assert_eq!(prepared.state, DeviceOperationState::Prepared);
+
+    service::mark_device_operation(&state, &key, DeviceOperationState::DeviceApplied)
+        .await
+        .unwrap();
+    assert_eq!(
+        service::admit_device_operation(&state, &key, "backfill_push")
+            .await
+            .unwrap()
+            .state,
+        DeviceOperationState::DeviceApplied
+    );
+
+    service::mark_device_operation(&state, &key, DeviceOperationState::Manual)
+        .await
+        .unwrap();
+    assert_eq!(
+        service::admit_device_operation(&state, &key, "backfill_push")
+            .await
+            .unwrap()
+            .state,
+        DeviceOperationState::Manual
+    );
+
+    service::clear_device_operation(&state, &key).await.unwrap();
+    let after_clear = service::admit_device_operation(&state, &key, "backfill_push")
+        .await
+        .unwrap();
+    assert!(after_clear.fresh);
+    assert_eq!(after_clear.state, DeviceOperationState::Prepared);
+    assert_eq!(
+        service::purge_checkpoint_key("mapping-1"),
+        "purge:mapping-1"
+    );
+}
+
+#[tokio::test]
+async fn missing_rows_fail_each_atomic_push_completion_path() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    assert!(service::complete_push_success(
+        &state,
+        "missing-push",
+        "missing-device",
+        "missing-face",
+        "missing-employee",
+    )
+    .await
+    .is_err());
+    assert!(service::complete_recovered_push_success(
+        &state,
+        "missing-enrollment",
+        "missing-push",
+        "missing-device",
+        "missing-face",
+        "missing-employee",
+    )
+    .await
+    .is_err());
+    assert!(
+        service::complete_push_failure(&state, "missing-push", "device failed")
+            .await
+            .is_err()
+    );
+    assert!(service::record_push_recovery_failure(
+        &state,
+        "missing-push",
+        "ambiguous device result",
+        false,
+    )
+    .await
+    .is_err());
+    assert!(service::record_push_recovery_failure(
+        &state,
+        "missing-push",
+        "manual reconciliation required",
+        true,
+    )
+    .await
+    .is_err());
+    assert!(service::finalize_enrollment(&state, "missing-enrollment")
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn dispatch_admission_failure_terminalizes_all_unfinished_pushes() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_department_id, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device(&state.db, &config.device_creds_key).await;
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "upload",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+    assert_eq!(started.device_pushes.len(), 1);
+    assert!(format!("{started:?}").contains(&started.enrollment_id));
+
+    service::fail_enrollment_dispatch(&state, &started.enrollment_id, "dispatcher closed")
+        .await
+        .unwrap();
+
+    let conn = state.db.connect().unwrap();
+    let row = conn
+        .query(
+            "SELECT enr.status, edp.status, edp.error_message \
+             FROM enrollments enr JOIN enrollment_device_pushes edp ON edp.enrollment_id=enr.id \
+             WHERE enr.id=?1",
+            params![started.enrollment_id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert_eq!(row.get::<String>(1).unwrap(), "failed");
+    assert_eq!(
+        row.get::<Option<String>>(2).unwrap().as_deref(),
+        Some("dispatcher closed")
+    );
+}
+
+#[tokio::test]
+async fn retry_reports_a_missing_photo_file_after_loading_valid_database_state() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_department_id, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &config.device_creds_key).await;
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "upload",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+    let push_id = started.device_pushes[0].id.clone();
+    let conn = state.db.connect().unwrap();
+    conn.execute(
+        "UPDATE enrollment_device_pushes SET status='failed' WHERE id=?1",
+        params![push_id.clone()],
+    )
+    .await
+    .unwrap();
+    conn.execute(
+        "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+        params![service::enrollment_checkpoint_key(&push_id)],
+    )
+    .await
+    .unwrap();
+    let relative_photo = service::get_current_photo_path(&conn, &employee_id)
+        .await
+        .unwrap()
+        .unwrap();
+    std::fs::remove_file(state.paths.enrollments_root.join(relative_photo)).unwrap();
+    drop(conn);
+
+    let error = service::retry_enrollment_push(&state, &started.enrollment_id, &device_id)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("read photo for retry"));
+}
+
+#[tokio::test]
+async fn push_params_reject_an_enrollment_whose_employee_has_no_face_id() {
+    let db = common::test_db().await;
+    let (_department_id, employee_id, user_id) = seed_dept_emp_user(&db).await;
+    let conn = db.connect().unwrap();
+    let face_enrollment_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO face_enrollments \
+         (id, employee_id, captured_via, photo_path, created_by, created_at) \
+         VALUES (?1, ?2, 'upload', 'missing.jpg', ?3, unixepoch())",
+        params![
+            face_enrollment_id.clone(),
+            employee_id.clone(),
+            user_id.clone()
+        ],
+    )
+    .await
+    .unwrap();
+    let enrollment_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO enrollments \
+         (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
+         VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
+        params![
+            enrollment_id.clone(),
+            employee_id.clone(),
+            face_enrollment_id,
+            user_id
+        ],
+    )
+    .await
+    .unwrap();
+
+    let error = service::get_enrollment_push_params(&conn, &enrollment_id)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("has no face_id"));
+}
 
 #[tokio::test]
 async fn start_enrollment_writes_rows_and_photo_no_devices() {
