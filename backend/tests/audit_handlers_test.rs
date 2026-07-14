@@ -408,6 +408,46 @@ async fn audit_filter_by_table_name() {
     }
 }
 
+#[tokio::test]
+async fn audit_filters_by_record_and_operation_together() {
+    let db = common::test_db().await;
+    let target_record = Uuid::new_v4().to_string();
+    let other_record = Uuid::new_v4().to_string();
+    let conn = db.connect().expect("connect");
+    for (record_id, operation) in [
+        (target_record.as_str(), "UPDATE"),
+        (target_record.as_str(), "INSERT"),
+        (other_record.as_str(), "UPDATE"),
+    ] {
+        conn.execute(
+            "INSERT INTO audit_log (id, table_name, record_id, operation, created_at) \
+             VALUES (?1, 'employees', ?2, ?3, ?4)",
+            libsql::params![Uuid::new_v4().to_string(), record_id, operation, BASE_TS],
+        )
+        .await
+        .expect("seed audit row");
+    }
+    drop(conn);
+
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/api/v1/audit?record_id={target_record}&operation=UPDATE"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {}", admin_token()))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp.into_body()).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["record_id"], target_record);
+    assert_eq!(body["data"][0]["operation"], "UPDATE");
+}
+
 // =============================================================================
 // Test 8 — Filter by date range (from_ts + to_ts)
 // =============================================================================
