@@ -78,7 +78,7 @@ export function NovedadModal({ open, record, onClose }: NovedadModalProps) {
   const employeeOptions = (employees?.data ?? []).map((e) => ({
     id: e.id,
     label: e.name,
-    sublabel: [e.cedula, e.department_name].filter(Boolean).join(' · '),
+    sublabel: [e.employee_code, e.department_name].filter(Boolean).join(' · '),
   }))
 
   const departmentOptions = (departments?.data ?? []).map((d) => ({

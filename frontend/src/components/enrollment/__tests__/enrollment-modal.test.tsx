@@ -54,7 +54,6 @@ import * as faceDetection from '@/lib/face-detection'
 const EMPLOYEE: Employee = {
   id: 'emp-001',
   employee_code: 'V-12345678',
-  cedula: 'V-12345678',
   name: 'Ana García',
   department_id: 'dept-1',
   position: 'Analista',
@@ -70,7 +69,6 @@ const OTHER_EMPLOYEE: Employee = {
   ...EMPLOYEE,
   id: 'emp-002',
   employee_code: 'V-87654321',
-  cedula: 'V-87654321',
   name: 'Luis Pérez',
 }
 

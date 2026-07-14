@@ -37,8 +37,6 @@ export interface PaginatedResponse<T> {
 export interface Employee {
   id: string
   employee_code: string
-  /** @deprecated backend now returns `employee_code`; kept for legacy callers. */
-  cedula?: string
   name: string
   department_id: string
   department_name?: string

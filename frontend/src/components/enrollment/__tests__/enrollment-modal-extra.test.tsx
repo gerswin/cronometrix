@@ -55,7 +55,7 @@ Object.defineProperty(globalThis.navigator, 'mediaDevices', {
 import { api } from '@/lib/api'
 
 const EMPLOYEE: Employee = {
-  id: 'emp-001', employee_code: 'V-12345678', cedula: 'V-12345678', name: 'Ana García',
+  id: 'emp-001', employee_code: 'V-12345678', name: 'Ana García',
   department_id: 'dept-1', position: 'Analista', hire_date: '2023-01-01',
   status: 'active', version: 1, base_salary_cents: 100000, created_at: '2023-01-01T00:00:00Z', updated_at: '2023-01-01T00:00:00Z',
 }

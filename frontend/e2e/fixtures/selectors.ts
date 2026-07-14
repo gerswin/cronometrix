@@ -9,7 +9,7 @@ export const SEL = {
   // Login (Spanish copy per the 2026-07-13 Phase 12 supersession of D-19)
   loginHeading: { role: 'heading', name: 'Iniciar Sesión' } as const,
   loginUsername: { role: 'textbox', name: 'Usuario' } as const,
-  loginPassword: { role: 'textbox', name: 'Contraseña' } as const,
+  loginPassword: { name: 'Contraseña' } as const,
   loginSubmit: { role: 'button', name: 'Iniciar Sesión' } as const,
   loginShowPassword: { role: 'button', name: 'Mostrar contraseña' } as const,
   loginHidePassword: { role: 'button', name: 'Ocultar contraseña' } as const,

@@ -17,7 +17,6 @@ const EMPLOYEES: Employee[] = [
   {
     id: 'emp-1',
     employee_code: 'V-12345678',
-    cedula: 'V-12345678',
     name: 'Ana García',
     department_id: 'd1',
     position: 'Analista',
@@ -31,7 +30,6 @@ const EMPLOYEES: Employee[] = [
   {
     id: 'emp-2',
     employee_code: 'V-87654321',
-    cedula: 'V-87654321',
     name: 'Luis Pérez',
     department_id: 'd2',
     position: 'Operador',
@@ -76,9 +74,8 @@ describe('EmployeeEnrollmentPicker', () => {
     expect(screen.getByText(/Luis Pérez — V-87654321/)).toBeTruthy()
   })
 
-  it('renders the canonical employee_code when the deprecated cedula alias is absent', async () => {
+  it('renders the canonical employee_code', async () => {
     const canonicalEmployee = { ...EMPLOYEES[0] }
-    delete canonicalEmployee.cedula
     apiGet.mockResolvedValueOnce({
       data: { data: [canonicalEmployee], total: 1, limit: 100, offset: 0 },
     })
