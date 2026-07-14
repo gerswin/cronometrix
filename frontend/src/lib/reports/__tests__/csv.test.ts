@@ -104,7 +104,7 @@ describe('renderReportCsv', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:report')
   })
 
-  it('renders an empty report and keeps blank nullable cells empty', async () => {
+  it('renders an empty report without undefined placeholders', async () => {
     renderReportCsv({ ...payload, rows: [], grand_total: ZERO_TOTALS })
 
     const csv = await readBlob(capturedBlob!)
