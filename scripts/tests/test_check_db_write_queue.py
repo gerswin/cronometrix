@@ -131,7 +131,98 @@ class DbWriteQueueCheckerTests(unittest.TestCase):
             ["execute", "execute_batch", "transaction", "execute"],
         )
 
-    def test_comments_strings_and_method_names_without_calls_pass(self) -> None:
+    def test_turbofish_cannot_hide_raw_write_identifiers(self) -> None:
+        self.fixture.write(
+            "backend/src/domain/turbofish.rs",
+            """
+            async fn write(conn: &Connection) {
+                conn.execute::<usize>("INSERT", ()).await;
+                conn.execute_batch::<()>("DELETE").await;
+                conn.transaction::<libsql::Deferred>().await;
+            }
+            """,
+        )
+
+        violations = self.scan()
+
+        self.assertEqual(
+            [violation.method for violation in violations],
+            ["execute", "execute_batch", "transaction"],
+        )
+
+    def test_ufcs_and_method_references_cannot_hide_raw_writers(self) -> None:
+        self.fixture.write(
+            "backend/src/domain/references.rs",
+            """
+            fn references() {
+                let write = Connection::execute;
+                let batch = <Connection as RawWriter>::execute_batch;
+                let begin = libsql::Connection::transaction;
+            }
+            """,
+        )
+
+        violations = self.scan()
+
+        self.assertEqual(
+            [violation.method for violation in violations],
+            ["execute", "execute_batch", "transaction"],
+        )
+
+    def test_lifetimes_on_same_line_do_not_hide_raw_writer(self) -> None:
+        self.fixture.write(
+            "backend/src/domain/lifetimes.rs",
+            """
+            async fn persist<'a>(conn: &Connection) { conn.execute("INSERT", ()).await; let _: Marker<&'a ()>; }
+            """,
+        )
+
+        violations = self.scan()
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].method, "execute")
+
+    def test_lifetimes_and_character_literals_without_writers_pass(self) -> None:
+        self.fixture.write(
+            "backend/src/domain/lifetime_read.rs",
+            r"""
+            fn read<'a, 'static_value>(value: &'a str) -> &'a str {
+                let plain = 'x';
+                let escaped = '\n';
+                let quote = '\'';
+                value
+            }
+            """,
+        )
+
+        self.assertEqual(self.scan(), [])
+
+    def test_macro_argument_cannot_parameterize_forbidden_method_name(self) -> None:
+        self.fixture.write(
+            "backend/src/domain/macro_dispatch.rs",
+            """
+            macro_rules! dispatch {
+                ($receiver:expr, $method:ident) => {
+                    $receiver.$method("INSERT", ())
+                };
+            }
+
+            async fn write(conn: &Connection) {
+                dispatch!(conn, execute).await;
+                dispatch!(conn, execute_batch).await;
+                dispatch!(conn, transaction).await;
+            }
+            """,
+        )
+
+        violations = self.scan()
+
+        self.assertEqual(
+            [violation.method for violation in violations],
+            ["execute", "execute_batch", "transaction"],
+        )
+
+    def test_comments_strings_and_non_forbidden_identifiers_pass(self) -> None:
         self.fixture.write(
             "backend/src/domain/read.rs",
             r'''
@@ -139,7 +230,7 @@ class DbWriteQueueCheckerTests(unittest.TestCase):
             /* outer comment /* nested: other.transaction() */ other.execute_batch() */
             const MESSAGE: &str = "conn.execute(\"INSERT\", ())";
             const RAW: &str = r#"renamed.transaction().await"#;
-            struct Names { execute: usize, transaction: usize }
+            struct Names { execute_count: usize, transaction_count: usize }
             fn read(conn: &Connection) { let _ = conn.query("SELECT 1", ()); }
             ''',
         )
@@ -248,7 +339,10 @@ class DbWriteQueueCheckerTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f"{target.relative_to(self.fixture.root).as_posix()}:1", result.stdout)
-        self.assertIn("raw .execute() bypasses state.db_write", result.stdout)
+        self.assertIn(
+            "forbidden raw write identifier 'execute' bypasses state.db_write",
+            result.stdout,
+        )
 
     def test_cli_pass_output_is_deterministic(self) -> None:
         self.fixture.write(

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Reject raw libSQL writers outside the four reviewed infrastructure files."""
+"""Reject raw libSQL writer identifiers outside reviewed infrastructure.
+
+This is intentionally a conservative lexical boundary, not a complete Rust
+parser. Outside comments, literals, test-only cfg items, and the exact
+allowlist, every ``execute``, ``execute_batch``, or ``transaction`` identifier
+is rejected. That also covers turbofish calls, UFCS/method references, and
+identifiers passed to macros. Token concatenation performed inside an external
+or procedural macro cannot be inferred here and remains outside this check.
+"""
 
 from __future__ import annotations
 
@@ -44,10 +52,34 @@ def _skip_quoted(source: str, start: int, quote: str) -> int:
             continue
         if source[index] == quote:
             return index + 1
-        if quote == "'" and source[index] == "\n":
-            return start + 1  # A Rust lifetime, not a character literal.
         index += 1
-    return start + 1 if quote == "'" else len(source)
+    return len(source)
+
+
+def _char_literal_end(source: str, start: int) -> int | None:
+    """Return the end of one Rust char literal, or None for a lifetime/label."""
+
+    index = start + 1
+    if index >= len(source) or source[index] in {"'", "\n", "\r"}:
+        return None
+    if source[index] == "\\":
+        index += 1
+        if index >= len(source):
+            return None
+        if source[index] == "x":
+            index += 3  # `x` plus exactly two hexadecimal digits.
+        elif source[index] == "u" and source.startswith("u{", index):
+            close = source.find("}", index + 2)
+            if close < 0:
+                return None
+            index = close + 1
+        else:
+            index += 1
+    else:
+        index += 1
+    if index < len(source) and source[index] == "'":
+        return index + 1
+    return None
 
 
 def _raw_string_end(source: str, start: int) -> int | None:
@@ -120,8 +152,8 @@ def _tokens(source: str) -> list[Token]:
             index = end
             continue
         if char == "'":
-            end = _skip_quoted(source, index, "'")
-            if end > index + 1:
+            end = _char_literal_end(source, index)
+            if end is not None:
                 line += source.count("\n", index, end)
                 index = end
                 continue
@@ -267,19 +299,10 @@ def _scan_file(path: Path, repo_root: Path) -> list[Violation]:
     tokens = _tokens(source)
     ignored = _test_only_ranges(tokens)
     violations: list[Violation] = []
-    for index, token in enumerate(tokens):
+    for token in tokens:
         if token.text not in RAW_WRITE_METHODS or _inside(token.start, ignored):
             continue
-        if index + 1 >= len(tokens) or tokens[index + 1].text != "(":
-            continue
-        method_call = index >= 1 and tokens[index - 1].text == "."
-        associated_call = (
-            index >= 2
-            and tokens[index - 1].text == ":"
-            and tokens[index - 2].text == ":"
-        )
-        if method_call or associated_call:
-            violations.append(Violation(relative, token.line, token.text))
+        violations.append(Violation(relative, token.line, token.text))
     return violations
 
 
@@ -328,7 +351,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     violations = scan_path(target, args.repo_root)
     for violation in violations:
         print(
-            f"{violation.path.as_posix()}:{violation.line}: raw .{violation.method}() "
+            f"{violation.path.as_posix()}:{violation.line}: forbidden raw write "
+            f"identifier '{violation.method}' "
             "bypasses state.db_write; use DbWriteQueue"
         )
     if violations:
