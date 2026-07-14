@@ -27,6 +27,8 @@ let accessToken: string | null = null
 let requestTimeExpiryHandled = false
 let requestTimeExpiryRedirectTimer: ReturnType<typeof setTimeout> | null = null
 let refreshPromise: Promise<string> | null = null
+let sessionGeneration = 0
+let loginGeneration: number | null = null
 
 // WR-05: pub-sub for token changes so AuthContext can re-decode claims after
 // login / refresh / logout instead of going stale until the next page reload.
@@ -66,6 +68,9 @@ export function onAccessTokenChange(listener: Listener): () => void {
  * decide whether the asynchronous result is still current before applying it.
  */
 export function refreshAccessToken(): Promise<string> {
+  if (loginGeneration !== null) {
+    return Promise.reject(new Error('login in progress'))
+  }
   if (!refreshPromise) {
     refreshPromise = refreshClient
       .post<{ access_token: string }>('/auth/refresh', {})
@@ -76,6 +81,42 @@ export function refreshAccessToken(): Promise<string> {
   }
 
   return refreshPromise
+}
+
+type LoginResult = {
+  access_token: string
+  user: { id: string; username?: string; full_name?: string; role?: string }
+}
+
+/**
+ * Serialize an interactive login behind any refresh response already in flight.
+ * Browsers apply httpOnly Set-Cookie headers before JavaScript sees a response,
+ * so generation checks alone cannot protect cookie ordering: the login request
+ * itself must be sent after the older refresh has settled.
+ */
+export async function loginWithCredentials(
+  username: string,
+  password: string,
+): Promise<LoginResult> {
+  const generation = ++sessionGeneration
+  loginGeneration = generation
+  const pendingRefresh = refreshPromise
+
+  try {
+    await pendingRefresh?.catch(() => undefined)
+    const { data } = await axios.post<LoginResult>(
+      `${API_BASE}/api/v1/auth/login`,
+      { username, password },
+      { withCredentials: true },
+    )
+    if (generation !== sessionGeneration) {
+      throw new Error('login attempt superseded')
+    }
+    setAccessToken(data.access_token)
+    return data
+  } finally {
+    if (loginGeneration === generation) loginGeneration = null
+  }
 }
 
 api.interceptors.request.use((config) => {
@@ -109,15 +150,24 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401 && !error.config._retry) {
+      if (loginGeneration !== null) return Promise.reject(error)
       error.config._retry = true
+      const refreshGeneration = sessionGeneration
+      let token: string
       try {
-        const token = await refreshAccessToken()
-        setAccessToken(token)
-        error.config.headers.Authorization = `Bearer ${token}`
-        return api(error.config)
+        token = await refreshAccessToken()
       } catch {
-        handleRequestTimeExpiry()
+        if (refreshGeneration === sessionGeneration && loginGeneration === null) {
+          handleRequestTimeExpiry()
+        }
+        return Promise.reject(error)
       }
+      if (refreshGeneration !== sessionGeneration || loginGeneration !== null) {
+        return Promise.reject(error)
+      }
+      setAccessToken(token)
+      error.config.headers.Authorization = `Bearer ${token}`
+      return api(error.config)
     }
     return Promise.reject(error)
   }

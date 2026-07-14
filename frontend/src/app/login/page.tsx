@@ -21,7 +21,7 @@ import axios from "axios"
 import { toast } from "sonner"
 
 import { loginSchema, type LoginFormData } from "@/lib/validations"
-import { API_BASE, setAccessToken } from "@/lib/api"
+import { loginWithCredentials } from "@/lib/api"
 import {
   Form,
   FormControl,
@@ -67,12 +67,7 @@ function LoginPageInner() {
     setServerError(null)
 
     try {
-      const { data } = await axios.post(
-        `${API_BASE}/api/v1/auth/login`,
-        { username: values.username, password: values.password },
-        { withCredentials: true }
-      )
-      setAccessToken(data.access_token)
+      await loginWithCredentials(values.username, values.password)
       // CR-02: validate redirect to prevent open-redirect via ?redirect=//evil.com
       router.push(safeRedirect(searchParams.get("redirect")))
     } catch (err) {

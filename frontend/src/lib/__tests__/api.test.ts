@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   ),
   axiosCreate: vi.fn(),
   axiosCreateConfigs: [] as unknown[],
+  loginPost: vi.fn(),
   redirectHref: vi.fn(),
   refreshPost: vi.fn(),
   toastError: vi.fn(),
@@ -62,7 +63,7 @@ vi.mock('axios', () => {
         createCount += 1
         return createCount === 1 ? apiClient : refreshClient
       },
-      post: (...args: unknown[]) => mocks.refreshPost(...args),
+      post: (...args: unknown[]) => mocks.loginPost(...args),
     },
   }
 })
@@ -98,6 +99,7 @@ const originalWindow = globalThis.window
 beforeEach(async () => {
   vi.clearAllMocks()
   mocks.refreshPost.mockReset()
+  mocks.loginPost.mockReset()
   vi.useFakeTimers()
 
   let href = ''
@@ -196,6 +198,68 @@ describe('lib/api access-token state', () => {
 })
 
 describe('lib/api single-flight refresh', () => {
+  it('lets a later login win over a late refresh success without retrying the stale request', async () => {
+    const pendingRefresh = deferred<{ data: { access_token: string } }>()
+    const pendingLogin = deferred<{ data: { access_token: string; user: { id: string } } }>()
+    mocks.refreshPost.mockReturnValueOnce(pendingRefresh.promise)
+    mocks.loginPost.mockReturnValueOnce(pendingLogin.promise)
+    const { api, getAccessToken, loginWithCredentials, setAccessToken } = await import('../api')
+    expect(typeof loginWithCredentials).toBe('function')
+    const client = api as unknown as ApiShim
+    setAccessToken('old-token')
+    const staleError = unauthorizedError('/employees')
+    const staleRequest = client.__triggerResponseError(staleError)
+
+    const login = loginWithCredentials('admin', 'password')
+    await Promise.resolve()
+    expect(mocks.loginPost).not.toHaveBeenCalled()
+
+    pendingRefresh.resolve({ data: { access_token: 'late-refresh-token' } })
+    await expect(staleRequest).rejects.toBe(staleError)
+    expect(mocks.apiRetry).not.toHaveBeenCalled()
+    expect(getAccessToken()).toBe('old-token')
+    expect(mocks.loginPost).toHaveBeenCalledWith(
+      `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/api/v1/auth/login`,
+      { username: 'admin', password: 'password' },
+      { withCredentials: true },
+    )
+
+    pendingLogin.resolve({ data: { access_token: 'login-token', user: { id: 'user-1' } } })
+    await expect(login).resolves.toEqual({ access_token: 'login-token', user: { id: 'user-1' } })
+    expect(getAccessToken()).toBe('login-token')
+    expect(mocks.toastError).not.toHaveBeenCalled()
+  })
+
+  it('lets a later login win over a late refresh failure without expiry side effects', async () => {
+    const pendingRefresh = deferred<never>()
+    mocks.refreshPost.mockReturnValueOnce(pendingRefresh.promise)
+    mocks.loginPost.mockResolvedValueOnce({
+      data: { access_token: 'login-after-failure', user: { id: 'user-1' } },
+    })
+    const { api, getAccessToken, loginWithCredentials, setAccessToken } = await import('../api')
+    expect(typeof loginWithCredentials).toBe('function')
+    const client = api as unknown as ApiShim
+    setAccessToken('old-token')
+    const staleError = unauthorizedError('/devices')
+    const staleRequest = client.__triggerResponseError(staleError)
+
+    const login = loginWithCredentials('admin', 'password')
+    await Promise.resolve()
+    expect(mocks.loginPost).not.toHaveBeenCalled()
+
+    pendingRefresh.reject(new Error('late refresh failure'))
+    await expect(staleRequest).rejects.toBe(staleError)
+    await expect(login).resolves.toEqual({
+      access_token: 'login-after-failure',
+      user: { id: 'user-1' },
+    })
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(getAccessToken()).toBe('login-after-failure')
+    expect(mocks.toastError).not.toHaveBeenCalled()
+    expect(mocks.redirectHref).not.toHaveBeenCalled()
+  })
+
   it('shares one refresh across simultaneous 401s and retries both once with the same token', async () => {
     const pendingRefresh = deferred<{ data: { access_token: string } }>()
     mocks.refreshPost.mockReturnValueOnce(pendingRefresh.promise)
