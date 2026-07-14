@@ -15,9 +15,9 @@ and the final release candidate still belongs to Plan 12-05.
 
 - Plan: `12-03`
 - Plan base SHA: `c3fe7935a8ccccc0b15826bcb82d413d22e83188`
-- Tested implementation SHA: `251208e1847f58bb7a544692e6b3cd005b2bbcd1`
-- Closing implementation/evidence commits: `70c952b` (`test(db): prove serialized writes under concurrent load`), `e5b45ae` (`fix(db): wait out transient writer locks`), `36d6bc3` (`fix(enrollments): retry confirmed device rejections`), `653b1f8` (`fix(enrollments): classify auth rejection as retryable`), and `251208e` (`test(db): refresh load proof after enrollment retry fix`)
-- Official load run: `20260714T201536Z`
+- Tested implementation SHA: `5a81d1c70a6b4216a4791980cc9f5141daad0901`
+- Closing implementation/evidence commits: `70c952b` (`test(db): prove serialized writes under concurrent load`), `e5b45ae` (`fix(db): wait out transient writer locks`), `36d6bc3` (`fix(enrollments): retry confirmed device rejections`), `653b1f8` (`fix(enrollments): classify auth rejection as retryable`), `5a81d1c` (`fix(startup): await database writer readiness`), and `337cc74` (`test(db): refresh load proof after startup barrier`)
+- Official load run: `20260714T203708Z`
 - Official load platform: Linux/arm64 in an isolated Docker container
 - Local verification platform: macOS arm64
 
@@ -104,7 +104,7 @@ Command shape:
 
 ```bash
 BASE_URL=http://127.0.0.1:4001 \
-SERVER_LOG=/tmp/cronometrix-write-queue-remediated.log \
+SERVER_LOG=/tmp/cronometrix-write-queue.log \
 DURATION_SECONDS=60 \
 OUT_DIR=.planning/phases/12-v1-0-release-stabilization/evidence/03-write-queue-load \
 bash backend/scripts/run_write_queue_load_profiles.sh
@@ -118,12 +118,12 @@ container, image tag, and database.
 
 | Profile | Concurrency | Mix | 2xx | Accepted writes | Persisted | 500 | 503/BUSY | p50 / p95 / p99 ms |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `c1-w100` | 1 | 100% write | 11,588 | 11,588 | 11,588 | 0 | 0 | 4.75 / 7.34 / 12.56 |
-| `c32-r100` | 32 | 100% read | 17,059 | 0 | 0 | 0 | 0 | 110.91 / 164.14 / 193.42 |
-| `c32-w100` | 32 | 100% write | 10,132 | 10,132 | 10,132 | 0 | 0 | 187.84 / 225.58 / 269.64 |
-| `c32-w70` | 32 | 70% write | 11,682 | 8,190 | 8,190 | 0 | 0 | 194.49 / 255.37 / 325.31 |
+| `c1-w100` | 1 | 100% write | 9,724 | 9,724 | 9,724 | 0 | 0 | 5.87 / 8.22 / 13.42 |
+| `c32-r100` | 32 | 100% read | 18,267 | 0 | 0 | 0 | 0 | 104.59 / 150.83 / 167.17 |
+| `c32-w100` | 32 | 100% write | 9,977 | 9,977 | 9,977 | 0 | 0 | 191.41 / 228.82 / 258.69 |
+| `c32-w70` | 32 | 70% write | 11,437 | 7,988 | 7,988 | 0 | 0 | 183.90 / 247.92 / 290.27 |
 
-Combined result: 50,461 successful requests, 29,910 accepted writes, 29,910
+Combined result: 49,405 successful requests, 27,689 accepted writes, 27,689
 persisted rows, zero HTTP 500, zero HTTP 503, zero queue-busy responses, zero
 other failures, zero `database is locked` log occurrences, and clean SIGTERM
 exit 0. Evidence is 56 KiB and contains no password, token, authorization
@@ -180,6 +180,8 @@ reclassified as a pass by the scoped checker.
 | Write-queue integration suite | 0, 19/19 passed |
 | Enrollment pusher + ISAPI client suites | 0, 19/19 + 14/14 passed |
 | Enrollment retry Playwright regression | 0, 5/5 setup + scenario passed |
+| Repeated fresh-database startup regression | 0, 25/25 health checks and graceful shutdowns passed with zero SQLite lock errors |
+| Full release-mode Playwright E2E after startup barrier | 0, 80/80 passed |
 | Linux/arm64 `cargo test -j1 --all-targets --all-features` | 0, all 59 result blocks passed |
 | `make coverage-backend` | 2, 909/909 passed; global floor failed |
 | 12-03 owned coverage checker | 0, 32/32 backend files passed |
@@ -188,11 +190,11 @@ reclassified as a pass by the scoped checker.
 | Audit immutability | 0, update/delete rejected and evidence retained |
 | `git diff --check` / staged diff check after LF normalization | 0 |
 
-The tested implementation SHA was created after the remediated official load
-on the writer-connection and CI-discovered enrollment retry corrections. The
-initial implementation commit also changed CSV writers from CRLF to LF; the
-writer fix commit contains the connection-local PRAGMAs and its regression,
-and `251208e` records evidence produced from the exact final runtime source.
+The tested implementation SHA contains the writer-connection, enrollment retry,
+and startup-readiness corrections. The initial implementation commit also
+changed CSV writers from CRLF to LF; the writer fix commit contains the
+connection-local PRAGMAs and its regression, and `337cc74` records evidence
+produced from the exact final runtime source in `5a81d1c`.
 
 ## Diagnostics and remaining risks
 
@@ -231,8 +233,19 @@ and persists the row.
 
 After remediation, three consecutive one-second Linux/arm64 four-profile
 smokes passed (3/3), each with zero locks and clean shutdown. The complete
-60-second official matrix was then rerun and also recorded zero locks. This
-finding is closed for 12-03 rather than deferred or normalized away.
+60-second official matrix was then rerun and also recorded zero locks.
+
+The first pull-request E2E run later exposed a second startup race: the writer
+opened and configured its persistent connection while bootstrap recovery
+readers started immediately after migration release, and the backend could
+abort with `SQLite failure: database is locked`. A duplicate E2E run passed,
+confirming that this was intermittent rather than an enrollment regression.
+Startup now awaits a FIFO `flush` barrier before capture cleanup and enrollment
+checkpoint recovery, proving that the writer connection is fully configured.
+Twenty-five consecutive fresh-database startups, the full 80-test Playwright
+suite, and the regenerated Linux/arm64 load matrix all passed after this
+barrier. This finding is closed for 12-03 rather than deferred or normalized
+away.
 
 ### Confirmed device rejection retry
 
