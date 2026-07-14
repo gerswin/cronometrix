@@ -3,16 +3,16 @@
   "concurrency": 32,
   "db_write_queue_busy": 0,
   "duration_seconds": 60,
-  "employee_code_prefix": "LT-20260714T193-c32-w100-",
-  "finished_at_epoch": 1784057599.979,
-  "http2xx": 10274,
+  "employee_code_prefix": "LT-20260714T201-c32-w100-",
+  "finished_at_epoch": 1784060357.673,
+  "http2xx": 10132,
   "http500": 0,
   "http503": 0,
   "latency_ms": {
     "all": {
-      "p50": 187.72,
-      "p95": 214.11,
-      "p99": 234.52
+      "p50": 187.84,
+      "p95": 225.58,
+      "p99": 269.64
     },
     "read": {
       "p50": null,
@@ -20,140 +20,140 @@
       "p99": null
     },
     "write": {
-      "p50": 187.72,
-      "p95": 214.11,
-      "p99": 234.52
+      "p50": 187.84,
+      "p95": 225.58,
+      "p99": 269.64
     }
   },
   "other_failures": 0,
   "profile": "c32-w100",
   "read_2xx": 0,
   "reads": 0,
-  "run_id": "20260714T193007Z",
+  "run_id": "20260714T201536Z",
   "samples": [
     {
       "code": 201,
-      "latency_ms": 234.32,
+      "latency_ms": 100.6,
       "op": "write",
-      "worker": 31
+      "worker": 5
     },
     {
       "code": 201,
-      "latency_ms": 263.66,
+      "latency_ms": 303.25,
       "op": "write",
-      "worker": 31
+      "worker": 5
     },
     {
       "code": 201,
-      "latency_ms": 91.27,
+      "latency_ms": 282.72,
       "op": "write",
-      "worker": 10
+      "worker": 18
     },
     {
       "code": 201,
-      "latency_ms": 228.11,
+      "latency_ms": 177.97,
       "op": "write",
-      "worker": 10
+      "worker": 18
     },
     {
       "code": 201,
-      "latency_ms": 218.15,
-      "op": "write",
-      "worker": 28
-    },
-    {
-      "code": 201,
-      "latency_ms": 262.15,
-      "op": "write",
-      "worker": 28
-    },
-    {
-      "code": 201,
-      "latency_ms": 197.3,
+      "latency_ms": 308.02,
       "op": "write",
       "worker": 20
     },
     {
       "code": 201,
-      "latency_ms": 160.0,
+      "latency_ms": 175.57,
       "op": "write",
       "worker": 20
     },
     {
       "code": 201,
-      "latency_ms": 175.47,
+      "latency_ms": 333.75,
       "op": "write",
-      "worker": 12
+      "worker": 30
     },
     {
       "code": 201,
-      "latency_ms": 205.36,
+      "latency_ms": 178.04,
       "op": "write",
-      "worker": 12
+      "worker": 30
     },
     {
       "code": 201,
-      "latency_ms": 167.94,
+      "latency_ms": 163.83,
       "op": "write",
-      "worker": 16
+      "worker": 9
     },
     {
       "code": 201,
-      "latency_ms": 250.25,
+      "latency_ms": 252.79,
       "op": "write",
-      "worker": 16
+      "worker": 9
     },
     {
       "code": 201,
-      "latency_ms": 126.67,
+      "latency_ms": 102.11,
       "op": "write",
-      "worker": 8
+      "worker": 1
     },
     {
       "code": 201,
-      "latency_ms": 137.93,
+      "latency_ms": 295.19,
       "op": "write",
-      "worker": 8
+      "worker": 1
     },
     {
       "code": 201,
-      "latency_ms": 195.93,
+      "latency_ms": 104.33,
       "op": "write",
-      "worker": 26
+      "worker": 2
     },
     {
       "code": 201,
-      "latency_ms": 210.13,
+      "latency_ms": 285.49,
       "op": "write",
-      "worker": 26
+      "worker": 2
     },
     {
       "code": 201,
-      "latency_ms": 219.64,
+      "latency_ms": 272.89,
+      "op": "write",
+      "worker": 13
+    },
+    {
+      "code": 201,
+      "latency_ms": 174.06,
+      "op": "write",
+      "worker": 13
+    },
+    {
+      "code": 201,
+      "latency_ms": 321.4,
       "op": "write",
       "worker": 17
     },
     {
       "code": 201,
-      "latency_ms": 266.21,
+      "latency_ms": 188.11,
       "op": "write",
       "worker": 17
     },
     {
       "code": 201,
-      "latency_ms": 93.78,
+      "latency_ms": 239.98,
       "op": "write",
-      "worker": 4
+      "worker": 14
     },
     {
       "code": 201,
-      "latency_ms": 222.21,
+      "latency_ms": 208.0,
       "op": "write",
-      "worker": 4
+      "worker": 14
     }
   ],
-  "started_at_epoch": 1784057539.941,
-  "write_2xx": 10274,
+  "started_at_epoch": 1784060297.623,
+  "write_2xx": 10132,
   "write_ratio": 100,
-  "writes": 10274
+  "writes": 10132
 }
