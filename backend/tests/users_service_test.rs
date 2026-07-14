@@ -2,8 +2,13 @@ mod common;
 
 use std::sync::Arc;
 
+use axum::extract::{Path, Query, State};
+use axum::Extension;
+use axum::Json;
+use cronometrix_api::auth::models::{Claims, Role};
 use cronometrix_api::config::Config;
 use cronometrix_api::errors::AppError;
+use cronometrix_api::users::handlers::{self, DeactivateQuery};
 use cronometrix_api::users::models::{CreateUserRequest, UpdateUserRequest, UserListQuery};
 use cronometrix_api::users::service;
 
@@ -43,6 +48,108 @@ fn assert_code(error: AppError, expected: &str) {
         other => panic!("unexpected error variant: {other:?}"),
     };
     assert_eq!(actual, expected);
+}
+
+fn admin_claims(sub: &str) -> Claims {
+    Claims {
+        sub: sub.to_string(),
+        role: Role::Admin,
+        exp: chrono::Utc::now().timestamp() + 3600,
+        iat: chrono::Utc::now().timestamp(),
+        jti: uuid::Uuid::new_v4().to_string(),
+        token_type: "access".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn handlers_validate_and_execute_the_complete_user_lifecycle() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db, config());
+
+    let invalid_create = handlers::create_user(
+        State(state.clone()),
+        Json(CreateUserRequest {
+            username: String::new(),
+            full_name: "Invalid User".to_string(),
+            role: "viewer".to_string(),
+            password: "secure-password".to_string(),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_code(invalid_create, "VALIDATION_ERROR");
+
+    let (status, Json(created)) = handlers::create_user(
+        State(state.clone()),
+        Json(request("handler-user", "viewer")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+
+    let Json(page) = handlers::list_users(
+        State(state.clone()),
+        Query(UserListQuery {
+            limit: Some(10),
+            offset: Some(0),
+            status: Some("active".to_string()),
+            role: Some("viewer".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.data[0].id, created.id);
+
+    let Json(fetched) = handlers::get_user(State(state.clone()), Path(created.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(fetched.username, "handler-user");
+
+    let invalid_update = handlers::update_user(
+        State(state.clone()),
+        Extension(admin_claims("different-admin")),
+        Path(created.id.clone()),
+        Json(UpdateUserRequest {
+            full_name: None,
+            role: None,
+            password: Some("short".to_string()),
+            status: None,
+            version: 1,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_code(invalid_update, "VALIDATION_ERROR");
+
+    let Json(updated) = handlers::update_user(
+        State(state.clone()),
+        Extension(admin_claims("different-admin")),
+        Path(created.id.clone()),
+        Json(UpdateUserRequest {
+            full_name: Some("Updated Handler User".to_string()),
+            role: Some("supervisor".to_string()),
+            password: None,
+            status: None,
+            version: 1,
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.full_name, "Updated Handler User");
+    assert_eq!(updated.role, "supervisor");
+
+    let status = handlers::deactivate_user(
+        State(state.clone()),
+        Extension(admin_claims("different-admin")),
+        Path(created.id),
+        Query(DeactivateQuery {
+            version: updated.version,
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]

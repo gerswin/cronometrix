@@ -13,6 +13,65 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
+#[tokio::test]
+async fn deactivate_handler_publishes_a_purge_request_when_worker_is_available() {
+    let db = common::test_db().await;
+    let department_id = common::create_test_department_with_shift(
+        &db,
+        "Purge Department",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+    let employee_id = uuid::Uuid::new_v4().to_string();
+    db.connect()
+        .unwrap()
+        .execute(
+            "INSERT INTO employees (id, employee_code, name, department_id, status, version, created_at, updated_at) \
+             VALUES (?1, ?2, 'Purge Employee', ?3, 'active', 1, unixepoch(), unixepoch())",
+            libsql::params![
+                employee_id.clone(),
+                format!("PURGE-{}", &employee_id[..8]),
+                department_id
+            ],
+        )
+        .await
+        .unwrap();
+
+    let config = Arc::new(Config {
+        database_path: "test".to_string(),
+        turso_url: String::new(),
+        turso_token: String::new(),
+        jwt_secret: common::TEST_JWT_SECRET.to_string(),
+        server_host: "127.0.0.1".to_string(),
+        server_port: 0,
+        turso_sync_interval_secs: 300,
+        device_creds_key: common::test_device_creds_key(),
+        timezone: chrono_tz::America::Caracas,
+        license_jwt_path: String::new(),
+        do_functions_activate_url: String::new(),
+        do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
+    });
+    let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (purge_tx, mut purge_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.purge_tx = Some(purge_tx);
+
+    let status = employees::handlers::deactivate_employee(
+        axum::extract::State(state),
+        axum::extract::Path(employee_id.clone()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(purge_rx.recv().await.unwrap().employee_id, employee_id);
+}
+
 /// Build a test app with employee + department routes (department needed for FK
 /// constraint tests). Returns (Router, TempDir) per Plan 08-02 D-20: caller binds
 /// the TempDir to a local that outlives every assertion (Pitfall 1 in 08-RESEARCH.md).
