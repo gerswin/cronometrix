@@ -179,10 +179,14 @@ pub async fn create_leave(
         leave_type,
         justification,
     };
-    let leave = service::create_leave_queued(&state, &claims.sub, req, evidence_relpath).await?;
-    if let Some(guard) = evidence_guard {
-        guard.keep();
-    }
+    let leave = service::create_leave_queued_guarded(
+        &state,
+        &claims.sub,
+        req,
+        evidence_relpath,
+        evidence_guard,
+    )
+    .await?;
 
     // 4. Publish recompute for every anchor_date in [from_date, to_date] so
     //    existing daily_records pick up the new overlay. Safe if recompute_tx

@@ -240,49 +240,53 @@ pub async fn persist_attendance_event_queued(
     };
 
     let queued_photo_relpath = photo_relpath.clone();
-    let rows_affected = state
-        .db_write
-        .transact(
-            "events.ingest-attendance",
-            move |tx| {
+    let db_write = state.db_write.clone();
+    let transaction = tokio::spawn(async move {
+        let result = db_write
+            .transact("events.ingest-attendance", move |tx| {
                 Box::pin(async move {
-                    tx.statement(
-                        "INSERT OR IGNORE INTO attendance_events \
-                         (id, employee_id, device_id, direction, captured_at, bucket_30s, \
-                          is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
-                        params![
-                            event.id,
-                            event.employee_id,
-                            event.device_id,
-                            event.direction,
-                            event.captured_at,
-                            bucket,
-                            event.is_unknown as i64,
-                            event.face_id,
-                            event.employee_no_string,
-                            event.raw_xml,
-                            queued_photo_relpath,
-                        ],
-                    )
-                    .await
+                    let rows_affected = tx
+                        .statement(
+                            "INSERT OR IGNORE INTO attendance_events \
+                             (id, employee_id, device_id, direction, captured_at, bucket_30s, \
+                              is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
+                            params![
+                                event.id,
+                                event.employee_id,
+                                event.device_id,
+                                event.direction,
+                                event.captured_at,
+                                bucket,
+                                event.is_unknown as i64,
+                                event.face_id,
+                                event.employee_no_string,
+                                event.raw_xml,
+                                queued_photo_relpath,
+                            ],
+                        )
+                        .await?;
+                    Ok((rows_affected, photo_guard))
                 })
-            },
-        )
+            })
+            .await;
+        match result {
+            Ok((0, _guard)) => Ok(PersistOutcome::Deduplicated),
+            Ok((_rows_affected, guard)) => {
+                if let Some(guard) = guard {
+                    guard.keep();
+                }
+                Ok(PersistOutcome::Inserted {
+                    photo_path: photo_relpath,
+                })
+            }
+            Err(error) => Err(error),
+        }
+    });
+    transaction
         .await
-        .map_err(AppError::from)?;
-
-    if rows_affected == 0 {
-        return Ok(PersistOutcome::Deduplicated);
-    }
-
-    if let Some(guard) = photo_guard {
-        guard.keep();
-    }
-
-    Ok(PersistOutcome::Inserted {
-        photo_path: photo_relpath,
-    })
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("event transaction task: {error}")))?
+        .map_err(AppError::from)
 }
 
 /// Compatibility wrapper for non-transactional enrollment photo callers.

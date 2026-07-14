@@ -203,9 +203,10 @@ pub async fn create_override(
     let now = Utc::now().timestamp();
     let id = Uuid::new_v4().to_string();
     let actor_id = claims.sub;
-    let (response, employee_id, anchor_date) = state
-        .db_write
-        .transact(
+    let db_write = state.db_write.clone();
+    let transaction = tokio::spawn(async move {
+        let result = db_write
+            .transact(
             "daily-records.create-override",
             move |tx| {
                 Box::pin(async move {
@@ -263,15 +264,26 @@ pub async fn create_override(
                         },
                         employee_id,
                         anchor_date,
+                        evidence_guard,
                     ))
                 })
             },
         )
+        .await;
+        match result {
+            Ok((response, employee_id, anchor_date, guard)) => {
+                if let Some(guard) = guard {
+                    guard.keep();
+                }
+                Ok((response, employee_id, anchor_date))
+            }
+            Err(error) => Err(error),
+        }
+    });
+    let (response, employee_id, anchor_date) = transaction
         .await
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("override transaction task: {error}")))?
         .map_err(AppError::from)?;
-    if let Some(guard) = evidence_guard {
-        guard.keep();
-    }
 
     // Publish recompute so the daily_record reflects the override promptly
     if let Some(tx) = state.recompute_tx.as_ref() {

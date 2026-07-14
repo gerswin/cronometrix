@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub struct AtomicFileGuard {
     temp_path: PathBuf,
     final_path: PathBuf,
+    identity: FileIdentity,
     kept: bool,
 }
 
@@ -37,6 +38,7 @@ impl AtomicFileGuard {
             .with_context(|| format!("create atomic file parent {}", parent.display()))?;
 
         let (temp_path, mut temp_file) = create_unique_temp(parent)?;
+        let identity = file_identity(&temp_file.metadata()?)?;
         let mut published = false;
         let write_result = (|| -> anyhow::Result<()> {
             temp_file
@@ -47,10 +49,7 @@ impl AtomicFileGuard {
                 .with_context(|| format!("sync atomic temp {}", temp_path.display()))?;
             drop(temp_file);
 
-            // A hard-link publication is atomic, same-filesystem, and has
-            // create-new/no-clobber semantics. Removing the temporary name
-            // afterwards leaves the published inode at exactly one path.
-            if let Err(error) = fs::hard_link(&temp_path, &final_path) {
+            if let Err(error) = publish_noreplace(&temp_path, &final_path) {
                 if error.kind() == std::io::ErrorKind::AlreadyExists {
                     bail!("destination already exists: {}", final_path.display());
                 }
@@ -64,16 +63,15 @@ impl AtomicFileGuard {
             }
             published = true;
             sync_directory(parent)?;
-            fs::remove_file(&temp_path)
-                .with_context(|| format!("remove atomic temp {}", temp_path.display()))?;
+            remove_if_owned(&temp_path, identity)?;
             sync_directory(parent)?;
             Ok(())
         })();
 
         if let Err(error) = write_result {
-            let _ = fs::remove_file(&temp_path);
+            let _ = remove_if_owned(&temp_path, identity);
             if published {
-                let _ = fs::remove_file(&final_path);
+                let _ = remove_if_owned(&final_path, identity);
             }
             return Err(error);
         }
@@ -81,6 +79,7 @@ impl AtomicFileGuard {
         Ok(Self {
             temp_path,
             final_path,
+            identity,
             kept: false,
         })
     }
@@ -96,8 +95,8 @@ impl Drop for AtomicFileGuard {
         if self.kept {
             return;
         }
-        let _ = fs::remove_file(&self.temp_path);
-        let _ = fs::remove_file(&self.final_path);
+        let _ = remove_if_owned(&self.temp_path, self.identity);
+        let _ = remove_if_owned(&self.final_path, self.identity);
         if let Some(parent) = self.final_path.parent() {
             let _ = sync_directory(parent);
         }
@@ -128,4 +127,101 @@ fn sync_directory(path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("open atomic parent {}", path.display()))?
         .sync_all()
         .with_context(|| format!("sync atomic parent {}", path.display()))
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &fs::Metadata) -> anyhow::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(unix)]
+fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if file_identity(&metadata)? == identity {
+        fs::remove_file(path)
+            .with_context(|| format!("remove owned atomic file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[derive(Clone, Copy, Debug)]
+struct FileIdentity;
+
+#[cfg(not(unix))]
+fn file_identity(_metadata: &fs::Metadata) -> anyhow::Result<FileIdentity> {
+    Ok(FileIdentity)
+}
+
+#[cfg(not(unix))]
+fn remove_if_owned(_path: &Path, _identity: FileIdentity) -> anyhow::Result<()> {
+    // No stable file identity is exposed by portable std on non-Unix targets.
+    // Conservatively preserve the path rather than risk deleting a replacement.
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn publish_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int, c_uint};
+    use std::os::unix::ffi::OsStrExt;
+
+    const AT_FDCWD: c_int = -100;
+    const RENAME_NOREPLACE: c_uint = 1;
+
+    extern "C" {
+        fn renameat2(
+            olddirfd: c_int,
+            oldpath: *const c_char,
+            newdirfd: c_int,
+            newpath: *const c_char,
+            flags: c_uint,
+        ) -> c_int;
+    }
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in source path"))?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in destination path")
+    })?;
+    // SAFETY: both C strings are NUL-terminated and live for the duration of
+    // the call; AT_FDCWD and RENAME_NOREPLACE are Linux ABI constants.
+    let result = unsafe {
+        renameat2(
+            AT_FDCWD,
+            source.as_ptr(),
+            AT_FDCWD,
+            destination.as_ptr(),
+            RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn publish_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    // Portable std has no no-replace rename. A same-directory hard link is an
+    // atomic no-clobber publication fallback on Unix development platforms;
+    // the caller removes the temporary name after syncing the directory.
+    fs::hard_link(source, destination)
 }

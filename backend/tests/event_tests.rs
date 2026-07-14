@@ -147,6 +147,25 @@ fn atomic_file_guard_never_clobbers_preexisting_destination_or_leaves_temp() {
     assert_eq!(names, vec![std::ffi::OsString::from("event.jpg")]);
 }
 
+#[test]
+fn atomic_file_guard_drop_preserves_replacement_owned_by_someone_else() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    let final_path = root.join("2026-07-14/event.jpg");
+    let guard = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"guard-owned").unwrap();
+
+    let replacement = root.join("2026-07-14/replacement.jpg");
+    std::fs::write(&replacement, b"foreign").unwrap();
+    std::fs::rename(&replacement, &final_path).unwrap();
+    drop(guard);
+
+    assert_eq!(
+        std::fs::read(&final_path).unwrap(),
+        b"foreign",
+        "compensation must not delete a replacement it does not own"
+    );
+}
+
 // =============================================================================
 // Test data seeding helpers
 // =============================================================================
@@ -287,6 +306,78 @@ async fn duplicate_queued_event_leaves_no_second_photo() {
     assert!(date_dir.join("event-first.jpg").exists());
     assert!(!date_dir.join("event-duplicate.jpg").exists());
     assert_eq!(std::fs::read_dir(date_dir).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn cancelled_event_future_after_job_admission_keeps_committed_photo() {
+    let db = common::test_db().await;
+    let (_app, state, _tmp) = build_test_app(db).await;
+    let conn = state.db.connect().unwrap();
+    seed_device(&conn, "d-cancelled", "10.9.8.8", 8443).await;
+    seed_employee(&conn, "e-cancelled", "EMP-CANCELLED").await;
+    drop(conn);
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-cancelled-event", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let event = NewAttendanceEvent {
+        id: "event-cancelled".into(),
+        employee_id: Some("e-cancelled".into()),
+        device_id: "d-cancelled".into(),
+        direction: "entry".into(),
+        captured_at: 1_700_000_000,
+        is_unknown: false,
+        face_id: Some("face-cancelled".into()),
+        employee_no_string: Some("EMP-CANCELLED".into()),
+        raw_xml: "<cancelled/>".into(),
+        photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x03]),
+    };
+    let event_state = state.clone();
+    let event_task = tokio::spawn(async move {
+        persist_attendance_event_queued(&event_state, &event_state.paths.events_root, event).await
+    });
+    while state.db_write.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    event_task.abort();
+    assert!(event_task.await.unwrap_err().is_cancelled());
+    release_tx.send(()).expect("release blocker");
+    blocker.await.unwrap().unwrap();
+    while state.db_write.stats().completed < 2 {
+        tokio::task::yield_now().await;
+    }
+
+    let conn = state.db.connect().unwrap();
+    let photo_path: String = conn
+        .query(
+            "SELECT photo_path FROM attendance_events WHERE id = 'event-cancelled'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("accepted event transaction committed")
+        .get(0)
+        .unwrap();
+    assert!(
+        state.paths.events_root.join(photo_path).exists(),
+        "committed event row must retain its photo after future cancellation"
+    );
 }
 
 #[tokio::test]

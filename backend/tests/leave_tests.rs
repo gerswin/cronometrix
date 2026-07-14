@@ -530,6 +530,93 @@ async fn closed_queue_after_leave_evidence_write_leaves_no_row_or_file() {
 }
 
 #[tokio::test]
+async fn cancelled_request_after_leave_job_admission_keeps_committed_evidence() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept = create_test_department_with_shift(
+        &db,
+        "D-cancelled-request",
+        "day",
+        false,
+        480,
+        "09:00",
+        "17:00",
+    )
+    .await;
+    let emp = seed_employee(&db, &dept, "E-CANCELLED-REQUEST").await;
+    let (state, _tmp) = make_state(db);
+    let leaves_root = state.paths.leaves_root.clone();
+    let app = build_test_app(state.clone());
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-cancelled-leave", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let (body, ct) = build_leave_multipart(
+        &[
+            ("employee_id", &emp),
+            ("from_date", "2026-05-03"),
+            ("to_date", "2026-05-03"),
+            ("leave_type", "medical"),
+            ("justification", "request cancellation must not orphan row"),
+        ],
+        Some(("image/jpeg", &[0xFF, 0xD8, 0xFF, 0xE0][..])),
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/leaves")
+        .header(header::CONTENT_TYPE, ct)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let request_task = tokio::spawn(app.oneshot(request));
+    while state.db_write.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    release_tx.send(()).expect("release blocker");
+    blocker.await.unwrap().unwrap();
+    while state.db_write.stats().completed < 2 {
+        tokio::task::yield_now().await;
+    }
+
+    let conn = state.db.connect().unwrap();
+    let evidence_path: String = conn
+        .query(
+            "SELECT evidence_path FROM leaves WHERE employee_id = ?1",
+            params![emp],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("accepted leave transaction committed")
+        .get(0)
+        .unwrap();
+    assert!(
+        leaves_root.join(evidence_path).exists(),
+        "committed leave row must retain its evidence after request cancellation"
+    );
+}
+
+#[tokio::test]
 async fn leave_filesystem_failure_precedes_queue_admission() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
