@@ -48,7 +48,6 @@ impl AtomicFileGuard {
                 .sync_all()
                 .with_context(|| format!("sync atomic temp {}", temp_path.display()))?;
             identity = file_identity(&temp_file.metadata()?)?;
-            drop(temp_file);
 
             if let Err(error) = publish_noreplace(&temp_path, &final_path) {
                 if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -64,9 +63,10 @@ impl AtomicFileGuard {
             }
             published = true;
             // rename(2) updates ctime on Unix. Refresh the identity after the
-            // atomic publication so later compensation compares against the
-            // published entry rather than the pre-rename temporary file.
-            identity = file_identity(&fs::symlink_metadata(&final_path)?)?;
+            // atomic publication from the still-open descriptor. Reading from
+            // the pathname here could adopt a concurrent foreign replacement.
+            identity = file_identity(&temp_file.metadata()?)?;
+            drop(temp_file);
             sync_directory(parent)?;
             remove_if_owned(&temp_path, identity)?;
             sync_directory(parent)?;
@@ -186,6 +186,8 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
     const O_NOFOLLOW: i32 = 0x0000_0100;
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    const O_NONBLOCK: i32 = 0x0000_0004;
     // O_NOFOLLOW is architecture-specific on Linux/Android. ARM and PowerPC
     // use octal 0100000 (0x8000), while the common x86 value is octal
     // 0400000 (0x20000). Android/riscv64 uses its distinct UAPI value.
@@ -223,6 +225,8 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
         not(any(target_arch = "aarch64", target_arch = "arm", target_arch = "riscv64"))
     ))]
     const O_NOFOLLOW: i32 = 0x0002_0000;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const O_NONBLOCK: i32 = 0x0000_0800;
     #[cfg(not(any(
         target_os = "macos",
         target_os = "ios",
@@ -231,10 +235,18 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
         target_os = "android"
     )))]
     const O_NOFOLLOW: i32 = 0;
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "android"
+    )))]
+    const O_NONBLOCK: i32 = 0;
 
     OpenOptions::new()
         .read(true)
-        .custom_flags(O_NOFOLLOW)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
         .open(path)
 }
 
@@ -548,5 +560,28 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_delete_rejects_fifo_without_blocking() {
+        use std::os::unix::fs::FileTypeExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("capture.jpg");
+        std::fs::write(&path, b"owned").unwrap();
+        let identity = file_identity(&std::fs::metadata(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo must be available on Unix test runners");
+        assert!(status.success());
+
+        assert!(remove_owned_file(tmp.path(), &path, identity).is_err());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_fifo());
     }
 }
