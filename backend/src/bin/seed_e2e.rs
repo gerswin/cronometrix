@@ -9,7 +9,7 @@
 //! Refuses to run without CRONOMETRIX_E2E=true. Idempotent — INSERT OR IGNORE.
 //!
 //! Seeded data:
-//!   Users (e2e):  e2e_admin / e2e_supervisor / e2e_viewer
+//!   Users (e2e):  e2e_admin / e2e_supervisor / e2e_viewer / e2e_enrollment_admin
 //!   Users (demo): demo_admin / demo_super / demo_viewer (shared password)
 //!   Departments:  dept-prod, dept-admin, dept-rrhh
 //!   Employees:    6 employees, 2 per department
@@ -46,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
     let admin_hash = auth::service::hash_password("e2e-admin-pass")?;
     let supervisor_hash = auth::service::hash_password("e2e-supervisor-pass")?;
     let viewer_hash = auth::service::hash_password("e2e-viewer-pass")?;
+    let enrollment_admin_hash = auth::service::hash_password("e2e-enrollment-pass")?;
 
     // Schema (001_initial_schema.sql): id, username, full_name, password_hash, role,
     // refresh_token_hash, status, deleted_at, version, created_at, updated_at
@@ -90,6 +91,20 @@ async fn main() -> anyhow::Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("users insert failed for e2e_viewer: {}", e))?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO users \
+         (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
+        (
+            "e2e-enrollment-admin-id",
+            "e2e_enrollment_admin",
+            "E2E Enrollment Admin",
+            enrollment_admin_hash.as_str(),
+        ),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("users insert failed for e2e_enrollment_admin: {}", e))?;
 
     // ----- Demo users (shared password — for live demo handoff, not e2e) -----
     let demo_pass = "dSQBALuQgXWZp6Oo";
@@ -216,8 +231,57 @@ async fn main() -> anyhow::Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("devices insert failed for dev-exit: {}", e))?;
 
+    // ----- Stable resumable enrollment -----
+    // The photo path is metadata only: this seeded row validates list/reload/reopen
+    // recovery and is never retried. Both pending pushes are required so it remains
+    // an unambiguous 0/2 in-progress enrollment.
+    conn.execute(
+        "INSERT OR IGNORE INTO face_enrollments \
+         (id, employee_id, captured_via, source_device_id, photo_path, \
+          face_quality_score, created_by, created_at) \
+         VALUES (?1, ?2, 'device', ?3, ?4, ?5, ?6, unixepoch())",
+        (
+            "e2e-seed-face-enrollment",
+            "emp-carmen",
+            "dev-entry",
+            "emp-carmen/e2e-seed-face-enrollment.jpg",
+            r#"{"faceDetected":true,"luminanceOk":true,"sizeOk":true,"luminance":128,"width":240,"height":240}"#,
+            "e2e-enrollment-admin-id",
+        ),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("seed face enrollment insert failed: {}", e))?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO enrollments \
+         (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
+         VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
+        (
+            "e2e-seed-enrollment",
+            "emp-carmen",
+            "e2e-seed-face-enrollment",
+            "e2e-enrollment-admin-id",
+        ),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("seed enrollment insert failed: {}", e))?;
+
+    for (id, device_id) in [
+        ("e2e-seed-push-entry", "dev-entry"),
+        ("e2e-seed-push-exit", "dev-exit"),
+    ] {
+        conn.execute(
+            "INSERT OR IGNORE INTO enrollment_device_pushes \
+             (id, enrollment_id, device_id, status) \
+             VALUES (?1, 'e2e-seed-enrollment', ?2, 'pending')",
+            (id, device_id),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("seed enrollment push insert failed for {}: {}", id, e))?;
+    }
+
     tracing::info!(
-        "seed_e2e: seeded 6 users (3 e2e + 3 demo), 3 departments, 6 employees, 2 devices"
+        "seed_e2e: seeded 7 users (4 e2e + 3 demo), 3 departments, 6 employees, 2 devices, 1 resumable enrollment"
     );
     println!("seed_e2e: complete");
     Ok(())

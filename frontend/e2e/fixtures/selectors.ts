@@ -91,4 +91,14 @@ export const SEL = {
   navDevices: 'nav-devices',
   navReports: 'nav-reports',
   navAudit: 'nav-audit',
+
+  // Facial enrollment
+  enrollmentPage: 'enrollment-page',
+  enrollmentModal: 'enrollment-modal',
+  enrollmentDeviceTab: 'enroll-tab-hikvision',
+  enrollmentRow: (id: string) => `enrollment-row-${id}`,
+  enrollmentReopen: (id: string) => `enrollment-reopen-${id}`,
+  enrollmentPushRow: (deviceId: string) => `enrollment-push-row-${deviceId}`,
+  enrollmentPushStatus: (deviceId: string) => `enrollment-push-status-${deviceId}`,
+  enrollmentRetry: (deviceId: string) => `enrollment-retry-${deviceId}`,
 } as const
