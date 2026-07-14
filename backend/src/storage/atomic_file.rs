@@ -38,7 +38,7 @@ impl AtomicFileGuard {
             .with_context(|| format!("create atomic file parent {}", parent.display()))?;
 
         let (temp_path, mut temp_file) = create_unique_temp(parent)?;
-        let identity = file_identity(&temp_file.metadata()?)?;
+        let mut identity = file_identity(&temp_file.metadata()?)?;
         let mut published = false;
         let write_result = (|| -> anyhow::Result<()> {
             temp_file
@@ -47,6 +47,7 @@ impl AtomicFileGuard {
             temp_file
                 .sync_all()
                 .with_context(|| format!("sync atomic temp {}", temp_path.display()))?;
+            identity = file_identity(&temp_file.metadata()?)?;
             drop(temp_file);
 
             if let Err(error) = publish_noreplace(&temp_path, &final_path) {
@@ -62,6 +63,10 @@ impl AtomicFileGuard {
                 });
             }
             published = true;
+            // rename(2) updates ctime on Unix. Refresh the identity after the
+            // atomic publication so later compensation compares against the
+            // published entry rather than the pre-rename temporary file.
+            identity = file_identity(&fs::symlink_metadata(&final_path)?)?;
             sync_directory(parent)?;
             remove_if_owned(&temp_path, identity)?;
             sync_directory(parent)?;
@@ -287,6 +292,25 @@ fn file_identity(metadata: &fs::Metadata) -> anyhow::Result<FileIdentity> {
 
 #[cfg(unix)]
 fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
+    // Validate the public entry before moving it. Keeping this descriptor open
+    // pins the inode, preventing an ABA replacement from reusing it while the
+    // pathname is claimed into quarantine.
+    let opened = match open_nofollow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("open owned atomic file {}", path.display()))
+        }
+    };
+    let opened_metadata = opened.metadata()?;
+    if !opened_metadata.file_type().is_file() {
+        bail!("owned atomic path is not a regular file");
+    }
+    let opened_identity = file_identity(&opened_metadata)?;
+    if opened_identity != identity {
+        bail!("atomic cleanup identity mismatch; foreign entry preserved");
+    }
+
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("atomic file has no parent: {}", path.display()))?;
@@ -308,7 +332,10 @@ fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
 
     let claimed_metadata = fs::symlink_metadata(&quarantine)?;
     let claimed_identity = file_identity(&claimed_metadata)?;
-    if claimed_metadata.file_type().is_file() && claimed_identity == identity {
+    let claimed_is_opened_file = claimed_metadata.file_type().is_file()
+        && claimed_identity.device == opened_identity.device
+        && claimed_identity.inode == opened_identity.inode;
+    if claimed_is_opened_file {
         fs::remove_file(&quarantine)
             .with_context(|| format!("remove owned atomic quarantine {}", quarantine.display()))?;
     } else {
