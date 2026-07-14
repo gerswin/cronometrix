@@ -13,6 +13,26 @@ use anyhow::{Context, Result};
 use diqwest::WithDigestAuth;
 use reqwest::Client;
 
+/// A device completed the HTTP exchange and explicitly rejected the command.
+///
+/// This is distinct from transport failures and timeouts, whose device-side
+/// outcome is ambiguous. Enrollment retries may safely replay this error class
+/// because the Hikvision user/face operations are idempotent.
+#[derive(Debug, thiserror::Error)]
+#[error("device returned non-success status {status}: {body}")]
+pub(crate) struct DeviceResponseError {
+    status: reqwest::StatusCode,
+    body: String,
+}
+
+fn accepted_response(status: reqwest::StatusCode, body: String) -> Result<String> {
+    if status.is_success() {
+        Ok(body)
+    } else {
+        Err(DeviceResponseError { status, body }.into())
+    }
+}
+
 /// Timeouts:
 /// - `connect_timeout(5s)` — TCP establish; devices unreachable should fail fast.
 /// - `timeout(30s)` — full request ceiling; plan 02-01 handlers wrap this in a
@@ -161,11 +181,7 @@ impl DeviceConnection {
                 .text()
                 .await
                 .context("read ISAPI FaceDataRecord response")?;
-            anyhow::ensure!(
-                status.is_success(),
-                "device returned non-success status {status}: {text}"
-            );
-            return Ok(text);
+            return accepted_response(status, text);
         }
 
         // 401 path: compute digest auth and retry with fresh form.
@@ -204,11 +220,7 @@ impl DeviceConnection {
             .text()
             .await
             .context("read ISAPI FaceDataRecord response")?;
-        anyhow::ensure!(
-            status.is_success(),
-            "device returned non-success status {status}: {text}"
-        );
-        Ok(text)
+        accepted_response(status, text)
     }
 
     /// Delete a person record from the device (D-15 LOCKED).
@@ -273,11 +285,7 @@ impl DeviceConnection {
             .context("ISAPI request failed")?;
         let status = resp.status();
         let text = resp.text().await.context("read ISAPI response body")?;
-        anyhow::ensure!(
-            status.is_success(),
-            "device returned non-success status {status}: {text}"
-        );
-        Ok(text)
+        accepted_response(status, text)
     }
 
     async fn send_json(&self, url: &str, method: reqwest::Method, body: &str) -> Result<String> {
@@ -291,10 +299,6 @@ impl DeviceConnection {
             .context("ISAPI request failed")?;
         let status = resp.status();
         let text = resp.text().await.context("read ISAPI response body")?;
-        anyhow::ensure!(
-            status.is_success(),
-            "device returned non-success status {status}: {text}"
-        );
-        Ok(text)
+        accepted_response(status, text)
     }
 }

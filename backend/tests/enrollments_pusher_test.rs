@@ -589,26 +589,32 @@ async fn push_one_device_5xx_marks_push_failed() {
     drop(rows);
     drop(conn);
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
-    let retry = push_one_device(
-        &state,
-        &resp.enrollment_id,
-        &resp.face_id,
-        &photo,
-        &emp_id,
-        "Test Employee",
-        &device,
-    )
-    .await;
-    assert!(retry.is_err());
-    assert_eq!(
-        server.received_requests().await.unwrap().len(),
-        1,
-        "ambiguous device result must never be replayed"
-    );
+    let checkpoint = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1",
+            params![service::enrollment_checkpoint_key(
+                &resp.device_pushes[0].id
+            )],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap();
+    assert!(checkpoint.is_none());
+    let retry_push_id =
+        service::reset_push_to_pending_queued(&state, &resp.enrollment_id, &device_id)
+            .await
+            .expect("an explicit HTTP rejection is safe to retry");
+    assert_eq!(retry_push_id, resp.device_pushes[0].id);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn partial_device_push_is_manual_and_never_replayed() {
+async fn explicit_face_upload_rejection_is_retryable() {
     let server = MockServer::start().await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
@@ -645,7 +651,7 @@ async fn partial_device_push_is_manual_and_never_replayed() {
     .await
     .expect_err("face upload failure follows an accepted user upsert");
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
-    let checkpoint: String = state
+    let checkpoint = state
         .db
         .connect()
         .unwrap()
@@ -659,23 +665,17 @@ async fn partial_device_push_is_manual_and_never_replayed() {
         .unwrap()
         .next()
         .await
-        .unwrap()
-        .unwrap()
-        .get(0)
         .unwrap();
-    assert_eq!(checkpoint, "manual");
+    assert!(
+        checkpoint.is_none(),
+        "a confirmed HTTP rejection must clear the ambiguous-operation checkpoint"
+    );
 
-    push_one_device(
-        &state,
-        &started.enrollment_id,
-        &started.face_id,
-        &photo,
-        &emp_id,
-        "Test Employee",
-        &device,
-    )
-    .await
-    .expect_err("manual checkpoint must prohibit replay");
+    let retry_push_id =
+        service::reset_push_to_pending_queued(&state, &started.enrollment_id, &device_id)
+            .await
+            .expect("the explicit upload rejection is safe to retry");
+    assert_eq!(retry_push_id, started.device_pushes[0].id);
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 

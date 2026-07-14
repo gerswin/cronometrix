@@ -598,15 +598,22 @@ async fn push_enrollment_device(
         }
         Ok(Err(e)) => {
             let scrubbed = scrub_password(e.to_string(), &device.password);
-            if let Err(ue) = service::record_push_recovery_failure(
-                state,
-                &push_id,
-                "Device operation outcome is ambiguous; manual reconciliation required",
-                true,
-            )
-            .await
-            {
-                tracing::warn!(err = %ue, "failed to update push row to failed");
+            let terminal = e
+                .downcast_ref::<crate::isapi::client::DeviceResponseError>()
+                .is_some();
+            let persisted = if terminal {
+                service::complete_push_failure(state, &push_id, &scrubbed).await
+            } else {
+                service::record_push_recovery_failure(
+                    state,
+                    &push_id,
+                    "Device operation outcome is ambiguous; manual reconciliation required",
+                    true,
+                )
+                .await
+            };
+            if let Err(update_error) = persisted {
+                tracing::warn!(err = %update_error, "failed to update push row to failed");
             }
             Err(anyhow::anyhow!("ISAPI push failed: {scrubbed}"))
         }
