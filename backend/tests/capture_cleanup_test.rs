@@ -363,3 +363,197 @@ async fn startup_sweep_fails_before_runtime_when_capture_root_is_not_a_directory
         .await
         .expect_err("startup must fail closed when orphan inspection cannot start");
 }
+
+#[tokio::test]
+async fn captured_cleanup_reports_missing_path_and_outside_root_without_removing_state() {
+    let (state, tmp) = state().await;
+    let now = Instant::now();
+    let terminal_at = now - capture_cleanup::TERMINAL_TTL;
+
+    state.captures.write().await.insert(
+        "missing-path".into(),
+        capture("captured", terminal_at, Some(terminal_at)),
+    );
+
+    let outside_root = tmp.path().join("outside");
+    tokio::fs::create_dir_all(&outside_root).await.unwrap();
+    let outside = outside_root.join("outside.jpg");
+    tokio::fs::write(&outside, b"foreign").await.unwrap();
+    let outside_identity = inspect_owned_file(&outside_root, &outside)
+        .unwrap()
+        .identity();
+    let mut outside_capture = capture("captured", terminal_at, Some(terminal_at));
+    outside_capture.photo_path = Some(outside.to_string_lossy().into_owned());
+    outside_capture.photo_identity = Some(outside_identity);
+    state
+        .captures
+        .write()
+        .await
+        .insert("outside-root".into(), outside_capture);
+
+    let stats = capture_cleanup::cleanup_once(
+        &state,
+        capture_cleanup::CleanupNow::new(now, SystemTime::now()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(stats.delete_failures, 2);
+    assert!(state.captures.read().await.contains_key("missing-path"));
+    assert!(state.captures.read().await.contains_key("outside-root"));
+    assert_eq!(tokio::fs::read(outside).await.unwrap(), b"foreign");
+}
+
+#[tokio::test]
+async fn startup_sweep_ignores_directories_non_jpegs_owned_names_and_future_mtimes() {
+    let (state, _tmp) = state().await;
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+    tokio::fs::create_dir(state.paths.captures_tmp_root.join("directory.jpg"))
+        .await
+        .unwrap();
+    tokio::fs::write(state.paths.captures_tmp_root.join("notes.txt"), b"notes")
+        .await
+        .unwrap();
+    tokio::fs::write(state.paths.captures_tmp_root.join("owned-id.jpg"), b"owned")
+        .await
+        .unwrap();
+    tokio::fs::write(
+        state.paths.captures_tmp_root.join("custom-name.jpg"),
+        b"owned",
+    )
+    .await
+    .unwrap();
+    let future = state.paths.captures_tmp_root.join("future.jpg");
+    tokio::fs::write(&future, b"future").await.unwrap();
+
+    let mut owned = capture("capturing", Instant::now(), None);
+    owned.photo_path = Some(
+        state
+            .paths
+            .captures_tmp_root
+            .join("custom-name.jpg")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    state
+        .captures
+        .write()
+        .await
+        .insert("owned-id".into(), owned);
+
+    let stats = capture_cleanup::startup_sweep(
+        &state,
+        capture_cleanup::CleanupNow::new(Instant::now(), SystemTime::UNIX_EPOCH),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(stats, capture_cleanup::CleanupStats::default());
+    for name in [
+        "directory.jpg",
+        "notes.txt",
+        "owned-id.jpg",
+        "custom-name.jpg",
+        "future.jpg",
+    ] {
+        assert!(state.paths.captures_tmp_root.join(name).exists());
+    }
+}
+
+#[tokio::test]
+async fn shutdown_rejects_missing_identity_outside_root_and_identity_replacement() {
+    let (state, tmp) = state().await;
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+
+    let missing_identity_path = state.paths.captures_tmp_root.join("missing-identity.jpg");
+    tokio::fs::write(&missing_identity_path, b"jpeg")
+        .await
+        .unwrap();
+    let mut missing_identity = capture("captured", Instant::now(), Some(Instant::now()));
+    missing_identity.photo_path = Some(missing_identity_path.to_string_lossy().into_owned());
+    state
+        .captures
+        .write()
+        .await
+        .insert("missing-identity".into(), missing_identity);
+    capture_cleanup::shutdown_captures(&state)
+        .await
+        .expect_err("a captured JPEG without identity must fail closed");
+    state.captures.write().await.clear();
+
+    let outside_root = tmp.path().join("outside-shutdown");
+    tokio::fs::create_dir_all(&outside_root).await.unwrap();
+    let outside = outside_root.join("outside.jpg");
+    tokio::fs::write(&outside, b"outside").await.unwrap();
+    let mut outside_capture = capture("captured", Instant::now(), Some(Instant::now()));
+    outside_capture.photo_path = Some(outside.to_string_lossy().into_owned());
+    outside_capture.photo_identity = Some(
+        inspect_owned_file(&outside_root, &outside)
+            .unwrap()
+            .identity(),
+    );
+    state
+        .captures
+        .write()
+        .await
+        .insert("outside".into(), outside_capture);
+    capture_cleanup::shutdown_captures(&state)
+        .await
+        .expect_err("shutdown must reject paths outside the configured root");
+    state.captures.write().await.clear();
+
+    let raced = state.paths.captures_tmp_root.join("raced.jpg");
+    tokio::fs::write(&raced, b"original").await.unwrap();
+    let original_identity = inspect_owned_file(&state.paths.captures_tmp_root, &raced)
+        .unwrap()
+        .identity();
+    let mut raced_capture = capture("captured", Instant::now(), Some(Instant::now()));
+    raced_capture.photo_path = Some(raced.to_string_lossy().into_owned());
+    raced_capture.photo_identity = Some(original_identity);
+    state
+        .captures
+        .write()
+        .await
+        .insert("raced".into(), raced_capture);
+    let replacement = state.paths.captures_tmp_root.join("replacement.jpg");
+    tokio::fs::write(&replacement, b"replacement")
+        .await
+        .unwrap();
+    tokio::fs::rename(&replacement, &raced).await.unwrap();
+
+    capture_cleanup::shutdown_captures(&state)
+        .await
+        .expect_err("shutdown must preserve a foreign replacement");
+    assert_eq!(tokio::fs::read(raced).await.unwrap(), b"replacement");
+}
+
+#[tokio::test]
+async fn cancelled_cleanup_worker_runs_final_active_state_timeout_pass() {
+    let (state, _tmp) = state().await;
+    state.captures.write().await.insert(
+        "stuck-at-shutdown".into(),
+        capture(
+            "capturing",
+            Instant::now() - capture_cleanup::CAPTURING_TTL,
+            None,
+        ),
+    );
+    let shutdown = CancellationToken::new();
+    shutdown.cancel();
+
+    capture_cleanup::run(state.clone(), shutdown).await.unwrap();
+
+    let entry = state
+        .captures
+        .read()
+        .await
+        .get("stuck-at-shutdown")
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.status, "timeout");
+    assert!(entry.terminal_at.is_some());
+}
