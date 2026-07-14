@@ -34,11 +34,29 @@ pub struct PurgeRequest {
 pub struct PurgeWorker {
     state: AppState,
     shutdown: CancellationToken,
+    call_timeout: Duration,
 }
 
 impl PurgeWorker {
     pub fn new(state: AppState, shutdown: CancellationToken) -> Self {
-        Self { state, shutdown }
+        Self {
+            state,
+            shutdown,
+            call_timeout: Duration::from_secs(30),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_timeout(
+        state: AppState,
+        shutdown: CancellationToken,
+        call_timeout: Duration,
+    ) -> Self {
+        Self {
+            state,
+            shutdown,
+            call_timeout,
+        }
     }
 
     pub async fn run(self, mut rx: UnboundedReceiver<PurgeRequest>) {
@@ -240,10 +258,12 @@ impl PurgeWorker {
             };
 
             let fid = face_id.clone();
-            let result = tokio::time::timeout(Duration::from_secs(30), async move {
-                isapi.delete_user(&fid).await
-            })
-            .await;
+            let result =
+                tokio::time::timeout(
+                    self.call_timeout,
+                    async move { isapi.delete_user(&fid).await },
+                )
+                .await;
 
             match result {
                 Ok(Ok(_)) => {
@@ -298,9 +318,12 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
-                    let _ =
-                        enrollment_service::clear_device_operation(&self.state, &checkpoint_key)
-                            .await;
+                    let _ = enrollment_service::mark_device_operation(
+                        &self.state,
+                        &checkpoint_key,
+                        enrollment_service::DeviceOperationState::Manual,
+                    )
+                    .await;
                 }
                 Err(_timeout) => {
                     tracing::warn!(device_id = %device_id, "PurgeWorker: delete_user timeout");
@@ -312,9 +335,12 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete after timeout");
                     }
-                    let _ =
-                        enrollment_service::clear_device_operation(&self.state, &checkpoint_key)
-                            .await;
+                    let _ = enrollment_service::mark_device_operation(
+                        &self.state,
+                        &checkpoint_key,
+                        enrollment_service::DeviceOperationState::Manual,
+                    )
+                    .await;
                 }
             }
         }

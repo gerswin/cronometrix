@@ -366,6 +366,31 @@ async fn backfill_5xx_does_not_write_mapping_and_keeps_running() {
         mappings.iter().all(|(_, did, _)| did != &device_id),
         "5xx must not produce a mapping row"
     );
+    let checkpoint_state: String = conn
+        .query(
+            "SELECT state FROM device_operation_checkpoints \
+             WHERE operation='backfill_push' AND operation_key LIKE ?1",
+            params![format!("backfill:{device_id}:%")],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(checkpoint_state, "manual");
+    tx.send(BackfillRequest {
+        device_id: device_id.clone(),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "ambiguous backfill must not replay"
+    );
 
     // Worker is still alive; cancel cleanly.
     shutdown.cancel();

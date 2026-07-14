@@ -88,6 +88,13 @@ impl AtomicFileGuard {
     pub fn keep(mut self) {
         self.kept = true;
     }
+
+    /// Stable identity of the published file. Callers that retain the path for
+    /// later cleanup must retain this identity too; cleanup may never adopt the
+    /// identity of whatever happens to occupy the path later.
+    pub fn identity(&self) -> FileIdentity {
+        self.identity
+    }
 }
 
 impl Drop for AtomicFileGuard {
@@ -126,20 +133,28 @@ pub fn read_owned_file(root: &Path, path: &Path) -> anyhow::Result<Vec<u8>> {
 /// Delete a regular direct child using the same identity-preserving quarantine
 /// claim as `AtomicFileGuard` compensation. A concurrent replacement is
 /// restored/preserved rather than unlinked.
-pub fn remove_owned_file(root: &Path, path: &Path) -> anyhow::Result<()> {
+pub fn inspect_owned_file(root: &Path, path: &Path) -> anyhow::Result<OwnedFileInspection> {
     validate_direct_child(root, path)?;
-    let file = match open_nofollow(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
+    let file = open_nofollow(path)?;
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
         bail!("owned path is not a regular file");
     }
-    let identity = file_identity(&metadata)?;
-    drop(file);
-    remove_if_owned(path, identity)
+    Ok(OwnedFileInspection {
+        identity: file_identity(&metadata)?,
+        modified: metadata.modified()?,
+    })
+}
+
+/// Delete only when the claimed entry still has the identity captured when it
+/// was published/inspected. A replacement at the same path is preserved.
+pub fn remove_owned_file(
+    root: &Path,
+    path: &Path,
+    expected_identity: FileIdentity,
+) -> anyhow::Result<()> {
+    validate_direct_child(root, path)?;
+    remove_if_owned(path, expected_identity)
 }
 
 fn validate_direct_child(root: &Path, path: &Path) -> anyhow::Result<()> {
@@ -208,7 +223,7 @@ fn sync_directory(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileIdentity {
+pub struct FileIdentity {
     device: u64,
     inode: u64,
 }
@@ -261,6 +276,7 @@ fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
             // than unlinking either writer's file.
             return Err(error).context("restore foreign atomic entry; retained for recovery");
         }
+        bail!("atomic cleanup identity mismatch; foreign entry preserved");
     }
     Ok(())
 }
@@ -277,7 +293,23 @@ fn warn_cleanup_failure(stage: &'static str, identity: FileIdentity) {
 
 #[cfg(not(unix))]
 #[derive(Clone, Copy, Debug)]
-struct FileIdentity;
+pub struct FileIdentity;
+
+#[derive(Clone, Copy, Debug)]
+pub struct OwnedFileInspection {
+    identity: FileIdentity,
+    modified: std::time::SystemTime,
+}
+
+impl OwnedFileInspection {
+    pub fn identity(self) -> FileIdentity {
+        self.identity
+    }
+
+    pub fn modified(self) -> std::time::SystemTime {
+        self.modified
+    }
+}
 
 #[cfg(not(unix))]
 fn file_identity(_metadata: &fs::Metadata) -> anyhow::Result<FileIdentity> {
@@ -392,7 +424,7 @@ fn claim_noreplace(_source: &Path, _destination: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{claim_noreplace, read_owned_file, remove_owned_file};
+    use super::{claim_noreplace, file_identity, read_owned_file, remove_owned_file};
 
     #[test]
     fn quarantine_claim_moves_source_without_clobbering() {
@@ -434,7 +466,8 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         assert!(read_owned_file(tmp.path(), &link).is_err());
-        assert!(remove_owned_file(tmp.path(), &link).is_err());
+        let identity = file_identity(&std::fs::metadata(&target).unwrap()).unwrap();
+        assert!(remove_owned_file(tmp.path(), &link, identity).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"secret");
         assert!(std::fs::symlink_metadata(&link)
             .unwrap()

@@ -178,15 +178,24 @@ async fn start_enrollment_emits_push_row_per_device() {
     .expect("start_enrollment with devices");
 
     assert_eq!(resp.device_pushes.len(), 2);
-    assert_eq!(resp.dispatch_devices.len(), 2);
-    let dispatch_ids: std::collections::HashSet<_> = resp
-        .dispatch_devices
-        .iter()
-        .map(|device| device.id.as_str())
-        .collect();
+    let conn = state.db.connect().unwrap();
     for p in &resp.device_pushes {
         assert_eq!(p.status, "pending");
-        assert!(dispatch_ids.contains(p.device_id.as_str()));
+        let checkpoint_key = service::enrollment_checkpoint_key(&p.id);
+        let checkpoint: String = conn
+            .query(
+                "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1 AND operation='enrollment_push'",
+                params![checkpoint_key],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .expect("checkpoint committed with push row")
+            .get(0)
+            .unwrap();
+        assert_eq!(checkpoint, "prepared");
     }
 }
 
@@ -323,6 +332,7 @@ async fn accepted_enrollment_survives_request_cancellation_with_photo_owned() {
     let config = make_config();
     let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device(&state.db, &state.config.device_creds_key).await;
 
     let (queue, receiver) = DbWriteQueue::channel(DbWriteQueueConfig {
         capacity: 4,
@@ -330,6 +340,11 @@ async fn accepted_enrollment_survives_request_cancellation_with_photo_owned() {
     });
     state.db_write = queue.clone();
     let worker = tokio::spawn(run_write_worker(state.db.clone(), receiver));
+    let dispatcher = state
+        .enrollment_dispatcher
+        .start(state.clone())
+        .await
+        .unwrap();
     let blocker_started = Arc::new(Notify::new());
     let release_blocker = Arc::new(Notify::new());
     let blocker = tokio::spawn({
@@ -354,7 +369,7 @@ async fn accepted_enrollment_survives_request_cancellation_with_photo_owned() {
         let state = state.clone();
         let emp_id = emp_id.clone();
         async move {
-            service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
                 .await
         }
     });
@@ -382,9 +397,340 @@ async fn accepted_enrollment_survives_request_cancellation_with_photo_owned() {
         .expect("accepted enrollment committed after caller cancellation");
     let photo_path: String = row.get(0).unwrap();
     assert!(state.paths.enrollments_root.join(photo_path).exists());
+    drop(conn);
+
+    state.enrollment_dispatcher.close().unwrap();
+    dispatcher
+        .await
+        .unwrap()
+        .expect_err("device failure must remain observable after full drain");
+    let conn = state.db.connect().unwrap();
+    let push_row = conn
+        .query(
+            "SELECT status, error_message FROM enrollment_device_pushes",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    let push_status: String = push_row.get(0).unwrap();
+    let push_error: Option<String> = push_row.get(1).unwrap();
+    let checkpoint: Option<String> = conn
+        .query("SELECT state FROM device_operation_checkpoints", ())
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .map(|row| row.get(0).unwrap());
+    assert_eq!(
+        push_status, "failed",
+        "error={push_error:?} checkpoint={checkpoint:?}"
+    );
+    assert_eq!(checkpoint.as_deref(), Some("manual"));
 
     queue.close_and_flush().await.unwrap();
     worker.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn accepted_retry_survives_request_cancellation_and_terminalizes_push() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &state.config.device_creds_key).await;
+
+    let (queue, receiver) = DbWriteQueue::channel(DbWriteQueueConfig {
+        capacity: 4,
+        ..Default::default()
+    });
+    state.db_write = queue.clone();
+    let worker = tokio::spawn(run_write_worker(state.db.clone(), receiver));
+    let dispatcher = state
+        .enrollment_dispatcher
+        .start(state.clone())
+        .await
+        .unwrap();
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let push_id = started.device_pushes[0].id.clone();
+    for _ in 0..100 {
+        let row = state
+            .db
+            .connect()
+            .unwrap()
+            .query(
+                "SELECT status FROM enrollment_device_pushes WHERE id=?1",
+                params![push_id.clone()],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        if row.get::<String>(0).unwrap() == "failed" {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let conn = state.db.connect().unwrap();
+    conn.execute(
+        "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+        params![service::enrollment_checkpoint_key(&push_id)],
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    let blocker_started = Arc::new(Notify::new());
+    let release_blocker = Arc::new(Notify::new());
+    let blocker = tokio::spawn({
+        let queue = queue.clone();
+        let blocker_started = blocker_started.clone();
+        let release_blocker = release_blocker.clone();
+        async move {
+            queue
+                .job("test.block-retry-writer", move |_conn| {
+                    Box::pin(async move {
+                        blocker_started.notify_one();
+                        release_blocker.notified().await;
+                        Ok(())
+                    })
+                })
+                .await
+        }
+    });
+    blocker_started.notified().await;
+    let accepted_before = queue.stats().accepted;
+    let request = tokio::spawn({
+        let state = state.clone();
+        let enrollment_id = started.enrollment_id.clone();
+        let device_id = device_id.clone();
+        async move { service::retry_enrollment_push(&state, &enrollment_id, &device_id).await }
+    });
+    while queue.stats().accepted == accepted_before {
+        tokio::task::yield_now().await;
+    }
+    request.abort();
+    release_blocker.notify_one();
+    blocker.await.unwrap().unwrap();
+    queue.flush().await.unwrap();
+
+    state.enrollment_dispatcher.close().unwrap();
+    dispatcher
+        .await
+        .unwrap()
+        .expect_err("retry device failure must remain observable after full drain");
+    let conn = state.db.connect().unwrap();
+    let row = conn
+        .query(
+            "SELECT p.status, c.state FROM enrollment_device_pushes p \
+             JOIN device_operation_checkpoints c ON c.operation_key=?1 \
+             WHERE p.id=?2",
+            params![service::enrollment_checkpoint_key(&push_id), push_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert_eq!(row.get::<String>(1).unwrap(), "manual");
+
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn startup_recovery_never_replays_a_prepared_enrollment_push() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &state.config.device_creds_key).await;
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+
+    cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap();
+    let conn = state.db.connect().unwrap();
+    let row = conn
+        .query(
+            "SELECT p.status, c.state FROM enrollment_device_pushes p \
+             JOIN device_operation_checkpoints c ON c.operation_key=?1 WHERE p.id=?2",
+            params![
+                service::enrollment_checkpoint_key(&started.device_pushes[0].id),
+                started.device_pushes[0].id.clone()
+            ],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert_eq!(row.get::<String>(1).unwrap(), "manual");
+    drop(conn);
+
+    let error = service::retry_enrollment_push(&state, &started.enrollment_id, &device_id)
+        .await
+        .expect_err("manual restart checkpoint must prohibit replay");
+    assert!(matches!(
+        error,
+        AppError::Conflict {
+            code: "PUSH_RECONCILIATION_REQUIRED",
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn startup_recovery_completes_device_applied_push_without_replay() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &state.config.device_creds_key).await;
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let push_id = started.device_pushes[0].id.clone();
+    service::mark_device_operation(
+        &state,
+        &service::enrollment_checkpoint_key(&push_id),
+        service::DeviceOperationState::DeviceApplied,
+    )
+    .await
+    .unwrap();
+
+    cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap();
+    let conn = state.db.connect().unwrap();
+    let push_status: String = conn
+        .query(
+            "SELECT status FROM enrollment_device_pushes WHERE id=?1",
+            params![push_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    let mapping_count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM device_face_mappings WHERE device_id=?1 AND face_id=?2",
+            params![device_id, started.face_id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    let checkpoint_count: i64 = conn
+        .query("SELECT COUNT(*) FROM device_operation_checkpoints", ())
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(push_status, "success");
+    assert_eq!(mapping_count, 1);
+    assert_eq!(checkpoint_count, 0);
+}
+
+#[tokio::test]
+async fn startup_recovery_marks_prepared_backfill_and_purge_manual() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (_dept, emp_id, _user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &state.config.device_creds_key).await;
+    let face_id = "startup-face";
+    let mapping_id = Uuid::new_v4().to_string();
+    let conn = state.db.connect().unwrap();
+    conn.execute(
+        "UPDATE employees SET face_id=?1 WHERE id=?2",
+        params![face_id, emp_id.clone()],
+    )
+    .await
+    .unwrap();
+    conn.execute(
+        "INSERT INTO device_face_mappings \
+         (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
+        params![mapping_id.clone(), device_id.clone(), face_id, emp_id],
+    )
+    .await
+    .unwrap();
+    conn.execute(
+        "INSERT INTO device_operation_checkpoints \
+         (operation_key, operation, state, updated_at) \
+         VALUES (?1, 'backfill_push', 'prepared', unixepoch()), \
+                (?2, 'purge_delete', 'prepared', unixepoch())",
+        params![
+            service::backfill_checkpoint_key(&device_id, face_id),
+            service::purge_checkpoint_key(&mapping_id)
+        ],
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap();
+    let conn = state.db.connect().unwrap();
+    let manual_count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM device_operation_checkpoints WHERE state='manual'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    let mapping_state: String = conn
+        .query(
+            "SELECT state FROM device_face_mappings WHERE id=?1",
+            params![mapping_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(manual_count, 2);
+    assert_eq!(mapping_state, "pending_delete");
 }
 
 // ---------------------------------------------------------------------------

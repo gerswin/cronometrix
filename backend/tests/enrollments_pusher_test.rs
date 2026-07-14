@@ -29,7 +29,8 @@ use cronometrix_api::config::Config;
 use cronometrix_api::devices::crypto;
 use cronometrix_api::devices::models::DeviceWithPlaintext;
 use cronometrix_api::enrollments::pusher::{
-    push_one_device, push_one_device_for_backfill, spawn_enrollment_pushes,
+    push_one_device, push_one_device_for_backfill, push_one_device_for_backfill_with_timeout,
+    push_one_device_with_timeout, spawn_enrollment_pushes,
 };
 use cronometrix_api::enrollments::service;
 use libsql::params;
@@ -160,6 +161,19 @@ async fn mount_successful_face_push(server: &MockServer) {
         .await;
 }
 
+async fn clear_initial_checkpoint(state: &cronometrix_api::state::AppState, push_id: &str) {
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+            params![service::enrollment_checkpoint_key(push_id)],
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn enrollment_recovery_does_not_repeat_confirmed_device_side_effect() {
     let server = MockServer::start().await;
@@ -180,6 +194,7 @@ async fn enrollment_recovery_does_not_repeat_confirmed_device_side_effect() {
     )
     .await
     .unwrap();
+    clear_initial_checkpoint(&state, &started.device_pushes[0].id).await;
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
     let conn = state.db.connect().unwrap();
@@ -292,6 +307,11 @@ async fn tracker_shutdown_awaits_an_inflight_device_push_and_terminal_write() {
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
     let (_dept, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
     let _device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let dispatcher = state
+        .enrollment_dispatcher
+        .start(state.clone())
+        .await
+        .unwrap();
     let started = service::start_enrollment(
         &state,
         &user_id,
@@ -304,17 +324,6 @@ async fn tracker_shutdown_awaits_an_inflight_device_push_and_terminal_write() {
     .await
     .unwrap();
     let enrollment_id = started.enrollment_id.clone();
-    spawn_enrollment_pushes(
-        state.clone(),
-        enrollment_id.clone(),
-        started.face_id.clone(),
-        Arc::new(MINI_JPEG.to_vec()),
-        employee_id,
-        started.employee_name,
-        started.dispatch_devices,
-    )
-    .await
-    .unwrap();
     for _ in 0..100 {
         if !server.received_requests().await.unwrap().is_empty() {
             break;
@@ -322,7 +331,8 @@ async fn tracker_shutdown_awaits_an_inflight_device_push_and_terminal_write() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    state.enrollment_tasks.stop_and_join().await;
+    state.enrollment_dispatcher.close().unwrap();
+    dispatcher.await.unwrap().unwrap();
 
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
     let row = state
@@ -340,6 +350,25 @@ async fn tracker_shutdown_awaits_an_inflight_device_push_and_terminal_write() {
         .unwrap()
         .unwrap();
     assert_eq!(row.get::<String>(0).unwrap(), "success");
+}
+
+#[tokio::test]
+async fn tracker_drain_reports_panicked_tasks_after_awaiting_them() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    state
+        .enrollment_tasks
+        .spawn(async { panic!("intentional tracked-task panic") })
+        .await
+        .unwrap();
+
+    let error = state
+        .enrollment_tasks
+        .stop_and_join()
+        .await
+        .expect_err("panic must be reported after drain");
+    assert!(error.to_string().contains("task join failure"));
 }
 
 // =============================================================================
@@ -371,6 +400,7 @@ async fn push_one_device_happy_path_success() {
         service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    clear_initial_checkpoint(&state, &resp.device_pushes[0].id).await;
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -436,6 +466,7 @@ async fn mapping_persistence_failure_marks_push_failed_without_retrying_device()
         service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    clear_initial_checkpoint(&state, &enrollment.device_pushes[0].id).await;
     let conn = state.db.connect().unwrap();
     conn.execute_batch(
         "CREATE TRIGGER fail_pusher_mapping BEFORE INSERT ON device_face_mappings \
@@ -495,6 +526,7 @@ async fn push_one_device_5xx_marks_push_failed() {
         service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    clear_initial_checkpoint(&state, &resp.device_pushes[0].id).await;
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -537,6 +569,185 @@ async fn push_one_device_5xx_marks_push_failed() {
     assert!(
         !msg.contains("device-pw"),
         "stored error_message must be scrubbed: {msg}"
+    );
+    drop(rows);
+    drop(conn);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    let retry = push_one_device(
+        &state,
+        &resp.enrollment_id,
+        &resp.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+    )
+    .await;
+    assert!(retry.is_err());
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "ambiguous device result must never be replayed"
+    );
+}
+
+#[tokio::test]
+async fn partial_device_push_is_manual_and_never_replayed() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("upload failed"))
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    clear_initial_checkpoint(&state, &started.device_pushes[0].id).await;
+    let device = make_plain_device(&device_id, &server.uri());
+    let photo = Arc::new(MINI_JPEG.to_vec());
+
+    push_one_device(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+    )
+    .await
+    .expect_err("face upload failure follows an accepted user upsert");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let checkpoint: String = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1",
+            params![service::enrollment_checkpoint_key(
+                &started.device_pushes[0].id
+            )],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(checkpoint, "manual");
+
+    push_one_device(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+    )
+    .await
+    .expect_err("manual checkpoint must prohibit replay");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn device_timeouts_are_manual_and_never_replayed_for_enrollment_and_backfill() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(1))
+                .set_body_string(r#"{"statusCode":1}"#),
+        )
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    clear_initial_checkpoint(&state, &started.device_pushes[0].id).await;
+    let device = make_plain_device(&device_id, &server.uri());
+    let photo = Arc::new(MINI_JPEG.to_vec());
+    push_one_device_with_timeout(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("device call must time out");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let enrollment_requests = server.received_requests().await.unwrap().len();
+    assert_eq!(enrollment_requests, 1);
+    push_one_device_with_timeout(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("manual timeout checkpoint must prohibit replay");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        enrollment_requests
+    );
+
+    let backfill_face = "timeout-backfill-face";
+    push_one_device_for_backfill_with_timeout(
+        &state,
+        backfill_face,
+        MINI_JPEG,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("backfill device call must time out");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let after_backfill = server.received_requests().await.unwrap().len();
+    assert_eq!(after_backfill, enrollment_requests + 1);
+    push_one_device_for_backfill_with_timeout(
+        &state,
+        backfill_face,
+        MINI_JPEG,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("manual backfill timeout checkpoint must prohibit replay");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        after_backfill
     );
 }
 
@@ -691,7 +902,7 @@ async fn spawn_enrollment_pushes_zero_devices_finalises_failed() {
     // Yield first so the spawned task can claim a slot before we enter the poll loop.
     tokio::task::yield_now().await;
 
-    // Driver runs detached; give it up to ~5s to invoke finalize.
+    // Driver runs under the task tracker; give it up to ~5s to invoke finalize.
     for _ in 0..200 {
         let conn = state.db.connect().unwrap();
         let mut rows = conn
@@ -737,6 +948,7 @@ async fn spawn_enrollment_pushes_with_devices_finalises_success() {
         service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    clear_initial_checkpoint(&state, &resp.device_pushes[0].id).await;
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -765,7 +977,7 @@ async fn spawn_enrollment_pushes_with_devices_finalises_success() {
         .unwrap();
     });
     // The spawn_enrollment_pushes call returns immediately (it spawns a
-    // detached task internally). Wait for the detached task to finalise by
+    // tracked task internally). Wait for the owned task to finalise by
     // polling, with very gentle backoff and explicit drops.
     driver.await.unwrap();
 

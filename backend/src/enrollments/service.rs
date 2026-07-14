@@ -4,18 +4,22 @@
 //! Follows the Phase 1/2 service convention: pure I/O functions, no business
 //! logic beyond persistence. Business logic lives in handlers and pusher.
 
+use std::sync::Arc;
+
 use libsql::{params, Connection};
 use uuid::Uuid;
 
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
-use crate::devices::{crypto, models::DeviceWithPlaintext};
+use crate::devices::{crypto, models::DeviceWithPlaintext, service as devices_service};
 use crate::errors::AppError;
+use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
 use crate::storage::atomic_file::AtomicFileGuard;
 
+use super::dispatcher::{AuthorizedAttempt, AuthorizedDispatchCommand, AuthorizedDispatchTarget};
 use super::models::{
     validate_enrollment_status, EnrollmentDevicePushResponse, EnrollmentListQuery,
-    EnrollmentResponse, EnrollmentSubmitResponse,
+    EnrollmentResponse, EnrollmentSubmitResponse, RetryResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,8 +140,6 @@ pub async fn clear_device_operation(state: &AppState, operation_key: &str) -> Re
 /// derives Debug, so plaintext credentials cannot escape into API/log output.
 pub struct StartedEnrollment {
     pub response: EnrollmentSubmitResponse,
-    pub dispatch_devices: Vec<DeviceWithPlaintext>,
-    pub employee_name: String,
 }
 
 impl std::fmt::Debug for StartedEnrollment {
@@ -145,15 +147,6 @@ impl std::fmt::Debug for StartedEnrollment {
         formatter
             .debug_struct("StartedEnrollment")
             .field("response", &self.response)
-            .field(
-                "dispatch_device_ids",
-                &self
-                    .dispatch_devices
-                    .iter()
-                    .map(|device| device.id.as_str())
-                    .collect::<Vec<_>>(),
-            )
-            .field("employee_name", &self.employee_name)
             .finish()
     }
 }
@@ -391,8 +384,12 @@ pub async fn start_enrollment(
     let source_device_id = source_device_id.map(str::to_string);
     let face_quality_score = face_quality_score.map(str::to_string);
     let device_creds_key = state.config.device_creds_key;
+    let dispatcher = state.enrollment_dispatcher.clone();
+    let photo_bytes = Arc::new(normalized_bytes.to_vec());
+    let dispatch_error = Arc::new(std::sync::Mutex::new(None::<String>));
+    let callback_error = dispatch_error.clone();
 
-    state
+    let started = state
         .db_write
         .transact("enrollments.start", move |tx| {
             Box::pin(async move {
@@ -480,13 +477,28 @@ pub async fn start_enrollment(
                 drop(device_rows);
 
                 let mut device_pushes = Vec::with_capacity(devices.len());
-                for device in &devices {
+                let mut targets = Vec::with_capacity(devices.len());
+                for device in devices {
+                    DeviceConnection::new(
+                        &device.base_url,
+                        &device.username,
+                        &device.password,
+                        device.allow_insecure_tls,
+                    )
+                    .map_err(|error| anyhow::anyhow!("invalid device connection: {error}"))?;
                     let push_id = Uuid::new_v4().to_string();
                     tx.statement(
                         "INSERT INTO enrollment_device_pushes \
                          (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
                          VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
                         params![push_id.clone(), enrollment_id.clone(), device.id.clone()],
+                    )
+                    .await?;
+                    tx.statement(
+                        "INSERT INTO device_operation_checkpoints \
+                         (operation_key, operation, state, updated_at) \
+                         VALUES (?1, 'enrollment_push', 'prepared', unixepoch())",
+                        params![enrollment_checkpoint_key(&push_id)],
                     )
                     .await?;
                     device_pushes.push(EnrollmentDevicePushResponse {
@@ -498,22 +510,51 @@ pub async fn start_enrollment(
                         started_at: None,
                         completed_at: None,
                     });
+                    targets.push(AuthorizedDispatchTarget {
+                        push_id: device_pushes.last().expect("push just inserted").id.clone(),
+                        device,
+                        attempt: AuthorizedAttempt::committed(),
+                    });
                 }
 
-                tx.after_commit(move || guard.keep());
-                Ok(StartedEnrollment {
-                    response: EnrollmentSubmitResponse {
+                let response = EnrollmentSubmitResponse {
+                    enrollment_id: enrollment_id.clone(),
+                    face_id: face_id.clone(),
+                    device_pushes,
+                };
+                tx.after_commit(move || {
+                    guard.keep();
+                    if let Err(error) = dispatcher.enqueue(AuthorizedDispatchCommand {
                         enrollment_id,
                         face_id,
-                        device_pushes,
-                    },
-                    dispatch_devices: devices,
-                    employee_name,
+                        photo_bytes,
+                        employee_id,
+                        employee_name,
+                        targets,
+                    }) {
+                        *callback_error
+                            .lock()
+                            .expect("dispatch receipt mutex poisoned") =
+                            Some(error.to_string());
+                    }
+                });
+                Ok(StartedEnrollment {
+                    response,
                 })
             })
         })
         .await
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    if let Some(error) = dispatch_error
+        .lock()
+        .expect("dispatch receipt mutex poisoned")
+        .take()
+    {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "post-commit enrollment dispatch failed: {error}"
+        )));
+    }
+    Ok(started)
 }
 
 /// Update a single push row's status and error_message.
@@ -689,6 +730,42 @@ pub async fn record_push_recovery_failure(
                 if updated != 1 {
                     anyhow::bail!("push row not found during recovery persistence");
                 }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+/// Catch-all used by the dispatcher wrapper after a target returns or panics.
+/// It terminalizes only an unfinished push and only converts `prepared` to
+/// `manual`; a confirmed `device_applied` checkpoint is preserved for DB-only
+/// startup recovery.
+pub async fn terminalize_authorized_failure(
+    state: &AppState,
+    push_id: &str,
+    error_message: &str,
+) -> Result<(), AppError> {
+    let push_id = push_id.to_string();
+    let checkpoint_key = enrollment_checkpoint_key(&push_id);
+    let error_message = error_message.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.terminalize-authorized-push", move |tx| {
+            Box::pin(async move {
+                tx.statement(
+                    "UPDATE device_operation_checkpoints SET state='manual', updated_at=unixepoch() \
+                     WHERE operation_key=?1 AND state='prepared'",
+                    params![checkpoint_key],
+                )
+                .await?;
+                tx.statement(
+                    "UPDATE enrollment_device_pushes \
+                     SET status='failed', error_message=?1, completed_at=unixepoch() \
+                     WHERE id=?2 AND status IN ('pending','in_progress')",
+                    params![error_message, push_id],
+                )
+                .await?;
                 Ok(())
             })
         })
@@ -872,6 +949,150 @@ pub async fn reset_push_to_pending_queued(
         })
         .await
         .map_err(AppError::from)
+}
+
+/// Prepare a failed push for retry and transfer the exact command to the
+/// post-commit dispatcher. All fallible filesystem/device setup happens before
+/// the transaction; the handler has no work left that cancellation can lose.
+pub async fn retry_enrollment_push(
+    state: &AppState,
+    enrollment_id: &str,
+    device_id: &str,
+) -> Result<RetryResponse, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|error| AppError::Internal(error.into()))?;
+    let (employee_id, face_id, employee_name) =
+        get_enrollment_push_params(&conn, enrollment_id).await?;
+    let photo_path = get_current_photo_path(&conn, &employee_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound {
+            code: "PHOTO_NOT_FOUND",
+            message: "Employee has no current face enrollment photo".into(),
+        })?;
+    drop(conn);
+
+    let photo_bytes = Arc::new(
+        tokio::fs::read(state.paths.enrollments_root.join(photo_path))
+            .await
+            .map_err(|error| {
+                AppError::Internal(anyhow::anyhow!("read photo for retry: {error}"))
+            })?,
+    );
+    let device = devices_service::get_decrypted(
+        &state
+            .db
+            .connect()
+            .map_err(|error| AppError::Internal(error.into()))?,
+        device_id,
+        &state.config.device_creds_key,
+    )
+    .await?;
+    DeviceConnection::new(
+        &device.base_url,
+        &device.username,
+        &device.password,
+        device.allow_insecure_tls,
+    )
+    .map_err(|error| AppError::Internal(anyhow::anyhow!("invalid device connection: {error}")))?;
+
+    let enrollment_id_owned = enrollment_id.to_string();
+    let device_id_owned = device_id.to_string();
+    let dispatcher = state.enrollment_dispatcher.clone();
+    let dispatch_error = Arc::new(std::sync::Mutex::new(None::<String>));
+    let callback_error = Arc::clone(&dispatch_error);
+    let response = state
+        .db_write
+        .transact("enrollments.retry-device-push", move |tx| {
+            Box::pin(async move {
+                let mut rows = tx
+                    .query(
+                        "SELECT id, status FROM enrollment_device_pushes \
+                         WHERE enrollment_id=?1 AND device_id=?2",
+                        params![enrollment_id_owned.clone(), device_id_owned.clone()],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("push row not found for retry"))?;
+                let push_id: String = row.get(0)?;
+                let status: String = row.get(1)?;
+                drop(rows);
+                if status != "failed" {
+                    return Err(anyhow::Error::new(AppError::Conflict {
+                        code: "PUSH_NOT_RETRYABLE",
+                        message: "Only failed device pushes may be retried".into(),
+                    }));
+                }
+                let checkpoint_key = enrollment_checkpoint_key(&push_id);
+                let mut checkpoint_rows = tx
+                    .query(
+                        "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1",
+                        params![checkpoint_key.clone()],
+                    )
+                    .await?;
+                if checkpoint_rows.next().await?.is_some() {
+                    return Err(anyhow::Error::new(AppError::Conflict {
+                        code: "PUSH_RECONCILIATION_REQUIRED",
+                        message: "Device operation requires manual reconciliation before retry"
+                            .into(),
+                    }));
+                }
+                drop(checkpoint_rows);
+                tx.statement(
+                    "UPDATE enrollment_device_pushes \
+                     SET status='pending', error_message=NULL, started_at=NULL, completed_at=NULL \
+                     WHERE id=?1",
+                    params![push_id.clone()],
+                )
+                .await?;
+                tx.statement(
+                    "INSERT INTO device_operation_checkpoints \
+                     (operation_key, operation, state, updated_at) \
+                     VALUES (?1, 'enrollment_push', 'prepared', unixepoch())",
+                    params![checkpoint_key],
+                )
+                .await?;
+                let response = RetryResponse {
+                    enrollment_id: enrollment_id_owned.clone(),
+                    device_id: device_id_owned,
+                    status: "pending".into(),
+                };
+                tx.after_commit(move || {
+                    if let Err(error) = dispatcher.enqueue(AuthorizedDispatchCommand {
+                        enrollment_id: enrollment_id_owned,
+                        face_id,
+                        photo_bytes,
+                        employee_id,
+                        employee_name,
+                        targets: vec![AuthorizedDispatchTarget {
+                            push_id,
+                            device,
+                            attempt: AuthorizedAttempt::committed(),
+                        }],
+                    }) {
+                        *callback_error
+                            .lock()
+                            .expect("dispatch receipt mutex poisoned") = Some(error.to_string());
+                    }
+                });
+                Ok(response)
+            })
+        })
+        .await
+        .map_err(AppError::from)?;
+    if let Some(error) = dispatch_error
+        .lock()
+        .expect("dispatch receipt mutex poisoned")
+        .take()
+    {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "post-commit enrollment retry dispatch failed: {error}"
+        )));
+    }
+    Ok(response)
 }
 
 /// Finalise enrollment status after all push tasks settle.

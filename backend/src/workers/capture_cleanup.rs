@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio_util::sync::CancellationToken;
 
 use crate::state::AppState;
-use crate::storage::atomic_file::remove_owned_file;
+use crate::storage::atomic_file::{inspect_owned_file, remove_owned_file, FileIdentity};
 
 pub const CAPTURING_TTL: Duration = Duration::from_secs(45);
 pub const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
@@ -89,7 +89,13 @@ where
         }
     }
 
-    let expired: Vec<(String, String, Option<PathBuf>, Instant)> = {
+    let expired: Vec<(
+        String,
+        String,
+        Option<PathBuf>,
+        Option<FileIdentity>,
+        Instant,
+    )> = {
         let entries = state.captures.read().await;
         entries
             .iter()
@@ -100,6 +106,7 @@ where
                         id.clone(),
                         capture.status.clone(),
                         capture.photo_path.as_deref().map(PathBuf::from),
+                        capture.photo_identity,
                         terminal_at,
                     )
                 })
@@ -107,7 +114,7 @@ where
             .collect()
     };
 
-    for (id, status, photo_path, terminal_at) in expired {
+    for (id, status, photo_path, photo_identity, terminal_at) in expired {
         let unchanged = state.captures.read().await.get(&id).is_some_and(|capture| {
             capture.status == status && capture.terminal_at == Some(terminal_at)
         });
@@ -121,12 +128,17 @@ where
                 stats.delete_failures += 1;
                 continue;
             };
+            let Some(identity) = photo_identity else {
+                warn_delete_failure(&id, "missing-photo-identity");
+                stats.delete_failures += 1;
+                continue;
+            };
             if !is_direct_jpeg_child(&state.paths.captures_tmp_root, &path) {
                 warn_delete_failure(&id, "outside-capture-root");
                 stats.delete_failures += 1;
                 continue;
             }
-            match remove_owned_file(&state.paths.captures_tmp_root, &path) {
+            match remove_owned_file(&state.paths.captures_tmp_root, &path, identity) {
                 Ok(()) => {
                     stats.jpegs_removed += 1;
                     jpeg_removed = true;
@@ -158,6 +170,20 @@ async fn sweep_orphan_jpegs(
     wall_now: SystemTime,
     stats: &mut CleanupStats,
 ) -> anyhow::Result<()> {
+    sweep_orphan_jpegs_with_before_delete(state, wall_now, stats, &mut |_| std::future::ready(()))
+        .await
+}
+
+async fn sweep_orphan_jpegs_with_before_delete<F, Fut>(
+    state: &AppState,
+    wall_now: SystemTime,
+    stats: &mut CleanupStats,
+    before_delete: &mut F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let owned: HashSet<String> = {
         let entries = state.captures.read().await;
         entries
@@ -190,16 +216,27 @@ async fn sweep_orphan_jpegs(
         {
             continue;
         }
-        let metadata = entry.metadata().await?;
-        let expired = metadata
-            .modified()
+        let inspection = match inspect_owned_file(&state.paths.captures_tmp_root, &entry.path()) {
+            Ok(inspection) => inspection,
+            Err(error) => {
+                warn_delete_failure("orphan", anyhow_error_kind(&error));
+                stats.delete_failures += 1;
+                continue;
+            }
+        };
+        let expired = wall_now
+            .duration_since(inspection.modified())
             .ok()
-            .and_then(|modified| wall_now.duration_since(modified).ok())
             .is_some_and(|age| age >= TERMINAL_TTL);
         if !expired {
             continue;
         }
-        match remove_owned_file(&state.paths.captures_tmp_root, &entry.path()) {
+        before_delete(entry.path()).await;
+        match remove_owned_file(
+            &state.paths.captures_tmp_root,
+            &entry.path(),
+            inspection.identity(),
+        ) {
             Ok(()) => stats.jpegs_removed += 1,
             Err(error) => {
                 warn_delete_failure("orphan", anyhow_error_kind(&error));
@@ -213,19 +250,27 @@ async fn sweep_orphan_jpegs(
 pub async fn shutdown_captures(state: &AppState) -> anyhow::Result<()> {
     state.captures.stop_and_join().await;
 
-    let captures: Vec<(String, Option<PathBuf>)> = {
+    let captures: Vec<(String, Option<PathBuf>, Option<FileIdentity>)> = {
         let entries = state.captures.read().await;
         entries
             .iter()
-            .map(|(id, capture)| (id.clone(), capture.photo_path.as_deref().map(PathBuf::from)))
+            .map(|(id, capture)| {
+                (
+                    id.clone(),
+                    capture.photo_path.as_deref().map(PathBuf::from),
+                    capture.photo_identity,
+                )
+            })
             .collect()
     };
-    for (id, photo_path) in captures {
+    for (id, photo_path, photo_identity) in captures {
         if let Some(path) = photo_path {
             if !is_direct_jpeg_child(&state.paths.captures_tmp_root, &path) {
                 anyhow::bail!("capture {id} owns a JPEG outside captures_tmp_root");
             }
-            match remove_owned_file(&state.paths.captures_tmp_root, &path) {
+            let identity = photo_identity
+                .ok_or_else(|| anyhow::anyhow!("capture {id} has no JPEG identity"))?;
+            match remove_owned_file(&state.paths.captures_tmp_root, &path, identity) {
                 Ok(()) => {}
                 Err(error) => {
                     warn_delete_failure(&id, anyhow_error_kind(&error));
@@ -250,6 +295,24 @@ pub async fn startup_sweep(state: &AppState, now: CleanupNow) -> anyhow::Result<
     Ok(stats)
 }
 
+/// Deterministic race-test seam: interleave a pathname replacement after the
+/// orphan was inspected through one descriptor but before its identity claim.
+#[doc(hidden)]
+pub async fn startup_sweep_with_before_orphan_delete<F, Fut>(
+    state: &AppState,
+    now: CleanupNow,
+    mut before_delete: F,
+) -> anyhow::Result<CleanupStats>
+where
+    F: FnMut(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root).await?;
+    let mut stats = CleanupStats::default();
+    sweep_orphan_jpegs_with_before_delete(state, now.wall, &mut stats, &mut before_delete).await?;
+    Ok(stats)
+}
+
 pub async fn run(state: AppState, shutdown: CancellationToken) -> anyhow::Result<()> {
     let mut interval = tokio::time::interval(CLEANUP_CADENCE);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -266,12 +329,7 @@ pub async fn run(state: AppState, shutdown: CancellationToken) -> anyhow::Result
                 return Ok(());
             }
             _ = interval.tick() => {
-                cleanup_active_states(
-                    &state,
-                    Instant::now(),
-                    &mut CleanupStats::default(),
-                    &mut |_| std::future::ready(()),
-                ).await?;
+                cleanup_once(&state, CleanupNow::now()).await?;
             }
         }
     }

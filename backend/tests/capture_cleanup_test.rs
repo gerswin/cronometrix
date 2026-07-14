@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cronometrix_api::config::Config;
 use cronometrix_api::enrollments::handlers::CaptureState;
+use cronometrix_api::storage::atomic_file::inspect_owned_file;
 use cronometrix_api::workers::capture_cleanup;
 use tokio_util::sync::CancellationToken;
 
@@ -39,6 +40,7 @@ fn capture(status: &str, created_at: Instant, terminal_at: Option<Instant>) -> C
         status: status.to_string(),
         source_device_id: "device-1".into(),
         photo_path: None,
+        photo_identity: None,
         error_message: None,
         created_at,
         terminal_at,
@@ -79,6 +81,11 @@ async fn capture_cleanup_removes_terminal_state_and_jpeg_after_5_minutes() {
 
     let mut captured = capture("captured", terminal_at, Some(terminal_at));
     captured.photo_path = Some(captured_path.to_string_lossy().into_owned());
+    captured.photo_identity = Some(
+        inspect_owned_file(&state.paths.captures_tmp_root, &captured_path)
+            .unwrap()
+            .identity(),
+    );
     let mut map = state.captures.write().await;
     map.insert("captured".into(), captured);
     map.insert(
@@ -114,6 +121,11 @@ async fn cleanup_compare_remove_preserves_state_replaced_after_file_delete() {
     tokio::fs::write(&path, b"jpeg").await.unwrap();
     let mut old = capture("captured", terminal_at, Some(terminal_at));
     old.photo_path = Some(path.to_string_lossy().into_owned());
+    old.photo_identity = Some(
+        inspect_owned_file(&state.paths.captures_tmp_root, &path)
+            .unwrap()
+            .identity(),
+    );
     state.captures.write().await.insert("raced".into(), old);
     let replacement_state = state.clone();
 
@@ -136,6 +148,43 @@ async fn cleanup_compare_remove_preserves_state_replaced_after_file_delete() {
     assert!(!path.exists());
     let replacement = state.captures.read().await.get("raced").cloned().unwrap();
     assert_eq!(replacement.status, "error");
+}
+
+#[tokio::test]
+async fn captured_cleanup_preserves_path_replacement_with_foreign_identity() {
+    let (state, _tmp) = state().await;
+    let now = Instant::now();
+    let terminal_at = now - capture_cleanup::TERMINAL_TTL;
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+    let path = state.paths.captures_tmp_root.join("captured-race.jpg");
+    tokio::fs::write(&path, b"original").await.unwrap();
+    let original_identity = inspect_owned_file(&state.paths.captures_tmp_root, &path)
+        .unwrap()
+        .identity();
+    let mut captured = capture("captured", terminal_at, Some(terminal_at));
+    captured.photo_path = Some(path.to_string_lossy().into_owned());
+    captured.photo_identity = Some(original_identity);
+    state
+        .captures
+        .write()
+        .await
+        .insert("captured-race".into(), captured);
+    let replacement = state.paths.captures_tmp_root.join("replacement.jpg");
+    tokio::fs::write(&replacement, b"foreign").await.unwrap();
+    tokio::fs::rename(&replacement, &path).await.unwrap();
+
+    let stats = capture_cleanup::cleanup_once(
+        &state,
+        capture_cleanup::CleanupNow::new(now, SystemTime::now()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), b"foreign");
+    assert!(state.captures.read().await.contains_key("captured-race"));
+    assert_eq!(stats.delete_failures, 1);
 }
 
 #[tokio::test]
@@ -208,6 +257,34 @@ async fn capture_cleanup_removes_expired_orphan_jpeg_without_map_entry() {
 }
 
 #[tokio::test]
+async fn orphan_cleanup_preserves_replacement_between_inspection_and_claim() {
+    let (state, _tmp) = state().await;
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+    let orphan = state.paths.captures_tmp_root.join("orphan-race.jpg");
+    tokio::fs::write(&orphan, b"original").await.unwrap();
+    let modified = inspect_owned_file(&state.paths.captures_tmp_root, &orphan)
+        .unwrap()
+        .modified();
+
+    let stats = capture_cleanup::startup_sweep_with_before_orphan_delete(
+        &state,
+        capture_cleanup::CleanupNow::new(Instant::now(), modified + capture_cleanup::TERMINAL_TTL),
+        move |path| async move {
+            let replacement = path.with_extension("replacement");
+            tokio::fs::write(&replacement, b"foreign").await.unwrap();
+            tokio::fs::rename(&replacement, &path).await.unwrap();
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&orphan).await.unwrap(), b"foreign");
+    assert_eq!(stats.delete_failures, 1);
+}
+
+#[tokio::test]
 async fn capture_shutdown_awaits_tasks_and_removes_state_and_jpegs() {
     let (state, _tmp) = state().await;
     let now = Instant::now();
@@ -218,6 +295,11 @@ async fn capture_shutdown_awaits_tasks_and_removes_state_and_jpegs() {
     tokio::fs::write(&path, b"jpeg").await.unwrap();
     let mut captured = capture("captured", now, Some(now));
     captured.photo_path = Some(path.to_string_lossy().into_owned());
+    captured.photo_identity = Some(
+        inspect_owned_file(&state.paths.captures_tmp_root, &path)
+            .unwrap()
+            .identity(),
+    );
     state
         .captures
         .write()

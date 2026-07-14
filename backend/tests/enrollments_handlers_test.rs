@@ -856,7 +856,7 @@ async fn retry_push_returns_202_when_photo_present() {
     let (emp_id, admin_id, token) = seed_full(&state.db).await;
     let config = state.config.clone();
 
-    // Spawn wiremock so the detached push task does not hang on connection refused.
+    // Spawn wiremock so the lifecycle-owned push does not hang on connection refused.
     let server = MockServer::start().await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
@@ -870,10 +870,35 @@ async fn retry_push_returns_202_when_photo_present() {
         .await;
 
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let dispatcher = state
+        .enrollment_dispatcher
+        .start(state.clone())
+        .await
+        .unwrap();
     let resp =
         service::start_enrollment(&state, &admin_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    for _ in 0..200 {
+        let row = state
+            .db
+            .connect()
+            .unwrap()
+            .query(
+                "SELECT status FROM enrollment_device_pushes WHERE id=?1",
+                params![resp.device_pushes[0].id.clone()],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        if row.get::<String>(0).unwrap() == "success" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     service::update_push_status(
         &state.db.connect().unwrap(),
         &resp.device_pushes[0].id,
@@ -902,31 +927,24 @@ async fn retry_push_returns_202_when_photo_present() {
     assert_eq!(json["device_id"], device_id);
     assert_eq!(json["status"], "pending");
 
-    // Wait for the detached spawn body in retry_push to complete (push +
-    // finalize). This exercises the spawn block at lines 280-313 of the
-    // handler — without this poll, those lines stay uncovered.
-    let mut finalised = false;
-    for _ in 0..200 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let conn = state_for_poll.db.connect().unwrap();
-        let mut rows = conn
-            .query(
-                "SELECT status FROM enrollments WHERE id = ?1",
-                params![resp.enrollment_id.clone()],
-            )
-            .await
-            .unwrap();
-        let row = rows.next().await.unwrap().unwrap();
-        let s: String = row.get(0).unwrap();
-        if s != "in_progress" {
-            finalised = true;
-            break;
-        }
-    }
-    assert!(
-        finalised,
-        "retry_push detached spawn body must drive enrollment past in_progress"
-    );
+    state_for_poll.enrollment_dispatcher.close().unwrap();
+    dispatcher.await.unwrap().unwrap();
+    let row = state_for_poll
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT status FROM enrollment_device_pushes WHERE id=?1",
+            params![resp.device_pushes[0].id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "success");
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
 }
 
 #[tokio::test]
@@ -1229,6 +1247,7 @@ async fn get_capture_returns_status_capturing() {
                 status: "capturing".into(),
                 source_device_id: "dev-source".into(),
                 photo_path: None,
+                photo_identity: None,
                 error_message: None,
                 created_at: Instant::now(),
                 terminal_at: None,
@@ -1273,6 +1292,7 @@ async fn get_capture_does_not_hold_capture_map_lock_during_slow_file_read() {
             status: "captured".into(),
             source_device_id: "device".into(),
             photo_path: Some(fifo.to_string_lossy().into_owned()),
+            photo_identity: None,
             error_message: None,
             created_at: Instant::now(),
             terminal_at: Some(Instant::now()),
@@ -1323,6 +1343,7 @@ async fn get_capture_returns_photo_b64_when_captured() {
                 status: "captured".into(),
                 source_device_id: "dev-source".into(),
                 photo_path: Some(path.to_string_lossy().into_owned()),
+                photo_identity: None,
                 error_message: None,
                 created_at: Instant::now(),
                 terminal_at: Some(Instant::now()),
@@ -1361,6 +1382,7 @@ async fn get_capture_status_error_omits_photo_b64() {
                 status: "error".into(),
                 source_device_id: "dev-source".into(),
                 photo_path: None,
+                photo_identity: None,
                 error_message: Some("some upstream error".into()),
                 created_at: Instant::now(),
                 terminal_at: Some(Instant::now()),
@@ -1405,6 +1427,7 @@ fn capture_state_clone_and_debug() {
         status: "capturing".into(),
         source_device_id: "dev-source".into(),
         photo_path: Some("/tmp/x.jpg".into()),
+        photo_identity: None,
         error_message: None,
         created_at: Instant::now(),
         terminal_at: None,

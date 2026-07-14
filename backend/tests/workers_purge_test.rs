@@ -445,9 +445,101 @@ async fn purge_5xx_marks_mapping_pending_delete() {
         }
     }
     assert!(found_pending, "5xx purge must mark mapping pending_delete");
+    let checkpoint_state: String = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT state FROM device_operation_checkpoints WHERE operation='purge_delete'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(checkpoint_state, "manual");
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "ambiguous purge must not replay"
+    );
 
     shutdown.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
+}
+
+#[tokio::test]
+async fn purge_timeout_is_manual_and_never_replayed() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("PUT"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfoDetail/Delete"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(1))
+                .set_body_string(r#"{"statusCode":1}"#),
+        )
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let emp_id = seed_employee_inactive(&state.db).await;
+    let device_id = seed_device_at(&state.db, &state.config.device_creds_key, &server.uri()).await;
+    let conn = state.db.connect().unwrap();
+    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-timeout", &emp_id)
+        .await
+        .unwrap();
+    drop(conn);
+
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel::<PurgeRequest>();
+    let worker =
+        PurgeWorker::with_timeout(state.clone(), shutdown.clone(), Duration::from_millis(100));
+    let handle = tokio::spawn(async move { worker.run(rx).await });
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    for _ in 0..100 {
+        let checkpoint = state
+            .db
+            .connect()
+            .unwrap()
+            .query(
+                "SELECT state FROM device_operation_checkpoints WHERE operation='purge_delete'",
+                (),
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap();
+        if checkpoint.is_some_and(|row| row.get::<String>(0).unwrap() == "manual") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let request_count = server.received_requests().await.unwrap().len();
+    assert_eq!(request_count, 1);
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        request_count
+    );
+    shutdown.cancel();
+    handle.await.unwrap();
 }
 
 // =============================================================================

@@ -32,7 +32,7 @@ use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
-use crate::storage::atomic_file::{read_owned_file, AtomicFileGuard};
+use crate::storage::atomic_file::{read_owned_file, AtomicFileGuard, FileIdentity};
 
 use super::image_pipeline::normalize_face_jpeg;
 use super::models::{
@@ -40,7 +40,6 @@ use super::models::{
     EnrollmentResponse, EnrollmentSubmitResponse, FaceQualityEvidence, FaceQualityValidationError,
     RetryResponse,
 };
-use super::pusher::{push_one_device, spawn_enrollment_pushes};
 use super::service;
 
 /// Maximum size of a photo upload field (2 MB, per D-04 frontend cap).
@@ -59,6 +58,7 @@ pub struct CaptureState {
     pub status: String, // capturing | captured | timeout | error
     pub source_device_id: String,
     pub photo_path: Option<String>, // set when status == "captured"
+    pub photo_identity: Option<FileIdentity>,
     pub error_message: Option<String>,
     /// Monotonic admission time; immune to wall-clock jumps.
     pub created_at: Instant,
@@ -311,33 +311,7 @@ pub async fn create_enrollment(
     )
     .await?;
 
-    let enrollment_id = started.response.enrollment_id.clone();
-    let face_id = started.response.face_id.clone();
-    let employee_name = started.employee_name;
-    let devices = started.dispatch_devices;
     let submit_response = started.response;
-    let normalized_arc = Arc::new(normalized);
-
-    // Fire-and-forget JoinSet fan-out (D-06/D-09 — outlives this request).
-    if let Err(error) = spawn_enrollment_pushes(
-        state.clone(),
-        enrollment_id.clone(),
-        face_id,
-        normalized_arc,
-        employee_id,
-        employee_name,
-        devices,
-    )
-    .await
-    {
-        tracing::warn!(%error, %enrollment_id, "enrollment dispatch admission failed");
-        service::fail_enrollment_dispatch(
-            &state,
-            &enrollment_id,
-            "Enrollment dispatch could not be admitted",
-        )
-        .await?;
-    }
 
     Ok((StatusCode::ACCEPTED, Json(submit_response)))
 }
@@ -389,98 +363,8 @@ pub async fn retry_push(
     AuthUser(_claims): AuthUser,
     Path((enrollment_id, device_id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<RetryResponse>), AppError> {
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Reset the push row to pending (idempotent via INSERT OR REPLACE).
-    let push_id = service::reset_push_to_pending_queued(&state, &enrollment_id, &device_id).await?;
-    drop(conn);
-
-    // Retrieve parameters needed for the push.
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let (employee_id, face_id, full_name) =
-        service::get_enrollment_push_params(&conn, &enrollment_id).await?;
-
-    // Get current photo from disk.
-    let photo_path = service::get_current_photo_path(&conn, &employee_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound {
-            code: "PHOTO_NOT_FOUND",
-            message: "Employee has no current face enrollment photo".into(),
-        })?;
-    drop(conn);
-
-    let photo_bytes = tokio::fs::read(state.paths.enrollments_root.join(&photo_path))
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("read photo for retry: {e}")))?;
-
-    let device = devices_service::get_decrypted(
-        &state
-            .db
-            .connect()
-            .map_err(|e| AppError::Internal(e.into()))?,
-        &device_id,
-        &state.config.device_creds_key,
-    )
-    .await?;
-
-    let photo_arc = Arc::new(photo_bytes);
-
-    // Admit the retry into the same lifecycle owner as enrollment fan-out.
-    let retry_state = state.clone();
-    let retry_enrollment_id = enrollment_id.clone();
-    let admitted = state.enrollment_tasks.spawn({
-        let state = state.clone();
-        let enrollment_id = enrollment_id.clone();
-        async move {
-            if let Err(e) = push_one_device(
-                &state,
-                &enrollment_id,
-                &face_id,
-                &photo_arc,
-                &employee_id,
-                &full_name,
-                &device,
-            )
-            .await
-            {
-                tracing::warn!(
-                    enrollment_id = %enrollment_id,
-                    device_id = %device.id,
-                    err = %e,
-                    "retry push failed"
-                );
-            }
-            // Finalise enrollment status after single retry settles.
-            if let Err(e) = service::finalize_enrollment(&state, &enrollment_id).await {
-                tracing::error!(enrollment_id = %enrollment_id, err = %e, "retry finalize failed");
-            }
-        }
-    }).await;
-    if let Err(error) = admitted {
-        tracing::warn!(%error, %retry_enrollment_id, %device_id, "retry dispatch admission failed");
-        service::complete_push_failure(
-            &retry_state,
-            &push_id,
-            "Enrollment retry could not be admitted",
-        )
-        .await?;
-        service::finalize_enrollment(&retry_state, &retry_enrollment_id).await?;
-    }
-
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(RetryResponse {
-            enrollment_id: enrollment_id.clone(),
-            device_id: device_id.clone(),
-            status: "pending".to_string(),
-        }),
-    ))
+    let response = service::retry_enrollment_push(&state, &enrollment_id, &device_id).await?;
+    Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
 // =============================================================================
@@ -523,6 +407,7 @@ pub async fn capture_from_device(
         status: "capturing".to_string(),
         source_device_id: source_device_id.clone(),
         photo_path: None,
+        photo_identity: None,
         error_message: None,
         created_at: admitted_at,
         terminal_at: None,
@@ -552,6 +437,7 @@ pub async fn capture_from_device(
                 match AtomicFileGuard::write(&captures_root, &relative, &jpeg_bytes) {
                     Ok(guard) => {
                         let path = captures_root.join(relative);
+                        let identity = guard.identity();
                         let mut map = captures.write().await;
                         map.insert(
                             cid.clone(),
@@ -559,6 +445,7 @@ pub async fn capture_from_device(
                                 status: "captured".to_string(),
                                 source_device_id: source_device_id_for_task.clone(),
                                 photo_path: Some(path.to_string_lossy().into_owned()),
+                                photo_identity: Some(identity),
                                 error_message: None,
                                 created_at: admitted_at,
                                 terminal_at: Some(Instant::now()),
@@ -566,7 +453,11 @@ pub async fn capture_from_device(
                         );
                         guard.keep();
                     }
-                    Err(e) => {
+                    Err(_error) => {
+                        tracing::warn!(
+                            reason = "capture-write-failed",
+                            "capture image persistence failed; paths omitted"
+                        );
                         let mut map = captures.write().await;
                         map.insert(
                             cid.clone(),
@@ -574,7 +465,8 @@ pub async fn capture_from_device(
                                 status: "error".to_string(),
                                 source_device_id: source_device_id_for_task.clone(),
                                 photo_path: None,
-                                error_message: Some(format!("failed to write capture: {e}")),
+                                photo_identity: None,
+                                error_message: Some("Failed to persist capture image".into()),
                                 created_at: admitted_at,
                                 terminal_at: Some(Instant::now()),
                             },
@@ -590,6 +482,7 @@ pub async fn capture_from_device(
                         status: "error".to_string(),
                         source_device_id: source_device_id_for_task.clone(),
                         photo_path: None,
+                        photo_identity: None,
                         error_message: Some(e.to_string().replace(&password, "[redacted]")),
                         created_at: admitted_at,
                         terminal_at: Some(Instant::now()),
@@ -604,6 +497,7 @@ pub async fn capture_from_device(
                         status: "timeout".to_string(),
                         source_device_id: source_device_id_for_task,
                         photo_path: None,
+                        photo_identity: None,
                         error_message: Some("Device did not respond within 30 seconds".to_string()),
                         created_at: admitted_at,
                         terminal_at: Some(Instant::now()),

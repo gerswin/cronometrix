@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use axum::{
     extract::State,
     routing::{delete, get, patch, post},
@@ -141,14 +142,34 @@ async fn main() -> anyhow::Result<()> {
         backfill_tx: Some(backfill_tx),
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
         enrollment_tasks: cronometrix_api::enrollments::pusher::EnrollmentTaskTracker::new(),
+        enrollment_dispatcher: cronometrix_api::enrollments::dispatcher::EnrollmentDispatcher::new(
+        ),
         e2e_enabled: e2e,
         test_reset_enabled,
     };
 
+    // The single writer must be alive for every bootstrap reconciliation.
+    // Nothing that can produce a device call starts until these scans finish.
+    let db_write_handle = tokio::spawn({
+        let db = state.db.clone();
+        async move { db_write::run(db, db_write_rx).await }
+    });
+
     // Crash recovery is a startup prerequisite: fail before HTTP/workers if
     // capture orphan inspection cannot complete. The periodic owner only
     // expires live in-memory sessions and never re-runs this bootstrap sweep.
-    capture_cleanup::startup_sweep(&state, capture_cleanup::CleanupNow::now()).await?;
+    let bootstrap_result = async {
+        capture_cleanup::startup_sweep(&state, capture_cleanup::CleanupNow::now()).await?;
+        cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state).await?;
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(error) = bootstrap_result {
+        let _ = state.db_write.close_and_flush().await;
+        let _ = db_write_handle.await;
+        return Err(error);
+    }
+    let enrollment_dispatcher_handle = state.enrollment_dispatcher.start(state.clone()).await?;
 
     // Start the supervisor: one tokio task per active device for alertStream
     // consumption. Reconcile loop watches the lifecycle channel.
@@ -171,11 +192,6 @@ async fn main() -> anyhow::Result<()> {
         recompute::worker::RecomputeWorker::new(state.clone(), recompute_shutdown.clone());
     let recompute_handle = tokio::spawn(async move {
         recompute_worker.run(recompute_rx).await;
-    });
-
-    let db_write_handle = tokio::spawn({
-        let db = state.db.clone();
-        async move { db_write::run(db, db_write_rx).await }
     });
 
     let capture_cleanup_handle = tokio::spawn(capture_cleanup::run(
@@ -469,35 +485,112 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
 
-    // Stop every producer before the two-stage writer/recompute drain.
-    supervisor_handle.await?;
-    watchdog_handle.await?;
-    nightly_handle.await?;
-    renewal_handle.await?;
-    purge_handle.await?;
-    backfill_handle.await?;
+    fn remember_shutdown_error(
+        first: &mut Option<anyhow::Error>,
+        result: anyhow::Result<()>,
+        phase: &'static str,
+    ) {
+        if let Err(error) = result.context(phase) {
+            tracing::error!(%error, phase, "shutdown phase failed");
+            if first.is_none() {
+                *first = Some(error);
+            }
+        }
+    }
+
+    let mut first_shutdown_error = None;
+    // Stop every producer before the two-stage writer/recompute drain. A panic
+    // in one owner is recorded but never prevents the remaining owners from
+    // draining.
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        supervisor_handle.await.map_err(anyhow::Error::from),
+        "join supervisor",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        watchdog_handle.await.map_err(anyhow::Error::from),
+        "join watchdog",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        nightly_handle.await.map_err(anyhow::Error::from),
+        "join nightly reconcile",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        renewal_handle.await.map_err(anyhow::Error::from),
+        "join license renewal",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        purge_handle.await.map_err(anyhow::Error::from),
+        "join purge worker",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        backfill_handle.await.map_err(anyhow::Error::from),
+        "join backfill worker",
+    );
 
     // No new HTTP requests or worker retries can be admitted now. Await each
     // accepted enrollment operation through its device result and terminal DB
     // write before capture/recompute and the single writer are drained.
-    state.enrollment_tasks.stop_and_join().await;
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        state.db_write.flush().await.map_err(anyhow::Error::from),
+        "flush accepted writes before enrollment drain",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        state.enrollment_dispatcher.close(),
+        "close enrollment dispatcher",
+    );
+    let dispatcher_result = match enrollment_dispatcher_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(error.into()),
+    };
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        dispatcher_result,
+        "drain enrollment dispatcher",
+    );
 
     // The HTTP server is no longer accepting requests. Stop and await all
     // capture tasks, remove their state/JPEGs, then stop the periodic owner.
     // SIGKILL bypasses this block; the next startup orphan sweep recovers it.
     let capture_shutdown_result = capture_cleanup::shutdown_captures(&state).await;
     capture_cleanup_shutdown.cancel();
-    let capture_cleanup_result = capture_cleanup_handle.await?;
+    let capture_cleanup_result = match capture_cleanup_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(error.into()),
+    };
 
-    recompute::worker::shutdown_after_producers(
+    let recompute_result = recompute::worker::shutdown_after_producers(
         state.db_write.clone(),
         recompute_shutdown,
         recompute_handle,
         db_write_handle,
     )
-    .await?;
-    capture_shutdown_result?;
-    capture_cleanup_result?;
+    .await;
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        capture_shutdown_result,
+        "shutdown capture tasks",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        capture_cleanup_result,
+        "shutdown capture cleanup owner",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        recompute_result,
+        "shutdown recompute and database writer",
+    );
+    if let Some(error) = first_shutdown_error {
+        return Err(error);
+    }
     tracing::info!("shutdown complete");
 
     Ok(())

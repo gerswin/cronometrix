@@ -514,6 +514,8 @@ pub fn test_state(
         backfill_tx: None,
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
         enrollment_tasks: cronometrix_api::enrollments::pusher::EnrollmentTaskTracker::new(),
+        enrollment_dispatcher: cronometrix_api::enrollments::dispatcher::EnrollmentDispatcher::new(
+        ),
         db_write,
         e2e_enabled: false,
         test_reset_enabled: false,
