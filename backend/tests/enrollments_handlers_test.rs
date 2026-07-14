@@ -815,6 +815,14 @@ async fn retry_push_404_when_employee_has_no_photo() {
         service::start_enrollment(&state, &admin_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    service::update_push_status(
+        &state.db.connect().unwrap(),
+        &resp.device_pushes[0].id,
+        "failed",
+        Some("offline"),
+    )
+    .await
+    .unwrap();
     // Unset current_face_enrollment_id so get_current_photo_path → None.
     let conn = state.db.connect().unwrap();
     conn.execute(
@@ -866,6 +874,14 @@ async fn retry_push_returns_202_when_photo_present() {
         service::start_enrollment(&state, &admin_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    service::update_push_status(
+        &state.db.connect().unwrap(),
+        &resp.device_pushes[0].id,
+        "failed",
+        Some("offline"),
+    )
+    .await
+    .unwrap();
 
     // Materialise the photo on disk by re-calling the photo path (start_enrollment writes it).
     let state_for_poll = state.clone();
@@ -970,6 +986,90 @@ async fn capture_start_failure_leaves_no_state_or_jpeg() {
         !state_for_assertion.paths.captures_tmp_root.exists(),
         "fallible device setup must happen before capture state or JPEG creation"
     );
+}
+
+#[tokio::test]
+async fn capture_start_invalid_encrypted_password_leaves_no_state_or_jpeg() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (employee_id, _admin_id, token) = seed_full(&state.db).await;
+    let device_id = seed_device_at(
+        &state.db,
+        &state.config.device_creds_key,
+        "http://127.0.0.1:1",
+    )
+    .await;
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "UPDATE devices SET encrypted_password='invalid-base64' WHERE id=?1",
+            params![device_id.clone()],
+        )
+        .await
+        .unwrap();
+    let assertion_state = state.clone();
+    let response = build_app(state)
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/enrollments/captures")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({"device_id": device_id, "employee_id": employee_id})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::ACCEPTED);
+    assert!(assertion_state.captures.read().await.is_empty());
+    assert!(!assertion_state.paths.captures_tmp_root.exists());
+}
+
+#[tokio::test]
+async fn capture_start_invalid_device_url_leaves_no_state_or_jpeg() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (employee_id, _admin_id, token) = seed_full(&state.db).await;
+    let device_id = seed_device_at(
+        &state.db,
+        &state.config.device_creds_key,
+        "http://127.0.0.1:1",
+    )
+    .await;
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "UPDATE devices SET ip='[' WHERE id=?1",
+            params![device_id.clone()],
+        )
+        .await
+        .unwrap();
+    let assertion_state = state.clone();
+    let response = build_app(state)
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/enrollments/captures")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({"device_id": device_id, "employee_id": employee_id})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::ACCEPTED);
+    assert!(assertion_state.captures.read().await.is_empty());
+    assert!(!assertion_state.paths.captures_tmp_root.exists());
 }
 
 #[tokio::test]
@@ -1152,6 +1252,56 @@ async fn get_capture_returns_status_capturing() {
     assert!(json.get("photo_b64").is_none());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn get_capture_does_not_hold_capture_map_lock_during_slow_file_read() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (_emp_id, _admin_id, token) = seed_full(&state.db).await;
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+    let fifo = state.paths.captures_tmp_root.join("slow.jpg");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    state.captures.write().await.insert(
+        "slow".into(),
+        CaptureState {
+            status: "captured".into(),
+            source_device_id: "device".into(),
+            photo_path: Some(fifo.to_string_lossy().into_owned()),
+            error_message: None,
+            created_at: Instant::now(),
+            terminal_at: Some(Instant::now()),
+        },
+    );
+    let app = build_app(state.clone());
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/enrollments/captures/slow")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let lock = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        state.captures.write(),
+    )
+    .await
+    .expect("slow filesystem read must not hold the capture map lock");
+    drop(lock);
+    let _ = tokio::fs::write(&fifo, b"jpeg").await;
+    assert_eq!(
+        response.await.unwrap().status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
 #[tokio::test]
 async fn get_capture_returns_photo_b64_when_captured() {
     let db = common::test_db().await;
@@ -1160,7 +1310,10 @@ async fn get_capture_returns_photo_b64_when_captured() {
 
     // Write a photo to disk + insert capture state pointing at it.
     let cap_id = "cap-ok".to_string();
-    let path = _tmp.path().join("cap-ok.jpg");
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+    let path = state.paths.captures_tmp_root.join("cap-ok.jpg");
     tokio::fs::write(&path, MINI_JPEG).await.unwrap();
     {
         let mut map = state.captures.write().await;

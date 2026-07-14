@@ -27,6 +27,7 @@ use cronometrix_api::config::Config;
 use cronometrix_api::devices::crypto;
 use cronometrix_api::enrollments::service as enrollment_service;
 use cronometrix_api::workers::purge::{PurgeRequest, PurgeWorker};
+use cronometrix_api::workers::{first_shutdown_signal, ShutdownSource};
 use libsql::params;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -66,6 +67,18 @@ fn url_lite_split(url: &str) -> (String, u16, String) {
     let (host, port_str) = rest.rsplit_once(':').unwrap_or((rest, "80"));
     let port: u16 = port_str.parse().unwrap_or(80);
     (host.to_string(), port, scheme)
+}
+
+#[tokio::test]
+async fn shutdown_signal_helper_accepts_ctrl_c() {
+    let source = first_shutdown_signal(std::future::ready(()), std::future::pending()).await;
+    assert_eq!(source, ShutdownSource::Interrupt);
+}
+
+#[tokio::test]
+async fn shutdown_signal_helper_accepts_sigterm() {
+    let source = first_shutdown_signal(std::future::pending(), std::future::ready(())).await;
+    assert_eq!(source, ShutdownSource::Terminate);
 }
 
 async fn seed_employee_inactive(db: &libsql::Database) -> String {
@@ -339,6 +352,37 @@ async fn purge_mapping_delete_failure_keeps_pending_delete_recovery_state() {
         pending,
         "DB delete failure must retain an explicit retry state"
     );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    conn.execute_batch("DROP TRIGGER fail_mapping_delete;")
+        .await
+        .unwrap();
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    let mut recovered = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let count: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM device_face_mappings WHERE employee_id=?1",
+                params![emp_id.clone()],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        if count == 0 {
+            recovered = true;
+            break;
+        }
+    }
+    assert!(recovered, "second cycle must finish the DB-only recovery");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
     shutdown.cancel();
     handle.await.unwrap();
 }

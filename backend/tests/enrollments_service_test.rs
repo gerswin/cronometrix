@@ -178,8 +178,57 @@ async fn start_enrollment_emits_push_row_per_device() {
     .expect("start_enrollment with devices");
 
     assert_eq!(resp.device_pushes.len(), 2);
+    assert_eq!(resp.dispatch_devices.len(), 2);
+    let dispatch_ids: std::collections::HashSet<_> = resp
+        .dispatch_devices
+        .iter()
+        .map(|device| device.id.as_str())
+        .collect();
     for p in &resp.device_pushes {
         assert_eq!(p.status, "pending");
+        assert!(dispatch_ids.contains(p.device_id.as_str()));
+    }
+}
+
+#[tokio::test]
+async fn start_enrollment_device_decryption_failure_rolls_back_everything() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &config.device_creds_key).await;
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "UPDATE devices SET encrypted_password='not-valid-base64' WHERE id=?1",
+            params![device_id],
+        )
+        .await
+        .unwrap();
+
+    service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+        .await
+        .expect_err("snapshot decryption must fail inside the queued transaction");
+
+    let conn = state.db.connect().unwrap();
+    for table in [
+        "face_enrollments",
+        "enrollments",
+        "enrollment_device_pushes",
+    ] {
+        let count: i64 = conn
+            .query(&format!("SELECT COUNT(*) FROM {table}"), ())
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(count, 0, "{table} must remain empty");
     }
 }
 
@@ -774,6 +823,35 @@ async fn reset_push_to_pending_idempotent() {
 }
 
 #[tokio::test]
+async fn reset_push_rejects_successful_push_to_prevent_device_replay() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &config.device_creds_key).await;
+    let enrollment =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let push_id = enrollment.device_pushes[0].id.clone();
+    service::update_push_status(&state.db.connect().unwrap(), &push_id, "success", None)
+        .await
+        .unwrap();
+
+    let error =
+        service::reset_push_to_pending_queued(&state, &enrollment.enrollment_id, &device_id)
+            .await
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        AppError::Conflict {
+            code: "PUSH_NOT_RETRYABLE",
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
 async fn get_push_id_404_when_missing() {
     let db = common::test_db().await;
     let config = make_config();
@@ -829,6 +907,45 @@ async fn finalize_status_all_success() {
     let completed: Option<i64> = row.get(1).unwrap();
     assert_eq!(st, "success");
     assert!(completed.is_some());
+}
+
+#[tokio::test]
+async fn finalize_leaves_enrollment_open_while_any_push_is_nonterminal() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device(&state.db, &config.device_creds_key).await;
+    seed_device(&state.db, &config.device_creds_key).await;
+    let enrollment =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let conn = state.db.connect().unwrap();
+    conn.execute(
+        "UPDATE enrollment_device_pushes SET status='success' WHERE id=?1",
+        params![enrollment.device_pushes[0].id.clone()],
+    )
+    .await
+    .unwrap();
+
+    service::finalize_enrollment(&state, &enrollment.enrollment_id)
+        .await
+        .unwrap();
+
+    let row = conn
+        .query(
+            "SELECT status, completed_at FROM enrollments WHERE id=?1",
+            params![enrollment.enrollment_id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "in_progress");
+    assert_eq!(row.get::<Option<i64>>(1).unwrap(), None);
 }
 
 #[tokio::test]
@@ -975,7 +1092,7 @@ async fn finalize_enrollment_rolls_back_when_terminal_update_fails() {
     let row = conn
         .query(
             "SELECT status, completed_at, version FROM enrollments WHERE id=?1",
-            params![enrollment.enrollment_id],
+            params![enrollment.enrollment_id.clone()],
         )
         .await
         .unwrap()

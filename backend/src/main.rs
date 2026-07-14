@@ -140,9 +140,15 @@ async fn main() -> anyhow::Result<()> {
         purge_tx: Some(purge_tx),
         backfill_tx: Some(backfill_tx),
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
+        enrollment_tasks: cronometrix_api::enrollments::pusher::EnrollmentTaskTracker::new(),
         e2e_enabled: e2e,
         test_reset_enabled,
     };
+
+    // Crash recovery is a startup prerequisite: fail before HTTP/workers if
+    // capture orphan inspection cannot complete. The periodic owner only
+    // expires live in-memory sessions and never re-runs this bootstrap sweep.
+    capture_cleanup::startup_sweep(&state, capture_cleanup::CleanupNow::now()).await?;
 
     // Start the supervisor: one tokio task per active device for alertStream
     // consumption. Reconcile loop watches the lifecycle channel.
@@ -454,8 +460,10 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown({
             let shutdown = shutdown.clone();
             async move {
-                let _ = tokio::signal::ctrl_c().await;
-                tracing::info!("ctrl_c received, initiating graceful shutdown");
+                match cronometrix_api::workers::shutdown_signal().await {
+                    Ok(source) => tracing::info!(?source, "shutdown signal received"),
+                    Err(error) => tracing::error!(%error, "failed to install shutdown signal"),
+                }
                 shutdown.cancel();
             }
         })
@@ -468,6 +476,11 @@ async fn main() -> anyhow::Result<()> {
     renewal_handle.await?;
     purge_handle.await?;
     backfill_handle.await?;
+
+    // No new HTTP requests or worker retries can be admitted now. Await each
+    // accepted enrollment operation through its device result and terminal DB
+    // write before capture/recompute and the single writer are drained.
+    state.enrollment_tasks.stop_and_join().await;
 
     // The HTTP server is no longer accepting requests. Stop and await all
     // capture tasks, remove their state/JPEGs, then stop the periodic owner.

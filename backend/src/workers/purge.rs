@@ -169,6 +169,52 @@ impl PurgeWorker {
                 }
             };
 
+            let checkpoint_key = enrollment_service::purge_checkpoint_key(&mapping_id);
+            let checkpoint = match enrollment_service::admit_device_operation(
+                &self.state,
+                &checkpoint_key,
+                "purge_delete",
+            )
+            .await
+            {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    tracing::error!(%mapping_id, %error, "PurgeWorker: checkpoint admission failed");
+                    continue;
+                }
+            };
+            if !checkpoint.fresh {
+                match checkpoint.state {
+                    enrollment_service::DeviceOperationState::DeviceApplied => {
+                        if let Err(error) = enrollment_service::complete_purge_mapping(
+                            &self.state,
+                            &checkpoint_key,
+                            &mapping_id,
+                        )
+                        .await
+                        {
+                            tracing::error!(%mapping_id, %error, "PurgeWorker: DB-only purge recovery failed");
+                        }
+                    }
+                    enrollment_service::DeviceOperationState::Prepared
+                    | enrollment_service::DeviceOperationState::Manual => {
+                        let _ = enrollment_service::mark_device_operation(
+                            &self.state,
+                            &checkpoint_key,
+                            enrollment_service::DeviceOperationState::Manual,
+                        )
+                        .await;
+                        let _ = enrollment_service::mark_mapping_pending_delete_queued(
+                            &self.state,
+                            &mapping_id,
+                        )
+                        .await;
+                        tracing::error!(%mapping_id, "PurgeWorker: ambiguous device delete requires manual reconciliation");
+                    }
+                }
+                continue;
+            }
+
             let isapi = match DeviceConnection::new(
                 &device.base_url,
                 &device.username,
@@ -186,6 +232,9 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
+                    let _ =
+                        enrollment_service::clear_device_operation(&self.state, &checkpoint_key)
+                            .await;
                     continue;
                 }
             };
@@ -198,23 +247,38 @@ impl PurgeWorker {
 
             match result {
                 Ok(Ok(_)) => {
-                    if let Err(e) =
-                        enrollment_service::delete_mapping_queued(&self.state, &mapping_id).await
+                    if let Err(error) = enrollment_service::mark_device_operation(
+                        &self.state,
+                        &checkpoint_key,
+                        enrollment_service::DeviceOperationState::DeviceApplied,
+                    )
+                    .await
+                    {
+                        let _ = enrollment_service::mark_device_operation(
+                            &self.state,
+                            &checkpoint_key,
+                            enrollment_service::DeviceOperationState::Manual,
+                        )
+                        .await;
+                        let _ = enrollment_service::mark_mapping_pending_delete_queued(
+                            &self.state,
+                            &mapping_id,
+                        )
+                        .await;
+                        tracing::error!(%mapping_id, %error, "PurgeWorker: successful delete needs manual recovery");
+                    } else if let Err(e) = enrollment_service::complete_purge_mapping(
+                        &self.state,
+                        &checkpoint_key,
+                        &mapping_id,
+                    )
+                    .await
                     {
                         tracing::error!(mapping_id = %mapping_id, err = %e, "PurgeWorker: failed to delete mapping row");
-                        if let Err(mark_error) =
-                            enrollment_service::mark_mapping_pending_delete_queued(
-                                &self.state,
-                                &mapping_id,
-                            )
-                            .await
-                        {
-                            tracing::error!(
-                                mapping_id = %mapping_id,
-                                err = %mark_error,
-                                "PurgeWorker: failed to preserve pending_delete recovery state"
-                            );
-                        }
+                        let _ = enrollment_service::mark_mapping_pending_delete_queued(
+                            &self.state,
+                            &mapping_id,
+                        )
+                        .await;
                     } else {
                         tracing::info!(
                             employee_id = %employee_id,
@@ -234,6 +298,9 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
+                    let _ =
+                        enrollment_service::clear_device_operation(&self.state, &checkpoint_key)
+                            .await;
                 }
                 Err(_timeout) => {
                     tracing::warn!(device_id = %device_id, "PurgeWorker: delete_user timeout");
@@ -245,6 +312,9 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete after timeout");
                     }
+                    let _ =
+                        enrollment_service::clear_device_operation(&self.state, &checkpoint_key)
+                            .await;
                 }
             }
         }

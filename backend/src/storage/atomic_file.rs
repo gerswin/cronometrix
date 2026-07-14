@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context};
@@ -107,6 +107,77 @@ impl Drop for AtomicFileGuard {
             }
         }
     }
+}
+
+/// Read a regular file that is a direct child of `root` without following a
+/// final-component symlink. The opened descriptor is read directly, so a
+/// concurrent pathname replacement cannot redirect the read.
+pub fn read_owned_file(root: &Path, path: &Path) -> anyhow::Result<Vec<u8>> {
+    validate_direct_child(root, path)?;
+    let mut file = open_nofollow(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        bail!("owned path is not a regular file");
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Delete a regular direct child using the same identity-preserving quarantine
+/// claim as `AtomicFileGuard` compensation. A concurrent replacement is
+/// restored/preserved rather than unlinked.
+pub fn remove_owned_file(root: &Path, path: &Path) -> anyhow::Result<()> {
+    validate_direct_child(root, path)?;
+    let file = match open_nofollow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
+        bail!("owned path is not a regular file");
+    }
+    let identity = file_identity(&metadata)?;
+    drop(file);
+    remove_if_owned(path, identity)
+}
+
+fn validate_direct_child(root: &Path, path: &Path) -> anyhow::Result<()> {
+    if path.parent() != Some(root)
+        || path.extension().and_then(|extension| extension.to_str()) != Some("jpg")
+        || path.file_stem().is_none()
+    {
+        bail!("owned file must be a direct JPEG child of its configured root");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_nofollow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    const O_NOFOLLOW: i32 = 0x0000_0100;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const O_NOFOLLOW: i32 = 0x0002_0000;
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "android"
+    )))]
+    const O_NOFOLLOW: i32 = 0;
+
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_nofollow(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().read(true).open(path)
 }
 
 fn create_unique_temp(parent: &Path) -> anyhow::Result<(PathBuf, File)> {
@@ -321,7 +392,7 @@ fn claim_noreplace(_source: &Path, _destination: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::claim_noreplace;
+    use super::{claim_noreplace, read_owned_file, remove_owned_file};
 
     #[test]
     fn quarantine_claim_moves_source_without_clobbering() {
@@ -349,5 +420,25 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&source).unwrap(), b"owned");
         assert_eq!(std::fs::read(&quarantine).unwrap(), b"foreign");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_read_and_delete_refuse_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target.txt");
+        let link = tmp.path().join("capture.jpg");
+        std::fs::write(&target, b"secret").unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(read_owned_file(tmp.path(), &link).is_err());
+        assert!(remove_owned_file(tmp.path(), &link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"secret");
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }

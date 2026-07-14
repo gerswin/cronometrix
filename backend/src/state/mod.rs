@@ -6,6 +6,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::config::Config;
 use crate::db::write_queue::DbWriteQueue;
 use crate::enrollments::handlers::CapturesMap;
+use crate::enrollments::pusher::EnrollmentTaskTracker;
 use crate::recompute::RecomputeRequest;
 use crate::supervisor::LifecycleTx;
 
@@ -80,6 +81,9 @@ pub struct AppState {
     /// Phase 7: in-memory kiosk-capture session state (D-02).
     /// Shared across capture_from_device + get_capture handlers.
     pub captures: CapturesMap,
+    /// Owns every enrollment/retry device-dispatch task so shutdown can close
+    /// admission and await terminal persistence before the DB writer exits.
+    pub enrollment_tasks: EnrollmentTaskTracker,
     /// Startup-captured test capability; use only for E2E license bypass.
     pub e2e_enabled: bool,
     /// Separate startup-captured capability for the destructive reset route.

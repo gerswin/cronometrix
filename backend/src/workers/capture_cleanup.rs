@@ -6,11 +6,12 @@
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio_util::sync::CancellationToken;
 
 use crate::state::AppState;
+use crate::storage::atomic_file::remove_owned_file;
 
 pub const CAPTURING_TTL: Duration = Duration::from_secs(45);
 pub const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
@@ -24,10 +25,55 @@ pub struct CleanupStats {
     pub delete_failures: usize,
 }
 
-pub async fn cleanup_once(state: &AppState, now: Instant) -> anyhow::Result<CleanupStats> {
+#[derive(Debug, Clone, Copy)]
+pub struct CleanupNow {
+    monotonic: Instant,
+    wall: SystemTime,
+}
+
+impl CleanupNow {
+    pub fn new(monotonic: Instant, wall: SystemTime) -> Self {
+        Self { monotonic, wall }
+    }
+
+    pub fn now() -> Self {
+        Self::new(Instant::now(), SystemTime::now())
+    }
+}
+
+pub async fn cleanup_once(state: &AppState, now: CleanupNow) -> anyhow::Result<CleanupStats> {
+    cleanup_once_with_after_delete(state, now, |_| std::future::ready(())).await
+}
+
+/// Variant used by deterministic race tests to interleave a state replacement
+/// after file deletion but before compare-and-remove.
+#[doc(hidden)]
+pub async fn cleanup_once_with_after_delete<F, Fut>(
+    state: &AppState,
+    now: CleanupNow,
+    mut after_delete: F,
+) -> anyhow::Result<CleanupStats>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     tokio::fs::create_dir_all(&state.paths.captures_tmp_root).await?;
     let mut stats = CleanupStats::default();
+    cleanup_active_states(state, now.monotonic, &mut stats, &mut after_delete).await?;
+    sweep_orphan_jpegs(state, now.wall, &mut stats).await?;
+    Ok(stats)
+}
 
+async fn cleanup_active_states<F, Fut>(
+    state: &AppState,
+    now: Instant,
+    stats: &mut CleanupStats,
+    after_delete: &mut F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     {
         let mut entries = state.captures.write().await;
         for capture in entries.values_mut() {
@@ -62,8 +108,7 @@ pub async fn cleanup_once(state: &AppState, now: Instant) -> anyhow::Result<Clea
     };
 
     for (id, status, photo_path, terminal_at) in expired {
-        let mut entries = state.captures.write().await;
-        let unchanged = entries.get(&id).is_some_and(|capture| {
+        let unchanged = state.captures.read().await.get(&id).is_some_and(|capture| {
             capture.status == status && capture.terminal_at == Some(terminal_at)
         });
         if !unchanged {
@@ -81,30 +126,38 @@ pub async fn cleanup_once(state: &AppState, now: Instant) -> anyhow::Result<Clea
                 stats.delete_failures += 1;
                 continue;
             }
-            match tokio::fs::remove_file(&path).await {
+            match remove_owned_file(&state.paths.captures_tmp_root, &path) {
                 Ok(()) => {
                     stats.jpegs_removed += 1;
                     jpeg_removed = true;
+                    after_delete(id.clone()).await;
                 }
-                Err(error) if error.kind() == ErrorKind::NotFound => jpeg_removed = true,
                 Err(error) => {
-                    warn_delete_failure(&id, error_kind_label(error.kind()));
+                    warn_delete_failure(&id, anyhow_error_kind(&error));
                     stats.delete_failures += 1;
                     continue;
                 }
             }
         }
         if status != "captured" || jpeg_removed {
-            entries.remove(&id);
-            stats.states_removed += 1;
+            let mut entries = state.captures.write().await;
+            let unchanged = entries.get(&id).is_some_and(|capture| {
+                capture.status == status && capture.terminal_at == Some(terminal_at)
+            });
+            if unchanged {
+                entries.remove(&id);
+                stats.states_removed += 1;
+            }
         }
     }
-
-    sweep_orphan_jpegs(state, &mut stats).await?;
-    Ok(stats)
+    Ok(())
 }
 
-async fn sweep_orphan_jpegs(state: &AppState, stats: &mut CleanupStats) -> anyhow::Result<()> {
+async fn sweep_orphan_jpegs(
+    state: &AppState,
+    wall_now: SystemTime,
+    stats: &mut CleanupStats,
+) -> anyhow::Result<()> {
     let owned: HashSet<String> = {
         let entries = state.captures.read().await;
         entries
@@ -137,10 +190,19 @@ async fn sweep_orphan_jpegs(state: &AppState, stats: &mut CleanupStats) -> anyho
         {
             continue;
         }
-        match tokio::fs::remove_file(entry.path()).await {
+        let metadata = entry.metadata().await?;
+        let expired = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| wall_now.duration_since(modified).ok())
+            .is_some_and(|age| age >= TERMINAL_TTL);
+        if !expired {
+            continue;
+        }
+        match remove_owned_file(&state.paths.captures_tmp_root, &entry.path()) {
             Ok(()) => stats.jpegs_removed += 1,
             Err(error) => {
-                warn_delete_failure("orphan", error_kind_label(error.kind()));
+                warn_delete_failure("orphan", anyhow_error_kind(&error));
                 stats.delete_failures += 1;
             }
         }
@@ -163,11 +225,10 @@ pub async fn shutdown_captures(state: &AppState) -> anyhow::Result<()> {
             if !is_direct_jpeg_child(&state.paths.captures_tmp_root, &path) {
                 anyhow::bail!("capture {id} owns a JPEG outside captures_tmp_root");
             }
-            match tokio::fs::remove_file(&path).await {
+            match remove_owned_file(&state.paths.captures_tmp_root, &path) {
                 Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => {
-                    warn_delete_failure(&id, error_kind_label(error.kind()));
+                    warn_delete_failure(&id, anyhow_error_kind(&error));
                     return Err(error.into());
                 }
             }
@@ -176,23 +237,41 @@ pub async fn shutdown_captures(state: &AppState) -> anyhow::Result<()> {
     }
 
     let mut stats = CleanupStats::default();
-    sweep_orphan_jpegs(state, &mut stats).await?;
+    sweep_orphan_jpegs(state, SystemTime::now(), &mut stats).await?;
     Ok(())
 }
 
+/// Complete the crash-recovery orphan sweep before any HTTP admission or
+/// background producer starts.
+pub async fn startup_sweep(state: &AppState, now: CleanupNow) -> anyhow::Result<CleanupStats> {
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root).await?;
+    let mut stats = CleanupStats::default();
+    sweep_orphan_jpegs(state, now.wall, &mut stats).await?;
+    Ok(stats)
+}
+
 pub async fn run(state: AppState, shutdown: CancellationToken) -> anyhow::Result<()> {
-    cleanup_once(&state, Instant::now()).await?;
     let mut interval = tokio::time::interval(CLEANUP_CADENCE);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval.tick().await;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                cleanup_once(&state, Instant::now()).await?;
+                cleanup_active_states(
+                    &state,
+                    Instant::now(),
+                    &mut CleanupStats::default(),
+                    &mut |_| std::future::ready(()),
+                ).await?;
                 return Ok(());
             }
             _ = interval.tick() => {
-                cleanup_once(&state, Instant::now()).await?;
+                cleanup_active_states(
+                    &state,
+                    Instant::now(),
+                    &mut CleanupStats::default(),
+                    &mut |_| std::future::ready(()),
+                ).await?;
             }
         }
     }
@@ -215,4 +294,11 @@ fn error_kind_label(kind: ErrorKind) -> &'static str {
         ErrorKind::NotFound => "not-found",
         _ => "io-error",
     }
+}
+
+fn anyhow_error_kind(error: &anyhow::Error) -> &'static str {
+    error
+        .downcast_ref::<std::io::Error>()
+        .map(|error| error_kind_label(error.kind()))
+        .unwrap_or("io-error")
 }
