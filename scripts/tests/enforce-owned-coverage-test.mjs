@@ -108,10 +108,21 @@ function manifest(baseSha, overrides = {}) {
   }
 }
 
-function runChecker({ root, manifest: data, frontendSummary, backendLcov }) {
+function runChecker({
+  root,
+  manifest: data,
+  frontendSummary,
+  backendLcov,
+  expectedPlan = data.plan,
+  expectedBaseSha = data.base_sha ?? '0000000000000000000000000000000000000000',
+  omitExpectedPlan = false,
+  omitExpectedBaseSha = false,
+}) {
   const manifestPath = path.join(root, `${data.plan}-COVERAGE-OWNERSHIP.json`)
   writeFileSync(manifestPath, `${JSON.stringify(data)}\n`)
   const args = [checker, '--manifest', manifestPath]
+  if (!omitExpectedPlan) args.push('--expected-plan', expectedPlan)
+  if (!omitExpectedBaseSha) args.push('--expected-base-sha', expectedBaseSha)
   if (frontendSummary !== undefined) args.push('--frontend-summary', frontendSummary)
   if (backendLcov !== undefined) args.push('--backend-lcov', backendLcov)
   return spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8' })
@@ -169,6 +180,73 @@ test('accepts the same manifest schema for later release plans', () => {
     manifest: manifest(baseSha, { plan: '12-03', frontend: [frontendFile] }),
     frontendSummary,
   }), 0, 1, '12-03')
+})
+
+test('requires the external expected plan flag', () => {
+  const { root, baseSha } = makeRepo(['README.md'])
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha),
+    omitExpectedPlan: true,
+  }), /FAIL:.*--expected-plan is required/i)
+})
+
+test('requires the external expected base SHA flag', () => {
+  const { root, baseSha } = makeRepo(['README.md'])
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha),
+    omitExpectedBaseSha: true,
+  }), /FAIL:.*--expected-base-sha is required/i)
+})
+
+test('rejects an external expected plan that does not match the manifest', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'owned-coverage-no-git-'))
+  const baseSha = '1111111111111111111111111111111111111111'
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha),
+    expectedPlan: '12-03',
+  }), /FAIL:.*expected plan 12-03 does not match manifest plan 12-02/i)
+})
+
+for (const [label, overrides, pattern] of [
+  [
+    'plan',
+    { expectedPlan: '12-2' },
+    /FAIL:.*--expected-plan must use NN-NN format/i,
+  ],
+  [
+    'base SHA',
+    { expectedBaseSha: 'ABC123' },
+    /FAIL:.*--expected-base-sha must be a full lowercase 40-character commit SHA/i,
+  ],
+]) {
+  test(`rejects a malformed external expected ${label}`, () => {
+    const { root, baseSha } = makeRepo(['README.md'])
+    expectFail(runChecker({
+      root,
+      manifest: manifest(baseSha),
+      ...overrides,
+    }), pattern)
+  })
+}
+
+test('rejects a different valid strict ancestor supplied as the expected base SHA', () => {
+  const { root, baseSha } = makeRepo(['README.md'])
+  const wrongExpectedBaseSha = git(root, 'rev-parse', 'HEAD')
+  writeFileSync(path.join(root, 'SECOND.md'), 'second change\n')
+  git(root, 'add', 'SECOND.md')
+  git(root, 'commit', '-qm', 'second change')
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha),
+    expectedBaseSha: wrongExpectedBaseSha,
+  }), new RegExp(
+    `FAIL:.*expected base SHA ${wrongExpectedBaseSha} does not match manifest base_sha ${baseSha}`,
+    'i',
+  ))
 })
 
 test('passes a frontend-only manifest and artifact', () => {

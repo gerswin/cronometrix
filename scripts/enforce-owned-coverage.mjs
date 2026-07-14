@@ -8,6 +8,7 @@ const EXPECTED_THRESHOLDS = {
   backend: { lines: 70, branches: 60 },
   frontend: { statements: 70, branches: 60, functions: 70, lines: 70 },
 }
+const CLI_USAGE = 'usage: enforce-owned-coverage.mjs --manifest <path> --expected-plan <NN-NN> --expected-base-sha <40hex> [--frontend-summary <path>] [--backend-lcov <path>]'
 
 function fail(messages) {
   for (const message of messages) console.error(`FAIL: ${message}`)
@@ -16,7 +17,13 @@ function fail(messages) {
 
 function parseArgs(argv) {
   const flags = new Map()
-  const allowed = new Set(['--manifest', '--frontend-summary', '--backend-lcov'])
+  const allowed = new Set([
+    '--manifest',
+    '--expected-plan',
+    '--expected-base-sha',
+    '--frontend-summary',
+    '--backend-lcov',
+  ])
   const errors = []
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index]
@@ -26,7 +33,7 @@ function parseArgs(argv) {
       continue
     }
     if (value === undefined || value.startsWith('--')) {
-      errors.push(`${flag} requires a path value`)
+      errors.push(`${flag} requires a value`)
       index -= 1
       continue
     }
@@ -34,6 +41,16 @@ function parseArgs(argv) {
     flags.set(flag, value)
   }
   if (!flags.has('--manifest')) errors.push('--manifest is required')
+  if (!flags.has('--expected-plan')) errors.push('--expected-plan is required')
+  if (!flags.has('--expected-base-sha')) errors.push('--expected-base-sha is required')
+  const expectedPlan = flags.get('--expected-plan')
+  if (expectedPlan !== undefined && !/^\d{2}-\d{2}$/.test(expectedPlan)) {
+    errors.push('--expected-plan must use NN-NN format')
+  }
+  const expectedBaseSha = flags.get('--expected-base-sha')
+  if (expectedBaseSha !== undefined && !/^[a-f0-9]{40}$/.test(expectedBaseSha)) {
+    errors.push('--expected-base-sha must be a full lowercase 40-character commit SHA')
+  }
   return { flags, errors }
 }
 
@@ -361,6 +378,22 @@ function enforceSide(side, manifestFiles, artifactFiles, changed, thresholds, er
 
 function main() {
   const { flags, errors } = parseArgs(process.argv.slice(2))
+  if (errors.length > 0) return fail([...errors, CLI_USAGE])
+
+  const manifestPath = path.resolve(process.cwd(), flags.get('--manifest'))
+  const rawManifest = readJson(manifestPath, 'manifest', errors)
+  const manifest = rawManifest === undefined
+    ? undefined
+    : validateManifest(rawManifest, manifestPath, errors)
+  if (manifest === undefined) return fail(errors)
+  const expectedPlan = flags.get('--expected-plan')
+  const expectedBaseSha = flags.get('--expected-base-sha')
+  if (manifest.plan !== expectedPlan) {
+    errors.push(`expected plan ${expectedPlan} does not match manifest plan ${manifest.plan}`)
+  }
+  if (manifest.base_sha !== expectedBaseSha) {
+    errors.push(`expected base SHA ${expectedBaseSha} does not match manifest base_sha ${manifest.base_sha}`)
+  }
   if (errors.length > 0) return fail(errors)
 
   let repoRoot
@@ -372,14 +405,6 @@ function main() {
   } catch {
     return fail(['unable to resolve repository root with git'])
   }
-
-  const manifestPath = path.resolve(process.cwd(), flags.get('--manifest'))
-  const rawManifest = readJson(manifestPath, 'manifest', errors)
-  const manifest = rawManifest === undefined
-    ? undefined
-    : validateManifest(rawManifest, manifestPath, errors)
-  if (manifest === undefined) return fail(errors)
-  if (errors.length > 0) return fail(errors)
 
   const frontendPath = flags.get('--frontend-summary')
   const backendPath = flags.get('--backend-lcov')
