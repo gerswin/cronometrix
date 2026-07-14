@@ -169,7 +169,8 @@ pub async fn create_queued(
     let salary = req.base_salary_cents.unwrap_or(0);
     let result = state
         .db_write
-        .execute(
+        .statement(
+            "employees.create",
             "INSERT INTO employees (id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, 1, unixepoch(), unixepoch())",
             vec![
@@ -192,7 +193,7 @@ pub async fn create_queued(
                 message: format!("Employee code '{}' is already in use", req.employee_code),
             });
         }
-        return Err(AppError::Internal(e));
+        return Err(AppError::from(e));
     }
 
     let conn = state
@@ -514,9 +515,9 @@ pub async fn update_queued(
 
     let rows_affected = state
         .db_write
-        .execute(sql, values)
+        .statement("employees.update", sql, values)
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     let conn = state
         .db
@@ -575,14 +576,15 @@ pub async fn deactivate(conn: &Connection, id: &str) -> Result<(), AppError> {
 pub async fn deactivate_queued(state: &AppState, id: &str) -> Result<(), AppError> {
     let rows_affected = state
         .db_write
-        .execute(
+        .statement(
+            "employees.deactivate",
             "UPDATE employees SET status = 'inactive', deleted_at = unixepoch(), \
              updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND status = 'active'",
             vec![libsql::Value::Text(id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     if rows_affected == 0 {
         return Err(AppError::NotFound {

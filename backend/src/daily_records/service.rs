@@ -246,7 +246,7 @@ pub async fn recompute_for_day(
     let prior_row_id = prior_row_id.clone();
     state
         .db_write
-        .run(move |conn| -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        .background_job("daily-records.recompute", move |conn| -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
             Box::pin(async move {
                 let employee_id = employee_id.clone();
                 let anchor_date_str = anchor_date_str.clone();
@@ -260,11 +260,11 @@ pub async fn recompute_for_day(
                     .clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-                conn.execute("BEGIN", ())
+                conn.statement("BEGIN", ())
                     .await
                     .map_err(|e| AppError::Internal(e.into()))?;
                 let txn_result: anyhow::Result<()> = async {
-                    conn.execute(
+                    conn.statement(
                         "INSERT INTO daily_records (id, employee_id, department_id, anchor_date, shift_type, \
                          work_minutes, overtime_minutes, late_minutes, early_departure_minutes, \
                          is_rest_day_worked, entry_at, exit_at, leave_id, computed_at, created_at, updated_at) \
@@ -317,7 +317,7 @@ pub async fn recompute_for_day(
                         .get(0)
                         .map_err(|e| anyhow::anyhow!(e))?;
 
-                    conn.execute(
+                    conn.statement(
                         "DELETE FROM daily_record_anomalies WHERE daily_record_id = ?1",
                         params![resolved_id.clone()],
                     )
@@ -325,7 +325,7 @@ pub async fn recompute_for_day(
                     .map_err(|e| anyhow::anyhow!(e))?;
 
                     for code in &out.anomalies {
-                        conn.execute(
+                        conn.statement(
                             "INSERT INTO daily_record_anomalies (id, daily_record_id, code, detail, created_at) \
                              VALUES (?1, ?2, ?3, NULL, ?4)",
                             params![
@@ -345,13 +345,13 @@ pub async fn recompute_for_day(
 
                 match txn_result {
                     Ok(()) => {
-                        conn.execute("COMMIT", ())
+                        conn.statement("COMMIT", ())
                             .await
                             .map_err(|e| AppError::Internal(e.into()))?;
                         Ok(())
                     }
                     Err(e) => {
-                        let _ = conn.execute("ROLLBACK", ()).await;
+                        let _ = conn.statement("ROLLBACK", ()).await;
                         Err(e)
                     }
                 }

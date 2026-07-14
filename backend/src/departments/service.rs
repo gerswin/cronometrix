@@ -112,7 +112,8 @@ pub async fn create_queued(
     let id = Uuid::new_v4().to_string();
     let result = state
         .db_write
-        .execute(
+        .statement(
+            "departments.create",
             "INSERT INTO departments (id, name, base_salary_cents, shift_start_time, shift_end_time, \
              lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', 1, unixepoch(), unixepoch())",
@@ -138,7 +139,7 @@ pub async fn create_queued(
                 message: format!("Department name '{}' is already in use", req.name),
             });
         }
-        return Err(AppError::Internal(e));
+        return Err(AppError::from(e));
     }
 
     let conn = state
@@ -402,9 +403,9 @@ pub async fn update_queued(
 
     let rows_affected = state
         .db_write
-        .execute(sql, values)
+        .statement("departments.update", sql, values)
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     let conn = state
         .db

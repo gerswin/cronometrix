@@ -495,11 +495,11 @@ pub fn test_state(
     // same db so handlers exercising `state.db_write` actually persist. Requires
     // a Tokio runtime — every caller is a `#[tokio::test]`. The CancellationToken
     // is never cancelled; the worker is reaped when the test runtime shuts down.
-    let (db_write_tx, db_write_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (db_write, db_write_rx) =
+        cronometrix_api::db::write_queue::DbWriteQueue::channel(Default::default());
     tokio::spawn(cronometrix_api::db::write_queue::run_write_worker(
         db.clone(),
         db_write_rx,
-        tokio_util::sync::CancellationToken::new(),
     ));
 
     cronometrix_api::state::AppState {
@@ -513,7 +513,7 @@ pub fn test_state(
         purge_tx: None,
         backfill_tx: None,
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
-        db_write: cronometrix_api::db::write_queue::DbWriteQueue::new(db_write_tx),
+        db_write,
         e2e_enabled: false,
         test_reset_enabled: false,
     }

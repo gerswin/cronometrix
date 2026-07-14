@@ -64,7 +64,8 @@ pub async fn login(
 
     state
         .db_write
-        .execute(
+        .statement(
+            "auth.login.refresh-token",
             "UPDATE users SET refresh_token_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
             vec![
                 libsql::Value::Text(refresh_hash),
@@ -72,7 +73,7 @@ pub async fn login(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     // Build httpOnly refresh cookie — SameSite=Lax per review fix (not Strict)
     // Lax allows navigation from email/portal links while still blocking CSRF POST attacks
@@ -151,7 +152,8 @@ pub async fn refresh(
 
     let rows_affected = state
         .db_write
-        .execute(
+        .statement(
+            "auth.refresh.rotate-token",
             "UPDATE users \
              SET refresh_token_hash = ?1, updated_at = unixepoch() \
              WHERE id = ?2 \
@@ -164,7 +166,7 @@ pub async fn refresh(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     if rows_affected != 1 {
         return Err(AppError::Unauthorized);
@@ -210,7 +212,8 @@ pub async fn logout(
 
     state
         .db_write
-        .execute(
+        .statement(
+            "auth.logout.clear-token",
             "UPDATE users SET refresh_token_hash = NULL, updated_at = unixepoch() \
              WHERE id = ?1 AND refresh_token_hash = ?2",
             vec![
@@ -219,7 +222,7 @@ pub async fn logout(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     // Expire the cookie
     let expired_cookie = Cookie::build(("refresh_token", ""))

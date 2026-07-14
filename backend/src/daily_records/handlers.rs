@@ -228,7 +228,8 @@ pub async fn create_override(
 
     state
         .db_write
-        .execute(
+        .statement(
+            "daily-records.create-override",
             "INSERT INTO daily_record_overrides
                (id, daily_record_id, override_work_minutes, override_entry_at, override_exit_at,
                 justification, evidence_path, overridden_by, overridden_at, status, version, created_at, updated_at)
@@ -246,7 +247,7 @@ pub async fn create_override(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     // Publish recompute so the daily_record reflects the override promptly
     if let Some(tx) = state.recompute_tx.as_ref() {

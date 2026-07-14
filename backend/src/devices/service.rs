@@ -141,7 +141,8 @@ pub async fn create_queued(
 
     let result = state
         .db_write
-        .execute(
+        .statement(
+            "devices.create",
             "INSERT INTO devices (\
                  id, name, ip, port, scheme, username, encrypted_password, \
                  direction, allow_insecure_tls, connection_state, status, version, \
@@ -174,7 +175,7 @@ pub async fn create_queued(
                 message: format!("Device with IP {}:{} is already active", req.ip, req.port),
             });
         }
-        return Err(AppError::Internal(e));
+        return Err(AppError::from(e));
     }
 
     let conn = state
@@ -491,7 +492,10 @@ pub async fn update_queued(
         set_clause, id_param, version_param
     );
 
-    let result = state.db_write.execute(sql, values).await;
+    let result = state
+        .db_write
+        .statement("devices.update", sql, values)
+        .await;
     let rows_affected = match result {
         Ok(n) => n,
         Err(e) => {
@@ -505,7 +509,7 @@ pub async fn update_queued(
                     message: "Another active device already uses this IP:port".to_string(),
                 });
             }
-            return Err(AppError::Internal(e));
+            return Err(AppError::from(e));
         }
     };
 
@@ -566,14 +570,15 @@ pub async fn deactivate(conn: &Connection, id: &str) -> Result<(), AppError> {
 pub async fn deactivate_queued(state: &AppState, id: &str) -> Result<(), AppError> {
     let rows_affected = state
         .db_write
-        .execute(
+        .statement(
+            "devices.deactivate",
             "UPDATE devices SET status = 'inactive', deleted_at = unixepoch(), \
              updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND status = 'active'",
             vec![libsql::Value::Text(id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     if rows_affected == 0 {
         return Err(AppError::NotFound {
@@ -777,7 +782,8 @@ pub async fn write_command_audit_queued(
     let id = Uuid::new_v4().to_string();
     state
         .db_write
-        .execute(
+        .statement(
+            "devices.record-command-audit",
             "INSERT INTO command_audit_log (\
                  id, actor_id, device_id, command, outcome, result, error_code, error_message, \
                  dispatched_at, completed_at\
@@ -802,6 +808,6 @@ pub async fn write_command_audit_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }

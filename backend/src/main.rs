@@ -59,9 +59,9 @@ async fn main() -> anyhow::Result<()> {
     // single recompute per (employee_id, anchor_date).
     let (recompute_tx, recompute_rx) = mpsc::unbounded_channel::<RecomputeRequest>();
 
-    // Single-writer channel for SQLite/libSQL mutations.
-    let (db_write_tx, db_write_rx) =
-        mpsc::unbounded_channel::<cronometrix_api::db::write_queue::WriteCommand>();
+    // Bounded single-writer channel for SQLite/libSQL mutations.
+    let (db_write, db_write_rx) =
+        cronometrix_api::db::write_queue::DbWriteQueue::channel(Default::default());
 
     // Event broadcast: attendance service -> SSE stream clients. Buffer 256 events;
     // lagged subscribers (slow clients) simply drop missed events — non-fatal for a
@@ -124,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
         paths,
-        db_write: cronometrix_api::db::write_queue::DbWriteQueue::new(db_write_tx),
+        db_write,
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: Some(recompute_tx),
         event_broadcast: Some(event_tx),
@@ -158,12 +158,9 @@ async fn main() -> anyhow::Result<()> {
         recompute_worker.run(recompute_rx).await;
     });
 
-    let _db_write_handle = tokio::spawn({
+    let db_write_handle = tokio::spawn({
         let db = state.db.clone();
-        let c = shutdown.clone();
-        async move {
-            db_write::run(db, db_write_rx, c).await;
-        }
+        async move { db_write::run(db, db_write_rx).await }
     });
 
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
@@ -431,7 +428,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest("/api/v1", api_v1)
-        .with_state(state)
+        .with_state(state.clone())
         .layer(http_trace::layer())
         .layer(cors);
 
@@ -453,13 +450,19 @@ async fn main() -> anyhow::Result<()> {
     // Await supervisor + watchdog shutdown so all child reqwest streams drain
     // before process exit. Also drain the Phase 3 recompute worker, the
     // nightly reconcile task, and Phase 7 workers so their last ops commit.
-    let _ = supervisor_handle.await;
-    let _ = watchdog_handle.await;
-    let _ = recompute_handle.await;
-    let _ = nightly_handle.await;
-    let _ = renewal_handle.await;
-    let _ = purge_handle.await;
-    let _ = backfill_handle.await;
+    supervisor_handle.await?;
+    watchdog_handle.await?;
+    recompute_handle.await?;
+    nightly_handle.await?;
+    renewal_handle.await?;
+    purge_handle.await?;
+    backfill_handle.await?;
+
+    // Producers are stopped before admission closes. The explicit shutdown
+    // command sits behind every accepted FIFO write and terminates the worker
+    // only after the queue has drained.
+    state.db_write.close_and_flush().await?;
+    db_write_handle.await??;
     tracing::info!("shutdown complete");
 
     Ok(())

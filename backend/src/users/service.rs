@@ -60,7 +60,8 @@ pub async fn create(state: &AppState, req: CreateUserRequest) -> Result<User, Ap
 
     let result = state
         .db_write
-        .execute(
+        .statement(
+            "users.create",
             "INSERT INTO users \
              (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, unixepoch(), unixepoch())",
@@ -82,7 +83,7 @@ pub async fn create(state: &AppState, req: CreateUserRequest) -> Result<User, Ap
                 message: format!("Username '{}' is already in use", req.username),
             });
         }
-        return Err(AppError::Internal(e));
+        return Err(AppError::from(e));
     }
 
     let conn = state
@@ -256,9 +257,9 @@ pub async fn update(
 
     let rows_affected = state
         .db_write
-        .execute(sql, values)
+        .statement("users.update", sql, values)
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     let conn = state
         .db
@@ -306,7 +307,8 @@ pub async fn deactivate(
 
     let rows_affected = state
         .db_write
-        .execute(
+        .statement(
+            "users.deactivate",
             "UPDATE users SET status = 'inactive', deleted_at = unixepoch(), \
              refresh_token_hash = NULL, updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND version = ?2",
@@ -316,7 +318,7 @@ pub async fn deactivate(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     let conn = state
         .db

@@ -1,143 +1,648 @@
+use std::any::Any;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{mpsc, oneshot, Mutex};
 
-/// Single-writer queue for SQLite/libSQL mutations.
-///
-/// The queue serializes all write statements onto one task so handlers/workers
-/// no longer compete directly for database write locks.
+pub const DEFAULT_WRITE_QUEUE_CAPACITY: usize = 1024;
+pub const DEFAULT_ENQUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const BACKGROUND_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(100),
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+];
+
+#[derive(Clone, Copy, Debug)]
+pub struct DbWriteQueueConfig {
+    pub capacity: usize,
+    pub enqueue_timeout: Duration,
+    pub background_retry_delays: [Duration; 3],
+}
+
+impl Default for DbWriteQueueConfig {
+    fn default() -> Self {
+        Self {
+            capacity: DEFAULT_WRITE_QUEUE_CAPACITY,
+            enqueue_timeout: DEFAULT_ENQUEUE_TIMEOUT,
+            background_retry_delays: BACKGROUND_RETRY_DELAYS,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DbWriteError {
+    #[error("database write queue is busy")]
+    Busy,
+    #[error("database write queue is closed")]
+    Closed,
+    #[error("database write worker stopped")]
+    WorkerStopped,
+    #[error("database write job failed: {0:#}")]
+    Job(anyhow::Error),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DbWriteQueueStats {
+    pub depth: usize,
+    pub accepted: u64,
+    pub completed: u64,
+    pub failed: u64,
+    pub busy_rejections: u64,
+    pub closed_rejections: u64,
+}
+
+#[derive(Default)]
+struct Stats {
+    depth: AtomicUsize,
+    accepted: AtomicU64,
+    completed: AtomicU64,
+    failed: AtomicU64,
+    busy_rejections: AtomicU64,
+    closed_rejections: AtomicU64,
+}
+
+impl Stats {
+    fn snapshot(&self) -> DbWriteQueueStats {
+        DbWriteQueueStats {
+            depth: self.depth.load(Ordering::Relaxed),
+            accepted: self.accepted.load(Ordering::Relaxed),
+            completed: self.completed.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+            busy_rejections: self.busy_rejections.load(Ordering::Relaxed),
+            closed_rejections: self.closed_rejections.load(Ordering::Relaxed),
+        }
+    }
+}
+
+struct QueueInner {
+    tx: mpsc::Sender<WriteCommand>,
+    config: DbWriteQueueConfig,
+    admission: Mutex<()>,
+    closed: AtomicBool,
+    stats: Arc<Stats>,
+}
+
+/// Cloneable, bounded single-writer admission handle.
 #[derive(Clone)]
 pub struct DbWriteQueue {
-    tx: mpsc::UnboundedSender<WriteCommand>,
+    inner: Arc<QueueInner>,
 }
 
-pub enum WriteCommand {
-    Execute {
-        sql: String,
-        params: Vec<libsql::Value>,
-        reply: oneshot::Sender<anyhow::Result<u64>>,
-    },
-    ExecuteBatch {
-        sql: String,
-        reply: oneshot::Sender<anyhow::Result<()>>,
-    },
-    Run {
-        job: Box<DbJob>,
-        reply: oneshot::Sender<anyhow::Result<()>>,
-    },
+pub struct DbWriteQueueReceiver {
+    rx: mpsc::Receiver<WriteCommand>,
+    stats: Arc<Stats>,
 }
 
-pub type DbJob = dyn for<'a> FnOnce(
-        &'a libsql::Connection,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
-    + Send;
+type ErasedValue = Box<dyn Any + Send>;
+type ErasedFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<ErasedValue>> + Send + 'a>>;
+pub type QueuedFuture<'a, T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send + 'a>>;
+
+trait ErasedJob: Send {
+    fn run<'a>(self: Box<Self>, conn: &'a QueuedConnection<'a>) -> ErasedFuture<'a>;
+}
+
+struct TypedJob<F, T> {
+    job: F,
+    output: PhantomData<T>,
+}
+
+impl<F, T> ErasedJob for TypedJob<F, T>
+where
+    T: Send + 'static,
+    F: for<'a> FnOnce(&'a QueuedConnection<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+{
+    fn run<'a>(self: Box<Self>, conn: &'a QueuedConnection<'a>) -> ErasedFuture<'a> {
+        let TypedJob { job, .. } = *self;
+        Box::pin(async move {
+            let output = job(conn).await?;
+            Ok(Box::new(output) as ErasedValue)
+        })
+    }
+}
+
+trait ErasedTransaction: Send {
+    fn run<'a>(self: Box<Self>, tx: &'a QueuedTransaction<'a>) -> ErasedFuture<'a>;
+}
+
+struct TypedTransaction<F, T> {
+    job: F,
+    output: PhantomData<T>,
+}
+
+impl<F, T> ErasedTransaction for TypedTransaction<F, T>
+where
+    T: Send + 'static,
+    F: for<'a> FnOnce(&'a QueuedTransaction<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+{
+    fn run<'a>(self: Box<Self>, tx: &'a QueuedTransaction<'a>) -> ErasedFuture<'a> {
+        let TypedTransaction { job, .. } = *self;
+        Box::pin(async move {
+            let output = job(tx).await?;
+            Ok(Box::new(output) as ErasedValue)
+        })
+    }
+}
+
+enum WriteCommand {
+    Job {
+        operation: String,
+        job: Box<dyn ErasedJob>,
+        reply: oneshot::Sender<anyhow::Result<ErasedValue>>,
+    },
+    Transaction {
+        operation: String,
+        job: Box<dyn ErasedTransaction>,
+        reply: oneshot::Sender<anyhow::Result<ErasedValue>>,
+    },
+    Flush(oneshot::Sender<()>),
+    Shutdown(oneshot::Sender<()>),
+}
+
+/// Read/write helpers available inside a queued non-transactional job.
+/// The raw writer connection intentionally remains private.
+pub struct QueuedConnection<'a> {
+    connection: &'a libsql::Connection,
+}
+
+impl QueuedConnection<'_> {
+    pub async fn statement(
+        &self,
+        sql: &str,
+        params: impl libsql::params::IntoParams,
+    ) -> anyhow::Result<u64> {
+        self.connection
+            .execute(sql, params)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn query(
+        &self,
+        sql: &str,
+        params: impl libsql::params::IntoParams,
+    ) -> anyhow::Result<libsql::Rows> {
+        self.connection.query(sql, params).await.map_err(Into::into)
+    }
+}
+
+/// Read/write helpers available inside a queued transaction.
+/// Commit and rollback remain owned by the queue worker.
+pub struct QueuedTransaction<'a> {
+    transaction: &'a libsql::Transaction,
+}
+
+impl QueuedTransaction<'_> {
+    pub async fn statement(
+        &self,
+        sql: &str,
+        params: impl libsql::params::IntoParams,
+    ) -> anyhow::Result<u64> {
+        self.transaction
+            .execute(sql, params)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn query(
+        &self,
+        sql: &str,
+        params: impl libsql::params::IntoParams,
+    ) -> anyhow::Result<libsql::Rows> {
+        self.transaction
+            .query(sql, params)
+            .await
+            .map_err(Into::into)
+    }
+}
 
 impl DbWriteQueue {
-    pub fn new(tx: mpsc::UnboundedSender<WriteCommand>) -> Self {
-        Self { tx }
+    pub fn channel(config: DbWriteQueueConfig) -> (Self, DbWriteQueueReceiver) {
+        assert!(config.capacity > 0, "write queue capacity must be positive");
+        let (tx, rx) = mpsc::channel(config.capacity);
+        let stats = Arc::new(Stats::default());
+        let queue = Self {
+            inner: Arc::new(QueueInner {
+                tx,
+                config,
+                admission: Mutex::new(()),
+                closed: AtomicBool::new(false),
+                stats: stats.clone(),
+            }),
+        };
+        (queue, DbWriteQueueReceiver { rx, stats })
     }
 
-    pub async fn execute(
+    pub fn stats(&self) -> DbWriteQueueStats {
+        self.inner.stats.snapshot()
+    }
+
+    async fn admit_once<F>(
         &self,
+        operation: &str,
+        command: &mut Option<F>,
+    ) -> Result<(), DbWriteError>
+    where
+        F: FnOnce() -> WriteCommand,
+    {
+        let started = Instant::now();
+        let deadline = tokio::time::Instant::now() + self.inner.config.enqueue_timeout;
+        let _admission = match tokio::time::timeout_at(deadline, self.inner.admission.lock()).await
+        {
+            Ok(admission) => admission,
+            Err(_) => {
+                self.inner
+                    .stats
+                    .busy_rejections
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    operation,
+                    wait_ms = started.elapsed().as_millis() as u64,
+                    "database write queue admission timed out"
+                );
+                return Err(DbWriteError::Busy);
+            }
+        };
+        if self.inner.closed.load(Ordering::Acquire) {
+            self.inner
+                .stats
+                .closed_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(operation, "database write rejected after queue close");
+            return Err(DbWriteError::Closed);
+        }
+
+        let permit =
+            match tokio::time::timeout_at(deadline, self.inner.tx.clone().reserve_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => return Err(DbWriteError::WorkerStopped),
+                Err(_) => {
+                    self.inner
+                        .stats
+                        .busy_rejections
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        operation,
+                        wait_ms = started.elapsed().as_millis() as u64,
+                        "database write queue admission timed out"
+                    );
+                    return Err(DbWriteError::Busy);
+                }
+            };
+
+        self.inner.stats.accepted.fetch_add(1, Ordering::Relaxed);
+        self.inner.stats.depth.fetch_add(1, Ordering::Relaxed);
+        permit.send(command.take().expect("write command admitted once")());
+        tracing::debug!(
+            operation,
+            wait_ms = started.elapsed().as_millis() as u64,
+            depth = self.inner.stats.depth.load(Ordering::Relaxed),
+            "database write accepted"
+        );
+        Ok(())
+    }
+
+    async fn admit<F>(
+        &self,
+        operation: &str,
+        background: bool,
+        command: F,
+    ) -> Result<(), DbWriteError>
+    where
+        F: FnOnce() -> WriteCommand,
+    {
+        let mut command = Some(command);
+        match self.admit_once(operation, &mut command).await {
+            Err(DbWriteError::Busy) if background => {}
+            result => return result,
+        }
+
+        for delay in self.inner.config.background_retry_delays {
+            tokio::time::sleep(delay).await;
+            match self.admit_once(operation, &mut command).await {
+                Err(DbWriteError::Busy) => continue,
+                result => return result,
+            }
+        }
+        Err(DbWriteError::Busy)
+    }
+
+    async fn submit_job<T, F>(
+        &self,
+        operation: impl Into<String>,
+        background: bool,
+        job: F,
+    ) -> Result<T, DbWriteError>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a QueuedConnection<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+    {
+        let operation = operation.into();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.admit(&operation, background, || WriteCommand::Job {
+            operation: operation.clone(),
+            job: Box::new(TypedJob {
+                job,
+                output: PhantomData,
+            }),
+            reply: reply_tx,
+        })
+        .await?;
+
+        let output = reply_rx.await.map_err(|_| DbWriteError::WorkerStopped)?;
+        output
+            .map_err(DbWriteError::Job)?
+            .downcast::<T>()
+            .map(|value| *value)
+            .map_err(|_| DbWriteError::WorkerStopped)
+    }
+
+    pub async fn job<T, F>(&self, operation: impl Into<String>, job: F) -> Result<T, DbWriteError>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a QueuedConnection<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+    {
+        self.submit_job(operation, false, job).await
+    }
+
+    pub async fn background_job<T, F>(
+        &self,
+        operation: impl Into<String>,
+        job: F,
+    ) -> Result<T, DbWriteError>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a QueuedConnection<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+    {
+        self.submit_job(operation, true, job).await
+    }
+
+    async fn submit_transaction<T, F>(
+        &self,
+        operation: impl Into<String>,
+        background: bool,
+        job: F,
+    ) -> Result<T, DbWriteError>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a QueuedTransaction<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+    {
+        let operation = operation.into();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.admit(&operation, background, || WriteCommand::Transaction {
+            operation: operation.clone(),
+            job: Box::new(TypedTransaction {
+                job,
+                output: PhantomData,
+            }),
+            reply: reply_tx,
+        })
+        .await?;
+
+        let output = reply_rx.await.map_err(|_| DbWriteError::WorkerStopped)?;
+        output
+            .map_err(DbWriteError::Job)?
+            .downcast::<T>()
+            .map(|value| *value)
+            .map_err(|_| DbWriteError::WorkerStopped)
+    }
+
+    pub async fn transact<T, F>(
+        &self,
+        operation: impl Into<String>,
+        job: F,
+    ) -> Result<T, DbWriteError>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a QueuedTransaction<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+    {
+        self.submit_transaction(operation, false, job).await
+    }
+
+    pub async fn background_transact<T, F>(
+        &self,
+        operation: impl Into<String>,
+        job: F,
+    ) -> Result<T, DbWriteError>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a QueuedTransaction<'a>) -> QueuedFuture<'a, T> + Send + 'static,
+    {
+        self.submit_transaction(operation, true, job).await
+    }
+
+    async fn submit_statement(
+        &self,
+        operation: impl Into<String>,
+        background: bool,
         sql: impl Into<String>,
         params: Vec<libsql::Value>,
-    ) -> anyhow::Result<u64> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(WriteCommand::Execute {
-                sql: sql.into(),
-                params,
-                reply: reply_tx,
-            })
-            .map_err(|_| anyhow::anyhow!("write queue closed"))?;
-        reply_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("write queue dropped"))?
+    ) -> Result<u64, DbWriteError> {
+        let sql = sql.into();
+        self.submit_job(operation, background, move |conn| {
+            Box::pin(async move { conn.statement(&sql, params).await })
+        })
+        .await
     }
 
-    pub async fn execute_batch(&self, sql: impl Into<String>) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(WriteCommand::ExecuteBatch {
-                sql: sql.into(),
-                reply: reply_tx,
-            })
-            .map_err(|_| anyhow::anyhow!("write queue closed"))?;
-        reply_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("write queue dropped"))?
+    pub async fn statement(
+        &self,
+        operation: impl Into<String>,
+        sql: impl Into<String>,
+        params: Vec<libsql::Value>,
+    ) -> Result<u64, DbWriteError> {
+        self.submit_statement(operation, false, sql, params).await
     }
 
-    pub async fn run<F>(&self, job: F) -> anyhow::Result<()>
+    pub async fn background_statement(
+        &self,
+        operation: impl Into<String>,
+        sql: impl Into<String>,
+        params: Vec<libsql::Value>,
+    ) -> Result<u64, DbWriteError> {
+        self.submit_statement(operation, true, sql, params).await
+    }
+
+    pub async fn flush(&self) -> Result<(), DbWriteError> {
+        let operation = "flush";
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let mut command = Some(|| WriteCommand::Flush(reply_tx));
+        self.admit_control(operation, &mut command, false).await?;
+        reply_rx.await.map_err(|_| DbWriteError::WorkerStopped)
+    }
+
+    async fn admit_control<F>(
+        &self,
+        operation: &str,
+        command: &mut Option<F>,
+        closing: bool,
+    ) -> Result<(), DbWriteError>
     where
-        F: for<'a> FnOnce(
-                &'a libsql::Connection,
-            )
-                -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
-            + Send
-            + 'static,
+        F: FnOnce() -> WriteCommand,
     {
+        let deadline = tokio::time::Instant::now() + self.inner.config.enqueue_timeout;
+        let _admission = if closing {
+            self.inner.admission.lock().await
+        } else {
+            match tokio::time::timeout_at(deadline, self.inner.admission.lock()).await {
+                Ok(admission) => admission,
+                Err(_) => {
+                    self.inner
+                        .stats
+                        .busy_rejections
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        operation,
+                        "database write queue control admission timed out"
+                    );
+                    return Err(DbWriteError::Busy);
+                }
+            }
+        };
+        if !closing && self.inner.closed.load(Ordering::Acquire) {
+            self.inner
+                .stats
+                .closed_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(DbWriteError::Closed);
+        }
+        if closing {
+            if self.inner.closed.swap(true, Ordering::AcqRel) {
+                return Err(DbWriteError::Closed);
+            }
+        }
+
+        let reserve = self.inner.tx.clone().reserve_owned();
+        let permit = if closing {
+            reserve.await.map_err(|_| DbWriteError::WorkerStopped)?
+        } else {
+            match tokio::time::timeout_at(deadline, reserve).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => return Err(DbWriteError::WorkerStopped),
+                Err(_) => {
+                    self.inner
+                        .stats
+                        .busy_rejections
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        operation,
+                        "database write queue control admission timed out"
+                    );
+                    return Err(DbWriteError::Busy);
+                }
+            }
+        };
+        permit.send(command.take().expect("control command admitted once")());
+        Ok(())
+    }
+
+    pub async fn close_and_flush(&self) -> Result<(), DbWriteError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(WriteCommand::Run {
-                job: Box::new(job),
-                reply: reply_tx,
-            })
-            .map_err(|_| anyhow::anyhow!("write queue closed"))?;
-        reply_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("write queue dropped"))?
+        let mut command = Some(|| WriteCommand::Shutdown(reply_tx));
+        self.admit_control("shutdown", &mut command, true).await?;
+        reply_rx.await.map_err(|_| DbWriteError::WorkerStopped)
+    }
+}
+
+fn record_result(
+    stats: &Stats,
+    operation: &str,
+    started: Instant,
+    result: &anyhow::Result<ErasedValue>,
+) {
+    match result {
+        Ok(_) => {
+            stats.completed.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                operation,
+                duration_ms = started.elapsed().as_millis() as u64,
+                "database write completed"
+            );
+        }
+        Err(error) => {
+            stats.failed.fetch_add(1, Ordering::Relaxed);
+            tracing::error!(
+                operation,
+                duration_ms = started.elapsed().as_millis() as u64,
+                error = %error,
+                "database write failed"
+            );
+        }
     }
 }
 
 pub async fn run_write_worker(
     db: Arc<libsql::Database>,
-    mut rx: mpsc::UnboundedReceiver<WriteCommand>,
-    shutdown: CancellationToken,
-) {
+    mut receiver: DbWriteQueueReceiver,
+) -> Result<(), DbWriteError> {
     tracing::info!("DbWriteQueue worker started");
-    let conn = match db.connect() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(err = %e, "DbWriteQueue: failed to open writer connection");
-            return;
-        }
-    };
+    let conn = db.connect().map_err(|error| {
+        tracing::error!(err = %error, "DbWriteQueue: failed to open writer connection");
+        DbWriteError::WorkerStopped
+    })?;
 
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                tracing::info!("DbWriteQueue worker shutting down");
-                return;
+    while let Some(command) = receiver.rx.recv().await {
+        match command {
+            WriteCommand::Job {
+                operation,
+                job,
+                reply,
+            } => {
+                receiver.stats.depth.fetch_sub(1, Ordering::Relaxed);
+                let started = Instant::now();
+                let queued = QueuedConnection { connection: &conn };
+                let result = job.run(&queued).await;
+                record_result(&receiver.stats, &operation, started, &result);
+                let _ = reply.send(result);
             }
-            msg = rx.recv() => {
-                let Some(msg) = msg else {
-                    tracing::info!("DbWriteQueue channel closed");
-                    return;
+            WriteCommand::Transaction {
+                operation,
+                job,
+                reply,
+            } => {
+                receiver.stats.depth.fetch_sub(1, Ordering::Relaxed);
+                let started = Instant::now();
+                let result = match conn.transaction().await {
+                    Ok(transaction) => {
+                        let queued = QueuedTransaction {
+                            transaction: &transaction,
+                        };
+                        match job.run(&queued).await {
+                            Ok(output) => match transaction.commit().await {
+                                Ok(()) => Ok(output),
+                                Err(error) => Err(error.into()),
+                            },
+                            Err(error) => {
+                                if let Err(rollback_error) = transaction.rollback().await {
+                                    tracing::error!(
+                                        operation,
+                                        error = %rollback_error,
+                                        "database transaction rollback failed"
+                                    );
+                                }
+                                Err(error)
+                            }
+                        }
+                    }
+                    Err(error) => Err(error.into()),
                 };
-
-                match msg {
-                    WriteCommand::Execute { sql, params, reply } => {
-                        let result = conn
-                            .execute(&sql, libsql::params_from_iter(params))
-                            .await
-                            .map_err(|e| anyhow::anyhow!(e));
-                        let _ = reply.send(result);
-                    }
-                    WriteCommand::ExecuteBatch { sql, reply } => {
-                        let result = conn.execute_batch(&sql).await.map_err(|e| anyhow::anyhow!(e));
-                        let _ = reply.send(result.map(|_| ()));
-                    }
-                    WriteCommand::Run { job, reply } => {
-                        let result = job(&conn).await;
-                        let _ = reply.send(result);
-                    }
-                }
+                record_result(&receiver.stats, &operation, started, &result);
+                let _ = reply.send(result);
+            }
+            WriteCommand::Flush(reply) => {
+                let _ = reply.send(());
+            }
+            WriteCommand::Shutdown(reply) => {
+                let _ = reply.send(());
+                tracing::info!("DbWriteQueue worker drained and stopped");
+                return Ok(());
             }
         }
     }
+
+    tracing::info!("DbWriteQueue channel closed");
+    Ok(())
 }

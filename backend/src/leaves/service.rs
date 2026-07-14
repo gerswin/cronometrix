@@ -209,7 +209,8 @@ pub async fn create_leave_queued(
     let id = Uuid::new_v4().to_string();
     state
         .db_write
-        .execute(
+        .statement(
+            "leaves.create",
             "INSERT INTO leaves (id, employee_id, from_date, to_date, leave_type, \
              justification, evidence_path, created_by, status, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 1, unixepoch(), unixepoch())",
@@ -227,7 +228,7 @@ pub async fn create_leave_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     get_by_id(&conn, &id).await
 }
 
@@ -399,7 +400,8 @@ pub async fn cancel_queued(state: &AppState, id: &str, version: i64) -> Result<(
         .map_err(|e| AppError::Internal(e.into()))?;
     let rows_affected = state
         .db_write
-        .execute(
+        .statement(
+            "leaves.cancel",
             "UPDATE leaves SET status = 'cancelled', deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND status = 'active' AND version = ?2",
             vec![
@@ -408,7 +410,7 @@ pub async fn cancel_queued(state: &AppState, id: &str, version: i64) -> Result<(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     if rows_affected == 0 {
         let exists = conn
             .query(

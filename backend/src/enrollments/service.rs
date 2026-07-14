@@ -370,7 +370,8 @@ pub async fn start_enrollment_queued(
 
     state
         .db_write
-        .execute(
+        .statement(
+            "enrollments.create-face",
             "INSERT INTO face_enrollments \
              (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
@@ -385,11 +386,12 @@ pub async fn start_enrollment_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     state
         .db_write
-        .execute(
+        .statement(
+            "enrollments.create",
             "INSERT INTO enrollments \
              (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
              VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
@@ -401,11 +403,12 @@ pub async fn start_enrollment_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     state
         .db_write
-        .execute(
+        .statement(
+            "enrollments.ensure-employee-face",
             "UPDATE employees SET face_id = COALESCE(face_id, ?1) WHERE id = ?2",
             vec![
                 libsql::Value::Text(new_face_id.clone()),
@@ -413,11 +416,12 @@ pub async fn start_enrollment_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     state
         .db_write
-        .execute(
+        .statement(
+            "enrollments.set-current-face",
             "UPDATE employees SET current_face_enrollment_id = ?1 WHERE id = ?2",
             vec![
                 libsql::Value::Text(face_enrollment_id.clone()),
@@ -425,7 +429,7 @@ pub async fn start_enrollment_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     let mut fid_rows = conn
         .query(
@@ -449,7 +453,8 @@ pub async fn start_enrollment_queued(
         let push_id = Uuid::new_v4().to_string();
         state
             .db_write
-            .execute(
+            .statement(
+                "enrollments.create-device-push",
                 "INSERT OR REPLACE INTO enrollment_device_pushes \
                  (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
                  VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
@@ -460,7 +465,7 @@ pub async fn start_enrollment_queued(
                 ],
             )
             .await
-            .map_err(AppError::Internal)?;
+            .map_err(AppError::from)?;
 
         push_responses.push(EnrollmentDevicePushResponse {
             id: push_id,
@@ -517,7 +522,8 @@ pub async fn update_push_status_queued(
 ) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.finish-device-push",
             "UPDATE enrollment_device_pushes \
              SET status = ?1, error_message = ?2, completed_at = unixepoch() \
              WHERE id = ?3",
@@ -530,7 +536,7 @@ pub async fn update_push_status_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -550,14 +556,15 @@ pub async fn mark_push_in_progress(conn: &Connection, push_id: &str) -> Result<(
 pub async fn mark_push_in_progress_queued(state: &AppState, push_id: &str) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.start-device-push",
             "UPDATE enrollment_device_pushes \
              SET status = 'in_progress', started_at = unixepoch() \
              WHERE id = ?1",
             vec![libsql::Value::Text(push_id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -620,7 +627,8 @@ pub async fn reset_push_to_pending_queued(
     let push_id = Uuid::new_v4().to_string();
     state
         .db_write
-        .execute(
+        .statement(
+            "enrollments.retry-device-push",
             "INSERT OR REPLACE INTO enrollment_device_pushes \
              (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
              VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
@@ -631,7 +639,7 @@ pub async fn reset_push_to_pending_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(push_id)
 }
 
@@ -751,7 +759,8 @@ pub async fn finalize_enrollment_status_queued(
     };
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.finish",
             "UPDATE enrollments \
              SET status = ?1, completed_at = unixepoch(), version = version + 1 \
              WHERE id = ?2",
@@ -761,7 +770,7 @@ pub async fn finalize_enrollment_status_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -798,7 +807,8 @@ pub async fn upsert_device_face_mapping_queued(
     let id = Uuid::new_v4().to_string();
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.upsert-face-mapping",
             "INSERT OR REPLACE INTO device_face_mappings \
              (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
@@ -810,7 +820,7 @@ pub async fn upsert_device_face_mapping_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -928,14 +938,15 @@ pub async fn mark_mapping_pending_delete_queued(
 ) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.mark-face-mapping-delete",
             "UPDATE device_face_mappings \
              SET state = 'pending_delete', version = version + 1, updated_at = unixepoch() \
              WHERE id = ?1",
             vec![libsql::Value::Text(mapping_id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -953,12 +964,13 @@ pub async fn delete_mapping(conn: &Connection, mapping_id: &str) -> Result<(), A
 pub async fn delete_mapping_queued(state: &AppState, mapping_id: &str) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.delete-face-mapping",
             "DELETE FROM device_face_mappings WHERE id = ?1",
             vec![libsql::Value::Text(mapping_id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 

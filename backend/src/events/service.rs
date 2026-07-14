@@ -226,7 +226,8 @@ pub async fn persist_attendance_event_queued(
 
     let rows_affected = state
         .db_write
-        .execute(
+        .statement(
+            "events.ingest-attendance",
             "INSERT OR IGNORE INTO attendance_events \
              (id, employee_id, device_id, direction, captured_at, bucket_30s, \
               is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
@@ -261,7 +262,7 @@ pub async fn persist_attendance_event_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     if rows_affected == 0 {
         return Ok(PersistOutcome::Deduplicated);

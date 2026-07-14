@@ -61,7 +61,8 @@ pub struct AppState {
     /// process-globally racy — see CLAUDE.md Conventions § Filesystem-root
     /// injection.
     pub paths: Arc<Paths>,
-    /// Single-writer queue for SQLite/libSQL mutations.
+    /// Bounded, observable single-writer queue for SQLite/libSQL mutations.
+    /// Every producer supplies a stable operation name for queue telemetry.
     pub db_write: DbWriteQueue,
     pub lifecycle_tx: Option<LifecycleTx>,
     pub recompute_tx: Option<UnboundedSender<RecomputeRequest>>,

@@ -143,9 +143,9 @@ pub async fn update_tenant_info_queued(
 
     let rows_affected = state
         .db_write
-        .execute(sql, values)
+        .statement("tenant-info.update", sql, values)
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     if rows_affected == 0 {
         // Singleton always exists (seeded by migration 013); the only way to fail
         // here is a stale version.
