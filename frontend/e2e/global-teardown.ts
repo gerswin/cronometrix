@@ -1,5 +1,10 @@
 import * as fs from "node:fs/promises";
-import { E2E_ROOT, E2E_DB_PATH } from "./fixtures/run-context";
+import {
+  assertE2ETeardownPaths,
+  E2E_DB_PATH,
+  E2E_ROOT,
+  E2E_RUN_ID,
+} from "./fixtures/run-context";
 
 /**
  * Playwright globalTeardown — runs once at the end of the full test suite.
@@ -10,6 +15,10 @@ import { E2E_ROOT, E2E_DB_PATH } from "./fixtures/run-context";
 export default async function globalTeardown(): Promise<void> {
   const PATHS_ROOT = E2E_ROOT;
   const DB_PATH = E2E_DB_PATH;
+
+  // Fail closed before the first recursive removal. Re-derive the validated
+  // direct-child paths instead of trusting mutable environment input.
+  assertE2ETeardownPaths(E2E_RUN_ID, PATHS_ROOT, DB_PATH);
 
   await Promise.all([
     // Remove the paths root directory (leaves, events, enrollments, captures-tmp, overrides)
