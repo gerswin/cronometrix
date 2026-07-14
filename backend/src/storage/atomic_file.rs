@@ -269,6 +269,8 @@ fn sync_directory(path: &Path) -> anyhow::Result<()> {
 pub struct FileIdentity {
     device: u64,
     inode: u64,
+    ctime_seconds: i64,
+    ctime_nanoseconds: i64,
 }
 
 #[cfg(unix)]
@@ -278,6 +280,8 @@ fn file_identity(metadata: &fs::Metadata) -> anyhow::Result<FileIdentity> {
     Ok(FileIdentity {
         device: metadata.dev(),
         inode: metadata.ino(),
+        ctime_seconds: metadata.ctime(),
+        ctime_nanoseconds: metadata.ctime_nsec(),
     })
 }
 
@@ -302,8 +306,9 @@ fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
         }
     }
 
-    let claimed_identity = file_identity(&fs::symlink_metadata(&quarantine)?)?;
-    if claimed_identity == identity {
+    let claimed_metadata = fs::symlink_metadata(&quarantine)?;
+    let claimed_identity = file_identity(&claimed_metadata)?;
+    if claimed_metadata.file_type().is_file() && claimed_identity == identity {
         fs::remove_file(&quarantine)
             .with_context(|| format!("remove owned atomic quarantine {}", quarantine.display()))?;
     } else {
