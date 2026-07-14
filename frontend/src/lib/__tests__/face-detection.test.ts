@@ -15,9 +15,11 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { loadFromUriMock, detectSingleFaceMock } = vi.hoisted(() => ({
+const { loadFromUriMock, detectSingleFaceMock, setBackendMock, readyMock } = vi.hoisted(() => ({
   loadFromUriMock: vi.fn(),
   detectSingleFaceMock: vi.fn(),
+  setBackendMock: vi.fn(),
+  readyMock: vi.fn(),
 }))
 
 vi.mock('@vladmandic/face-api', () => ({
@@ -26,11 +28,17 @@ vi.mock('@vladmandic/face-api', () => ({
     constructor(public opts: unknown) {}
   },
   detectSingleFace: detectSingleFaceMock,
+  tf: {
+    setBackend: setBackendMock,
+    ready: readyMock,
+  },
 }))
 
 beforeEach(() => {
   vi.clearAllMocks()
   loadFromUriMock.mockResolvedValue(undefined)
+  setBackendMock.mockResolvedValue(true)
+  readyMock.mockResolvedValue(undefined)
   // Re-import the module fresh per test so cached state (faceapiCache,
   // modelLoaded) does not leak across cases.
   vi.resetModules()
@@ -68,6 +76,36 @@ function pixels(rgbValue: number, count = 64 * 48): Uint8ClampedArray {
 }
 
 describe('lib/face-detection', () => {
+  it.each([
+    ['Google SwiftShader', true],
+    ['ANGLE (LLVMpipe 15.0.7)', true],
+    ['Apple M3', false],
+    [null, false],
+  ])('classifies software WebGL renderer %s', async (renderer, expected) => {
+    const { isSoftwareWebGlRenderer } = await import('../face-detection')
+    expect(isSoftwareWebGlRenderer(renderer)).toBe(expected)
+  })
+
+  it('selects the CPU backend before loading the model under SwiftShader', async () => {
+    const { configureFaceApiBackend } = await import('../face-detection')
+    const faceapi = await import('@vladmandic/face-api')
+
+    await configureFaceApiBackend(faceapi, 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device))')
+
+    expect(setBackendMock).toHaveBeenCalledWith('cpu')
+    expect(readyMock).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the default accelerated backend for a hardware renderer', async () => {
+    const { configureFaceApiBackend } = await import('../face-detection')
+    const faceapi = await import('@vladmandic/face-api')
+
+    await configureFaceApiBackend(faceapi, 'ANGLE (NVIDIA GeForce RTX 4090)')
+
+    expect(setBackendMock).not.toHaveBeenCalled()
+    expect(readyMock).toHaveBeenCalledOnce()
+  })
+
   it('loadFaceApi resolves to the face-api module and triggers tinyFaceDetector.loadFromUri once', async () => {
     const { loadFaceApi } = await import('../face-detection')
     const fa = await loadFaceApi()
