@@ -816,8 +816,8 @@ async fn retry_push_404_when_employee_has_no_photo() {
         service::start_enrollment(&state, &admin_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
-    service::update_push_status(
-        &state.db.connect().unwrap(),
+    service::update_push_status_queued(
+        &state,
         &resp.device_pushes[0].id,
         "failed",
         Some("offline"),
@@ -900,8 +900,8 @@ async fn retry_push_returns_202_when_photo_present() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    service::update_push_status(
-        &state.db.connect().unwrap(),
+    service::update_push_status_queued(
+        &state,
         &resp.device_pushes[0].id,
         "failed",
         Some("offline"),

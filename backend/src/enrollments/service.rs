@@ -558,27 +558,6 @@ pub async fn start_enrollment(
 }
 
 /// Update a single push row's status and error_message.
-pub async fn update_push_status(
-    conn: &Connection,
-    push_id: &str,
-    status: &str,
-    error_message: Option<&str>,
-) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE enrollment_device_pushes \
-         SET status = ?1, error_message = ?2, completed_at = unixepoch() \
-         WHERE id = ?3",
-        params![
-            status.to_string(),
-            error_message.map(|s| s.to_string()),
-            push_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn update_push_status_queued(
     state: &AppState,
     push_id: &str,
@@ -906,18 +885,6 @@ pub async fn fail_enrollment_dispatch(
 }
 
 /// Mark a push row as in_progress (records started_at).
-pub async fn mark_push_in_progress(conn: &Connection, push_id: &str) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE enrollment_device_pushes \
-         SET status = 'in_progress', started_at = unixepoch() \
-         WHERE id = ?1",
-        params![push_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn mark_push_in_progress_queued(state: &AppState, push_id: &str) -> Result<(), AppError> {
     state
         .db_write
@@ -962,46 +929,6 @@ pub async fn get_push_id(
 }
 
 /// Re-set a push row to pending so the retry path can re-fire it.
-pub async fn reset_push_to_pending(
-    conn: &Connection,
-    enrollment_id: &str,
-    device_id: &str,
-) -> Result<String, AppError> {
-    let push_id = get_push_id(conn, enrollment_id, device_id).await?;
-    let mut status_rows = conn
-        .query(
-            "SELECT status FROM enrollment_device_pushes WHERE id=?1",
-            params![push_id.clone()],
-        )
-        .await
-        .map_err(|error| AppError::Internal(error.into()))?;
-    let status: String = status_rows
-        .next()
-        .await
-        .map_err(|error| AppError::Internal(error.into()))?
-        .ok_or_else(|| AppError::NotFound {
-            code: "PUSH_NOT_FOUND",
-            message: "Push row disappeared before retry".into(),
-        })?
-        .get(0)
-        .map_err(|error| AppError::Internal(error.into()))?;
-    if status != "failed" {
-        return Err(AppError::Conflict {
-            code: "PUSH_NOT_RETRYABLE",
-            message: "Only failed device pushes may be retried".into(),
-        });
-    }
-    conn.execute(
-        "UPDATE enrollment_device_pushes \
-         SET status='pending', error_message=NULL, started_at=NULL, completed_at=NULL \
-         WHERE id=?1",
-        params![push_id.clone()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(push_id)
-}
-
 pub async fn reset_push_to_pending_queued(
     state: &AppState,
     enrollment_id: &str,
@@ -1194,76 +1121,7 @@ pub async fn retry_enrollment_push(
 /// Finalise enrollment status after all push tasks settle.
 ///
 /// Counts success/failed push rows; sets enrollments.status and completed_at.
-/// Called by pusher::finalize_enrollment_status after the JoinSet drains.
-pub async fn finalize_enrollment_status(
-    conn: &Connection,
-    enrollment_id: &str,
-) -> Result<(), AppError> {
-    let mut rows = conn
-        .query(
-            "SELECT \
-               SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
-               SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END), \
-               COUNT(*), \
-               SUM(CASE WHEN status IN ('pending','in_progress') THEN 1 ELSE 0 END) \
-             FROM enrollment_device_pushes \
-             WHERE enrollment_id = ?1",
-            params![enrollment_id.to_string()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    let row = rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!(
-                "no push rows for enrollment {}",
-                enrollment_id
-            ))
-        })?;
-
-    let success: i64 = row
-        .get::<Option<i64>>(0)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .unwrap_or(0);
-    let failed: i64 = row
-        .get::<Option<i64>>(1)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .unwrap_or(0);
-    let total: i64 = row
-        .get::<Option<i64>>(2)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .unwrap_or(0);
-    let nonterminal: i64 = row
-        .get::<Option<i64>>(3)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .unwrap_or(0);
-    if nonterminal != 0 {
-        return Ok(());
-    }
-
-    let final_status = if total == 0 || success == 0 {
-        "failed"
-    } else if failed == 0 {
-        "success"
-    } else {
-        "partial"
-    };
-
-    conn.execute(
-        "UPDATE enrollments \
-         SET status = ?1, completed_at = unixepoch(), version = version + 1 \
-         WHERE id = ?2",
-        params![final_status.to_string(), enrollment_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    Ok(())
-}
-
+/// Legacy queue-backed finalizer retained for focused service tests.
 pub async fn finalize_enrollment_status_queued(
     state: &AppState,
     enrollment_id: &str,
@@ -1394,29 +1252,6 @@ pub async fn finalize_enrollment(state: &AppState, enrollment_id: &str) -> Resul
 }
 
 /// Upsert a device_face_mappings row (INSERT OR REPLACE) on push success (D-13).
-pub async fn upsert_device_face_mapping(
-    conn: &Connection,
-    device_id: &str,
-    face_id: &str,
-    employee_id: &str,
-) -> Result<(), AppError> {
-    let id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT OR REPLACE INTO device_face_mappings \
-         (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
-        params![
-            id,
-            device_id.to_string(),
-            face_id.to_string(),
-            employee_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn upsert_device_face_mapping_queued(
     state: &AppState,
     device_id: &str,
@@ -1574,21 +1409,6 @@ pub async fn list_mappings_for_employee(
 }
 
 /// Mark a device_face_mapping row as pending_delete (purge failed — will retry).
-pub async fn mark_mapping_pending_delete(
-    conn: &Connection,
-    mapping_id: &str,
-) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE device_face_mappings \
-         SET state = 'pending_delete', version = version + 1, updated_at = unixepoch() \
-         WHERE id = ?1",
-        params![mapping_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn mark_mapping_pending_delete_queued(
     state: &AppState,
     mapping_id: &str,
@@ -1608,16 +1428,6 @@ pub async fn mark_mapping_pending_delete_queued(
 }
 
 /// Delete a device_face_mapping row after successful device purge.
-pub async fn delete_mapping(conn: &Connection, mapping_id: &str) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM device_face_mappings WHERE id = ?1",
-        params![mapping_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn delete_mapping_queued(state: &AppState, mapping_id: &str) -> Result<(), AppError> {
     state
         .db_write

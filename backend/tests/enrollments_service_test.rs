@@ -1100,7 +1100,7 @@ async fn push_status_lifecycle() {
     assert!(!push_id.is_empty());
 
     // mark_push_in_progress
-    service::mark_push_in_progress(&conn, &push_id)
+    service::mark_push_in_progress_queued(&state, &push_id)
         .await
         .unwrap();
     let mut rows = conn
@@ -1115,9 +1115,11 @@ async fn push_status_lifecycle() {
     let started: Option<i64> = row.get(1).unwrap();
     assert_eq!(st, "in_progress");
     assert!(started.is_some());
+    drop(row);
+    drop(rows);
 
     // update_push_status — success
-    service::update_push_status(&conn, &push_id, "success", None)
+    service::update_push_status_queued(&state, &push_id, "success", None)
         .await
         .unwrap();
     let mut rows = conn
@@ -1134,9 +1136,11 @@ async fn push_status_lifecycle() {
     assert_eq!(st, "success");
     assert!(err.is_none());
     assert!(completed.is_some());
+    drop(row);
+    drop(rows);
 
     // update_push_status — failed with error_message
-    service::update_push_status(&conn, &push_id, "failed", Some("upstream timeout"))
+    service::update_push_status_queued(&state, &push_id, "failed", Some("upstream timeout"))
         .await
         .unwrap();
     let mut rows = conn
@@ -1227,14 +1231,15 @@ async fn reset_push_to_pending_idempotent() {
     let push_id_orig = service::get_push_id(&conn, &resp.enrollment_id, &device_id)
         .await
         .unwrap();
-    service::update_push_status(&conn, &push_id_orig, "failed", Some("err"))
+    service::update_push_status_queued(&state, &push_id_orig, "failed", Some("err"))
         .await
         .unwrap();
 
     // Reset.
-    let new_push_id = service::reset_push_to_pending(&conn, &resp.enrollment_id, &device_id)
-        .await
-        .unwrap();
+    let new_push_id =
+        service::reset_push_to_pending_queued(&state, &resp.enrollment_id, &device_id)
+            .await
+            .unwrap();
     assert!(!new_push_id.is_empty());
 
     let mut rows = conn
@@ -1264,7 +1269,7 @@ async fn reset_push_rejects_successful_push_to_prevent_device_replay() {
             .await
             .unwrap();
     let push_id = enrollment.device_pushes[0].id.clone();
-    service::update_push_status(&state.db.connect().unwrap(), &push_id, "success", None)
+    service::update_push_status_queued(&state, &push_id, "success", None)
         .await
         .unwrap();
 
@@ -1321,7 +1326,7 @@ async fn finalize_status_all_success() {
     )
     .await
     .unwrap();
-    service::finalize_enrollment_status(&conn, &resp.enrollment_id)
+    service::finalize_enrollment_status_queued(&state, &resp.enrollment_id)
         .await
         .unwrap();
 
@@ -1417,7 +1422,7 @@ async fn finalize_status_partial_when_some_failed() {
     )
     .await
     .unwrap();
-    service::finalize_enrollment_status(&conn, &resp.enrollment_id)
+    service::finalize_enrollment_status_queued(&state, &resp.enrollment_id)
         .await
         .unwrap();
     let mut rows = conn
@@ -1450,7 +1455,7 @@ async fn finalize_status_failed_when_all_failed() {
     )
     .await
     .unwrap();
-    service::finalize_enrollment_status(&conn, &resp.enrollment_id)
+    service::finalize_enrollment_status_queued(&state, &resp.enrollment_id)
         .await
         .unwrap();
     let mut rows = conn
@@ -1478,7 +1483,7 @@ async fn finalize_status_failed_when_no_pushes() {
             .unwrap();
     let conn = state.db.connect().unwrap();
     // No devices seeded → 0 push rows.
-    service::finalize_enrollment_status(&conn, &resp.enrollment_id)
+    service::finalize_enrollment_status_queued(&state, &resp.enrollment_id)
         .await
         .unwrap();
     let mut rows = conn
@@ -1549,11 +1554,11 @@ async fn mapping_lifecycle_upsert_list_mark_delete() {
     let conn = state.db.connect().unwrap();
 
     let face_id = "face-aaa";
-    service::upsert_device_face_mapping(&conn, &device_id, face_id, &emp_id)
+    service::upsert_device_face_mapping_queued(&state, &device_id, face_id, &emp_id)
         .await
         .unwrap();
     // Upsert again — INSERT OR REPLACE creates a new row id under the same (device_id, face_id).
-    service::upsert_device_face_mapping(&conn, &device_id, face_id, &emp_id)
+    service::upsert_device_face_mapping_queued(&state, &device_id, face_id, &emp_id)
         .await
         .unwrap();
 
@@ -1564,7 +1569,7 @@ async fn mapping_lifecycle_upsert_list_mark_delete() {
     let (mapping_id, _dev, _face) = mappings[0].clone();
 
     // Mark pending_delete; list should still include it.
-    service::mark_mapping_pending_delete(&conn, &mapping_id)
+    service::mark_mapping_pending_delete_queued(&state, &mapping_id)
         .await
         .unwrap();
     let after = service::list_mappings_for_employee(&conn, &emp_id)
@@ -1573,7 +1578,9 @@ async fn mapping_lifecycle_upsert_list_mark_delete() {
     assert_eq!(after.len(), mappings.len());
 
     // Delete; list should drop it.
-    service::delete_mapping(&conn, &mapping_id).await.unwrap();
+    service::delete_mapping_queued(&state, &mapping_id)
+        .await
+        .unwrap();
     let after_del = service::list_mappings_for_employee(&conn, &emp_id)
         .await
         .unwrap();

@@ -193,7 +193,7 @@ async fn purge_skips_when_employee_is_active() {
 
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-x", &emp_id)
+    enrollment_service::upsert_device_face_mapping_queued(&state, &device_id, "face-x", &emp_id)
         .await
         .unwrap();
     drop(conn);
@@ -264,9 +264,14 @@ async fn purge_success_deletes_mapping_row() {
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
 
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-purge-1", &emp_id)
-        .await
-        .unwrap();
+    enrollment_service::upsert_device_face_mapping_queued(
+        &state,
+        &device_id,
+        "face-purge-1",
+        &emp_id,
+    )
+    .await
+    .unwrap();
     drop(conn);
 
     let shutdown = CancellationToken::new();
@@ -310,9 +315,14 @@ async fn purge_mapping_delete_failure_keeps_pending_delete_recovery_state() {
     let emp_id = seed_employee_inactive(&state.db).await;
     let device_id = seed_device_at(&state.db, &state.config.device_creds_key, &server.uri()).await;
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-delete-db", &emp_id)
-        .await
-        .unwrap();
+    enrollment_service::upsert_device_face_mapping_queued(
+        &state,
+        &device_id,
+        "face-delete-db",
+        &emp_id,
+    )
+    .await
+    .unwrap();
     conn.execute_batch(
         "CREATE TRIGGER fail_mapping_delete BEFORE DELETE ON device_face_mappings \
          BEGIN SELECT RAISE(ABORT, 'forced mapping delete failure'); END;",
@@ -407,7 +417,7 @@ async fn purge_5xx_marks_mapping_pending_delete() {
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
 
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-fail", &emp_id)
+    enrollment_service::upsert_device_face_mapping_queued(&state, &device_id, "face-fail", &emp_id)
         .await
         .unwrap();
     drop(conn);
@@ -494,9 +504,14 @@ async fn purge_timeout_is_manual_and_never_replayed() {
     let emp_id = seed_employee_inactive(&state.db).await;
     let device_id = seed_device_at(&state.db, &state.config.device_creds_key, &server.uri()).await;
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-timeout", &emp_id)
-        .await
-        .unwrap();
+    enrollment_service::upsert_device_face_mapping_queued(
+        &state,
+        &device_id,
+        "face-timeout",
+        &emp_id,
+    )
+    .await
+    .unwrap();
     drop(conn);
 
     let shutdown = CancellationToken::new();
@@ -585,7 +600,7 @@ async fn purge_marks_pending_when_device_fetch_fails() {
     // get_decrypted (which requires status='active') 404s.
     let conn = state.db.connect().unwrap();
     use cronometrix_api::enrollments::service as enr_svc;
-    enr_svc::upsert_device_face_mapping(&conn, &device_id, "face-pd", &emp_id)
+    enr_svc::upsert_device_face_mapping_queued(&state, &device_id, "face-pd", &emp_id)
         .await
         .unwrap();
     conn.execute(
@@ -654,7 +669,7 @@ async fn purge_worker_dedupes_repeated_requests() {
     let emp_id = seed_employee_inactive(&state.db).await;
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-d", &emp_id)
+    enrollment_service::upsert_device_face_mapping_queued(&state, &device_id, "face-d", &emp_id)
         .await
         .unwrap();
     drop(conn);

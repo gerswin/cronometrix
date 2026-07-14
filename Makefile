@@ -7,7 +7,7 @@
 # The same commands are invoked by .github/workflows/ci.yml so local and CI runs
 # produce the same numbers (within toolchain version tolerance).
 
-.PHONY: test-ci-config coverage coverage-backend coverage-frontend
+.PHONY: test-ci-config check-db-write-queue coverage coverage-backend coverage-frontend
 
 test-ci-config:
 	bash scripts/tests/test-ci-node-version-files.sh
@@ -17,7 +17,10 @@ test-ci-config:
 coverage: test-ci-config coverage-backend coverage-frontend
 	@echo "All coverage gates passed."
 
-coverage-backend:
+check-db-write-queue:
+	python3 scripts/check_db_write_queue.py backend/src
+
+coverage-backend: check-db-write-queue
 	cd backend && cargo llvm-cov nextest --branch --all-features \
 	  --ignore-filename-regex '(main\.rs|tests/common/.*)' \
 	  --fail-under-lines 90 --lcov --output-path lcov.info

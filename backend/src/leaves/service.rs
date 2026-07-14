@@ -1,9 +1,9 @@
 //! Leaves CRUD + overlap check + calc-engine overlay query.
 //!
 //! Public surface (consumed by leaves::handlers + daily_records::service):
-//! - create_leave: overlap check → LeaveConflict on collision; INSERT otherwise.
+//! - create_leave_queued: overlap check → LeaveConflict on collision; INSERT otherwise.
 //! - get_by_id / list: Viewer+ reads.
-//! - cancel: soft-delete with optimistic concurrency.
+//! - cancel_queued: soft-delete with optimistic concurrency.
 //! - fetch_active_leave_for_date: populates EngineInput.leave (D-16 overlay).
 //!
 //! Filesystem root for evidence files is provided by `state.paths.leaves_root`
@@ -34,113 +34,6 @@ const MAX_LEAVE_DAYS: i64 = 366;
 /// (T-3-14 mitigation) with `LeaveConflict`. INSERT uses positional bindings
 /// so SQL injection via user-supplied fields (employee_id, justification,
 /// leave_type) is impossible (T-3-20).
-pub async fn create_leave(
-    conn: &Connection,
-    actor_id: &str,
-    req: CreateLeaveRequest,
-    evidence_relpath: Option<String>,
-) -> Result<LeaveResponse, AppError> {
-    // 1. Validate leave_type against the CHECK enum (fail fast before DB hit).
-    match req.leave_type.as_str() {
-        "medical" | "vacation" | "unpaid" | "manual" => {}
-        _ => {
-            return Err(AppError::Validation {
-                code: "VALIDATION_ERROR",
-                message: "leave_type must be one of: medical, vacation, unpaid, manual".into(),
-            })
-        }
-    }
-
-    // 2. Medical leave requires evidence (D-13, T-3-16 mitigation).
-    if req.leave_type == "medical" && evidence_relpath.is_none() {
-        return Err(AppError::Validation {
-            code: "VALIDATION_ERROR",
-            message: "Medical leave requires evidence file upload".into(),
-        });
-    }
-
-    // 3. Parse + validate date range (D-14: full-day only).
-    let from = NaiveDate::parse_from_str(&req.from_date, "%Y-%m-%d").map_err(|_| {
-        AppError::Validation {
-            code: "VALIDATION_ERROR",
-            message: "from_date must be YYYY-MM-DD".into(),
-        }
-    })?;
-    let to =
-        NaiveDate::parse_from_str(&req.to_date, "%Y-%m-%d").map_err(|_| AppError::Validation {
-            code: "VALIDATION_ERROR",
-            message: "to_date must be YYYY-MM-DD".into(),
-        })?;
-    if from > to {
-        return Err(AppError::Validation {
-            code: "VALIDATION_ERROR",
-            message: "from_date must be <= to_date".into(),
-        });
-    }
-    if (to - from).num_days() + 1 > MAX_LEAVE_DAYS {
-        return Err(AppError::Validation {
-            code: "VALIDATION_ERROR",
-            message: "Leave range cannot exceed 366 days".into(),
-        });
-    }
-
-    // 4. Overlap check — T-3-14 mitigation.
-    // Two ranges [a1,a2] and [b1,b2] overlap iff a1 <= b2 AND a2 >= b1.
-    let overlap_count: i64 = {
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM leaves \
-                 WHERE employee_id = ?1 \
-                   AND status = 'active' AND deleted_at IS NULL \
-                   AND from_date <= ?2 AND to_date >= ?3",
-                params![
-                    req.employee_id.clone(),
-                    to.format("%Y-%m-%d").to_string(),
-                    from.format("%Y-%m-%d").to_string(),
-                ],
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        let row = rows
-            .next()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("COUNT returned no row")))?;
-        row.get(0).map_err(|e| AppError::Internal(e.into()))?
-    };
-    if overlap_count > 0 {
-        return Err(AppError::LeaveConflict {
-            code: "LEAVE_OVERLAP",
-            message: format!(
-                "Employee {} has an overlapping active leave in range {} to {}",
-                req.employee_id, req.from_date, req.to_date
-            ),
-        });
-    }
-
-    // 5. INSERT.
-    let id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO leaves (id, employee_id, from_date, to_date, leave_type, \
-         justification, evidence_path, created_by, status, version, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 1, unixepoch(), unixepoch())",
-        params![
-            id.clone(),
-            req.employee_id.clone(),
-            req.from_date.clone(),
-            req.to_date.clone(),
-            req.leave_type.clone(),
-            req.justification.clone(),
-            evidence_relpath,
-            actor_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    get_by_id(conn, &id).await
-}
-
 pub async fn create_leave_queued(
     state: &AppState,
     actor_id: &str,
@@ -404,47 +297,6 @@ pub async fn list(
 /// Soft-delete a leave: `status='cancelled'`, `deleted_at` set, version bumped.
 /// Returns `Conflict(LEAVE_VERSION_CONFLICT)` if version stale or already
 /// cancelled; `NotFound` if the row doesn't exist at all.
-pub async fn cancel(conn: &Connection, id: &str, version: i64) -> Result<(), AppError> {
-    let affected = conn
-        .execute(
-            "UPDATE leaves SET status = 'cancelled', deleted_at = unixepoch(), \
-             version = version + 1, updated_at = unixepoch() \
-             WHERE id = ?1 AND version = ?2 AND status = 'active'",
-            params![id.to_string(), version],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    if affected == 0 {
-        // Distinguish 404 (missing id) from 409 (stale version / already cancelled).
-        let exists: i64 = {
-            let mut rows = conn
-                .query(
-                    "SELECT COUNT(*) FROM leaves WHERE id = ?1",
-                    params![id.to_string()],
-                )
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
-            let row = rows
-                .next()
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?
-                .ok_or_else(|| AppError::Internal(anyhow::anyhow!("COUNT returned no row")))?;
-            row.get(0).map_err(|e| AppError::Internal(e.into()))?
-        };
-        if exists == 0 {
-            return Err(AppError::NotFound {
-                code: "LEAVE_NOT_FOUND",
-                message: format!("Leave '{}' not found", id),
-            });
-        }
-        return Err(AppError::Conflict {
-            code: "LEAVE_VERSION_CONFLICT",
-            message: "Leave was modified concurrently or already cancelled".into(),
-        });
-    }
-    Ok(())
-}
-
 pub async fn cancel_queued(
     state: &AppState,
     id: &str,
@@ -520,7 +372,7 @@ pub async fn cancel_queued(
 ///
 /// Query semantics: `from_date <= anchor AND to_date >= anchor` — the same
 /// range predicate used in the overlap check, specialized to a single day.
-/// `LIMIT 1` because the overlap check in `create_leave` guarantees at most
+/// `LIMIT 1` because the overlap check in `create_leave_queued` guarantees at most
 /// one active leave covers any given date per employee.
 pub async fn fetch_active_leave_for_date(
     conn: &Connection,

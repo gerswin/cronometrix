@@ -11,17 +11,40 @@
 
 mod common;
 
+use std::sync::Arc;
+
+use cronometrix_api::config::Config;
 use cronometrix_api::departments::models::{
     CreateDepartmentRequest, DepartmentListQuery, UpdateDepartmentRequest,
 };
 use cronometrix_api::departments::service as dept_service;
 
+fn make_config() -> Arc<Config> {
+    Arc::new(Config {
+        database_path: "test".into(),
+        turso_url: String::new(),
+        turso_token: String::new(),
+        jwt_secret: common::TEST_JWT_SECRET.into(),
+        server_host: "127.0.0.1".into(),
+        server_port: 0,
+        turso_sync_interval_secs: 300,
+        device_creds_key: common::test_device_creds_key(),
+        timezone: "America/Caracas".parse().unwrap(),
+        license_jwt_path: String::new(),
+        do_functions_activate_url: String::new(),
+        do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
+    })
+}
+
 #[tokio::test]
 async fn create_department_happy_path_punch_mode() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let dept = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "Engineering".into(),
             base_salary_cents: 100_000,
@@ -42,10 +65,11 @@ async fn create_department_happy_path_punch_mode() {
 
 #[tokio::test]
 async fn create_department_fixed_mode_requires_duration() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let err = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let err = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "BadFixed".into(),
             base_salary_cents: 0,
@@ -66,10 +90,11 @@ async fn create_department_fixed_mode_requires_duration() {
 
 #[tokio::test]
 async fn create_department_fixed_mode_zero_duration_rejected() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let err = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let err = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "ZeroDur".into(),
             base_salary_cents: 0,
@@ -86,10 +111,11 @@ async fn create_department_fixed_mode_zero_duration_rejected() {
 
 #[tokio::test]
 async fn create_department_fixed_mode_negative_duration_rejected() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let r = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let r = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "NegDur".into(),
             base_salary_cents: 0,
@@ -105,10 +131,11 @@ async fn create_department_fixed_mode_negative_duration_rejected() {
 
 #[tokio::test]
 async fn create_department_invalid_lunch_mode_rejected() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let err = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let err = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "WeirdMode".into(),
             base_salary_cents: 0,
@@ -129,10 +156,11 @@ async fn create_department_invalid_lunch_mode_rejected() {
 
 #[tokio::test]
 async fn create_department_duplicate_name_returns_conflict() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let _first = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let _first = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "DupName".into(),
             base_salary_cents: 0,
@@ -145,8 +173,8 @@ async fn create_department_duplicate_name_returns_conflict() {
     .await
     .unwrap();
 
-    let err = dept_service::create(
-        &conn,
+    let err = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "DupName".into(),
             base_salary_cents: 0,
@@ -167,7 +195,8 @@ async fn create_department_duplicate_name_returns_conflict() {
 
 #[tokio::test]
 async fn get_by_id_404_unknown() {
-    let db = common::test_db().await;
+    let db = Arc::new(common::test_db().await);
+    let (_state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
     let conn = db.connect().unwrap();
     let err = dept_service::get_by_id(&conn, "no-such-id")
         .await
@@ -178,10 +207,11 @@ async fn get_by_id_404_unknown() {
 
 #[tokio::test]
 async fn list_departments_default_filters_to_active() {
-    let db = common::test_db().await;
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
     let conn = db.connect().unwrap();
-    let _ = dept_service::create(
-        &conn,
+    let _ = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "Active1".into(),
             base_salary_cents: 0,
@@ -212,7 +242,8 @@ async fn list_departments_default_filters_to_active() {
 
 #[tokio::test]
 async fn list_pagination_clamps() {
-    let db = common::test_db().await;
+    let db = Arc::new(common::test_db().await);
+    let (_state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
     let conn = db.connect().unwrap();
     let result = dept_service::list(
         &conn,
@@ -230,10 +261,11 @@ async fn list_pagination_clamps() {
 
 #[tokio::test]
 async fn update_with_no_fields_returns_current_state() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let dept = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "NoOpUpdate".into(),
             base_salary_cents: 0,
@@ -246,8 +278,8 @@ async fn update_with_no_fields_returns_current_state() {
     .await
     .unwrap();
 
-    let updated = dept_service::update(
-        &conn,
+    let updated = dept_service::update_queued(
+        &state,
         &dept.id,
         UpdateDepartmentRequest {
             name: None,
@@ -267,10 +299,11 @@ async fn update_with_no_fields_returns_current_state() {
 
 #[tokio::test]
 async fn update_404_when_id_unknown() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let err = dept_service::update(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let err = dept_service::update_queued(
+        &state,
         "no-such-id",
         UpdateDepartmentRequest {
             name: Some("New".into()),
@@ -290,10 +323,11 @@ async fn update_404_when_id_unknown() {
 
 #[tokio::test]
 async fn update_409_on_stale_version() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let dept = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "StaleVer".into(),
             base_salary_cents: 0,
@@ -307,8 +341,8 @@ async fn update_409_on_stale_version() {
     .unwrap();
 
     // First patch bumps the version.
-    let _ = dept_service::update(
-        &conn,
+    let _ = dept_service::update_queued(
+        &state,
         &dept.id,
         UpdateDepartmentRequest {
             name: Some("UpdatedOnce".into()),
@@ -324,8 +358,8 @@ async fn update_409_on_stale_version() {
     .unwrap();
 
     // Second patch with the now-stale version → conflict.
-    let err = dept_service::update(
-        &conn,
+    let err = dept_service::update_queued(
+        &state,
         &dept.id,
         UpdateDepartmentRequest {
             name: Some("UpdatedTwice".into()),
@@ -348,10 +382,11 @@ async fn update_409_on_stale_version() {
 
 #[tokio::test]
 async fn update_validates_lunch_when_changing_mode() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let dept = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "ChangeMode".into(),
             base_salary_cents: 0,
@@ -365,8 +400,8 @@ async fn update_validates_lunch_when_changing_mode() {
     .unwrap();
 
     // Try to switch to "fixed" without supplying lunch_duration_min — must reject.
-    let err = dept_service::update(
-        &conn,
+    let err = dept_service::update_queued(
+        &state,
         &dept.id,
         UpdateDepartmentRequest {
             name: None,
@@ -385,10 +420,11 @@ async fn update_validates_lunch_when_changing_mode() {
 
 #[tokio::test]
 async fn update_can_change_each_individual_field() {
-    let db = common::test_db().await;
-    let conn = db.connect().unwrap();
-    let dept = dept_service::create(
-        &conn,
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept = dept_service::create_queued(
+        &state,
         CreateDepartmentRequest {
             name: "FieldByField".into(),
             base_salary_cents: 1000,
@@ -402,8 +438,8 @@ async fn update_can_change_each_individual_field() {
     .unwrap();
 
     // Change name + salary, keep the rest.
-    let updated = dept_service::update(
-        &conn,
+    let updated = dept_service::update_queued(
+        &state,
         &dept.id,
         UpdateDepartmentRequest {
             name: Some("NewName".into()),
