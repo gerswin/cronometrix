@@ -1,15 +1,15 @@
 /**
  * Reports (Reportes) E2E spec — Plan 09-10 (D-03 UAT depth)
  *
- * Covers: reports page renders, period selector, Excel export content
+ * Covers: reports page renders, period tabs, Excel export content
  * verification (XLSX.read + cell assertions), PDF content verification
  * (API-driven JSON payload → pdf-parse via lib/reports/pdf contract),
  * filter combinations, RBAC (Viewer cannot reach export buttons),
  * audit assertion for REPORT_EXPORT.
  *
  * Implementation notes:
- *   - Reports page requires "Emitir Reporte" click BEFORE ExportButtons appear.
- *     ExportButtons are conditionally rendered only when reportQ.data exists.
+ *   - Reports auto-fetch when the selected period tab changes. Export controls
+ *     remain rendered and are disabled until report data exists.
  *   - Excel export: POST /reports/excel → binary XLSX blob → programmatic <a>
  *     click. For content verification, direct API call via request fixture is
  *     more reliable than intercepting blob downloads.
@@ -32,6 +32,7 @@ import * as XLSX from 'xlsx'
 import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
 import { resetMutableTables, getAudit, pushHikvisionEvent } from './fixtures/api'
+import { SEL } from './fixtures/selectors'
 
 const API_BASE = 'http://127.0.0.1:4001/api/v1'
 
@@ -73,13 +74,43 @@ async function getReportExcel(
   })
 }
 
-// Use a broad date range that includes seeded events regardless of when tests run.
-// Seed events use the current date (unixepoch()) so any weekly/monthly range
-// that spans "today" will capture them.
-const TODAY = new Date()
-const YEAR = TODAY.getFullYear()
-const MONTH = String(TODAY.getMonth() + 1).padStart(2, '0')
-const DAY = String(TODAY.getDate()).padStart(2, '0')
+async function restartEntryDevice(
+  request: import('@playwright/test').APIRequestContext,
+): Promise<void> {
+  const currentResponse = await request.get(`${API_BASE}/devices/dev-entry`)
+  expect(currentResponse.ok()).toBeTruthy()
+  const current = await currentResponse.json()
+  const temporaryResponse = await request.patch(`${API_BASE}/devices/dev-entry`, {
+    data: { version: current.version, port: 4402 },
+  })
+  expect(temporaryResponse.ok()).toBeTruthy()
+  const temporary = await temporaryResponse.json()
+  const restoredResponse = await request.patch(`${API_BASE}/devices/dev-entry`, {
+    data: { version: temporary.version, port: 4400 },
+  })
+  expect(restoredResponse.ok()).toBeTruthy()
+}
+
+function currentCaracasDate(): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Caracas',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const year = parts.find((part) => part.type === 'year')?.value
+  const month = parts.find((part) => part.type === 'month')?.value
+  const day = parts.find((part) => part.type === 'day')?.value
+  if (!year || !month || !day) throw new Error('Could not derive current Caracas date')
+  return `${year}-${month}-${day}`
+}
+
+function moveEventToDate(xml: string, date: string): string {
+  return xml.replace(/<dateTime>\d{4}-\d{2}-\d{2}T/, `<dateTime>${date}T`)
+}
+
+const TODAY = currentCaracasDate()
+const [YEAR, MONTH, DAY] = TODAY.split('-')
 const FROM_DATE = `${YEAR}-${MONTH}-01`        // first of current month
 const TO_DATE   = `${YEAR}-${MONTH}-${DAY}`    // today
 
@@ -90,6 +121,9 @@ const TO_DATE   = `${YEAR}-${MONTH}-${DAY}`    // today
 test.describe('Reports (Reportes) — D-03 export verification', () => {
   test.beforeEach(async ({ request }) => {
     await resetMutableTables(request)
+    // The E2E seed runs after the backend starts. Restarting the seeded device
+    // emits the lifecycle signal that attaches its alertStream task.
+    await restartEntryDevice(request)
     // Seed Hikvision events so daily_records exist for the report engine.
     const fixtures = path.resolve('e2e/fixtures/hikvision-events')
     const [anaIn, anaOut, luisIn] = await Promise.all([
@@ -97,19 +131,41 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
       fs.readFile(path.join(fixtures, 'ana-salida.xml'), 'utf8'),
       fs.readFile(path.join(fixtures, 'luis-entrada.xml'), 'utf8'),
     ])
-    await pushHikvisionEvent(request, anaIn)
-    await pushHikvisionEvent(request, anaOut)
-    await pushHikvisionEvent(request, luisIn)
+    const pushes = []
+    pushes.push(await pushHikvisionEvent(request, moveEventToDate(anaIn, TODAY)))
+    pushes.push(await pushHikvisionEvent(request, moveEventToDate(anaOut, TODAY)))
+    pushes.push(await pushHikvisionEvent(request, moveEventToDate(luisIn, TODAY)))
+    for (const push of pushes) expect(push.ok()).toBe(true)
+
+    // The mock queues events asynchronously. Do not let an empty report pass:
+    // wait until at least one seeded employee has reached the report engine.
+    await expect.poll(
+      async () => {
+        const response = await getReportJson(request, 'monthly', FROM_DATE, TO_DATE)
+        if (!response.ok()) return ''
+        const body = await response.json()
+        const names = (body.rows ?? []).map((row: { nombre: string }) => row.nombre)
+        return names.join('|')
+      },
+      {
+        timeout: 15_000,
+        message: 'Monthly report never contained Ana or Luis after event ingestion',
+      }
+    ).toMatch(/Ana|Luis/i)
   })
 
-  // ── T-01: Page renders with period selector ──────────────────────────────
-  test('renders Reportes page with period selector and Emitir Reporte', async ({ page }) => {
+  // ── T-01: Page renders with current auto-fetch controls ──────────────────
+  test('renders Reportes page with period tabs and export controls', async ({ page }) => {
     await page.goto('/reports')
-    await expect(page.getByText('Reportes')).toBeVisible()
-    // Period selector (aria-label "Tipo de período")
-    await expect(page.getByRole('combobox', { name: /Tipo de período/i })).toBeVisible()
-    // Emitir Reporte button (always visible for Admin)
-    await expect(page.getByRole('button', { name: /Emitir Reporte/i })).toBeVisible()
+    await expect(
+      page.getByRole('heading', { name: 'Reportes y Pre-Nómina', exact: true })
+    ).toBeVisible()
+    await expect(page.getByTestId(SEL.reportPeriodTab('biweekly'))).toBeVisible()
+    await expect(page.getByTestId(SEL.reportPeriodTab('weekly'))).toBeVisible()
+    await expect(page.getByTestId(SEL.reportPeriodTab('monthly'))).toBeVisible()
+    await expect(page.getByTestId(SEL.exportExcelBtn)).toBeVisible()
+    await expect(page.getByTestId(SEL.exportPdfBtn)).toBeVisible()
+    await expect(page.getByTestId(SEL.exportCsvBtn)).toBeVisible()
   })
 
   // ── T-02: JSON report API returns rows with employee name ─────────────────
@@ -120,15 +176,10 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
     expect(r.status()).toBe(200)
     const body = await r.json()
     expect(body).toHaveProperty('rows')
-    // If events were ingested, rows will contain Ana / Luis
     const rows: Array<{ nombre: string }> = body.rows ?? []
-    // Rows may be empty if the time-calculation engine hasn't processed events yet;
-    // still assert the payload shape is correct.
-    expect(Array.isArray(rows)).toBe(true)
-    if (rows.length > 0) {
-      const nombres = rows.map((r) => r.nombre)
-      expect(nombres.some((n) => /Ana|Luis|María/i.test(n))).toBe(true)
-    }
+    expect(rows.length).toBeGreaterThan(0)
+    const nombres = rows.map((row) => row.nombre)
+    expect(nombres.some((name) => /Ana|Luis/i.test(name))).toBe(true)
   })
 
   // ── T-03: Excel export API returns a valid XLSX binary with content ───────
@@ -146,13 +197,14 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
     const sheet = wb.Sheets[wb.SheetNames[0]]
     expect(sheet).toBeTruthy()
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { header: 1 })
-    // At minimum there must be a header row
+    // Branding rows precede the tabular header, so discover the row by its
+    // canonical labels instead of assuming row zero.
     expect(rows.length).toBeGreaterThan(0)
-    // Header row should contain expected column labels
-    const headerRow = rows[0] as unknown as string[]
-    const headerStr = headerRow.join(',')
-    // Verify at least one known column header from COLUMN_HEADERS in pdf.ts
-    expect(headerStr).toMatch(/Nombre|Cédula|Depto|Cargo/i)
+    const headerRow = rows.find((row) => {
+      const labels = (row as unknown as string[]).map(String)
+      return labels.includes('Cédula') && labels.includes('Nombre')
+    })
+    expect(headerRow).toBeTruthy()
   })
 
   // ── T-04: Excel export content includes seeded employee when data exists ──
@@ -162,14 +214,14 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
     const buf = await r.body()
     const wb = XLSX.read(buf, { type: 'buffer' })
     const sheet = wb.Sheets[wb.SheetNames[0]]
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet)
-    // If the time-calculation engine produced rows, assert employee name is present
-    if (rows.length > 0) {
-      const allValues = JSON.stringify(rows)
-      expect(allValues).toMatch(/Ana|Luis|María/)
-    }
-    // Either way, the XLSX must be structurally valid (sheet_to_json did not throw)
-    expect(Array.isArray(rows)).toBe(true)
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { header: 1 })
+    const headerIndex = rows.findIndex((row) => {
+      const labels = (row as unknown as string[]).map(String)
+      return labels.includes('Cédula') && labels.includes('Nombre')
+    })
+    expect(headerIndex).toBeGreaterThanOrEqual(0)
+    const dataRows = rows.slice(headerIndex + 1)
+    expect(JSON.stringify(dataRows)).toMatch(/Ana Pérez|Luis García/)
   })
 
   // ── T-05: JSON report API returns payload with known fields for PDF rendering ─
@@ -182,12 +234,15 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
     expect(r.status()).toBe(200)
     const body = await r.json()
     // Payload must have the top-level structure renderReportPdf expects
+    expect(body).toHaveProperty('header')
     expect(body).toHaveProperty('rows')
-    expect(body).toHaveProperty('period')
-    // Period fields
-    const period = body.period ?? {}
-    expect(period).toHaveProperty('from_date')
-    expect(period).toHaveProperty('to_date')
+    expect(body).toHaveProperty('dept_subtotals')
+    expect(body).toHaveProperty('grand_total')
+    expect(body).toHaveProperty('departments_in_order')
+    expect(body.header).toHaveProperty('from_date')
+    expect(body.header).toHaveProperty('to_date')
+    expect(typeof body.header.from_date).toBe('string')
+    expect(typeof body.header.to_date).toBe('string')
     // If rows exist, each row must have 'nombre' (used as PDF table column "Nombre")
     const rows: Array<{ nombre: string }> = body.rows ?? []
     for (const row of rows.slice(0, 3)) {
@@ -218,52 +273,40 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
     }).toBe(true)
   })
 
-  // ── T-07: UI — Emitir Reporte triggers report generation ─────────────────
-  // Verifies the full UI flow: period selector → Emitir Reporte → ExportButtons appear.
-  test('UI: Emitir Reporte button triggers report; ExportButtons appear', async ({ page }) => {
+  // ── T-07: UI — period change auto-fetches report data ────────────────────
+  test('UI: weekly period tab auto-fetches and enables export controls', async ({ page }) => {
     await page.goto('/reports')
-    // Select weekly period
-    const periodSelect = page.getByRole('combobox', { name: /Tipo de período/i })
-    await periodSelect.selectOption('weekly')
-    // Click Emitir Reporte
-    await page.getByRole('button', { name: /Emitir Reporte/i }).click()
-    // Wait for ExportButtons to appear (rendered only when reportQ.data exists)
-    await expect(
-      page.getByRole('button', { name: /Exportar Excel/i })
-    ).toBeVisible({ timeout: 30_000 })
-    await expect(
-      page.getByRole('button', { name: /Exportar PDF/i })
-    ).toBeVisible()
+    const weeklyTab = page.getByTestId(SEL.reportPeriodTab('weekly'))
+    await weeklyTab.click()
+    await expect(weeklyTab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId(SEL.exportExcelBtn)).toBeEnabled({ timeout: 30_000 })
+    await expect(page.getByTestId(SEL.exportPdfBtn)).toBeEnabled()
+    await expect(page.getByTestId(SEL.exportCsvBtn)).toBeEnabled()
   })
 
   // ── T-08: UI — ExportButtons labels in Spanish ───────────────────────────
   // Verifies D-19: UI copy is Spanish.
   test('UI: Export buttons show Spanish labels', async ({ page }) => {
     await page.goto('/reports')
-    await page.getByRole('button', { name: /Emitir Reporte/i }).click()
-    await expect(
-      page.getByRole('button', { name: /Exportar Excel/i })
-    ).toBeVisible({ timeout: 30_000 })
-    // Exact label as rendered by ExportButtons component
-    const excelBtn = page.getByRole('button', { name: /Exportar Excel/i })
-    await expect(excelBtn).toBeVisible()
-    const pdfBtn = page.getByRole('button', { name: /Exportar PDF/i })
-    await expect(pdfBtn).toBeVisible()
+    await expect(page.getByTestId(SEL.exportExcelBtn)).toHaveText('Excel')
+    await expect(page.getByTestId(SEL.exportPdfBtn)).toHaveText('PDF')
+    await expect(page.getByTestId(SEL.exportCsvBtn)).toHaveText('CSV')
   })
 
-  // ── T-09: RBAC — Viewer cannot see Emitir Reporte or Export buttons ───────
+  // ── T-09: RBAC — Viewer cannot see period or export controls ──────────────
   // Per Phase 5 D-20: Admin + Supervisor only. canExport = role === 'admin' || role === 'supervisor'.
-  // Viewer role sees neither the Emitir Reporte button nor ExportButtons.
-  test('Viewer cannot see Emitir Reporte or ExportButtons (RBAC D-20)', async ({ browser }) => {
+  // Viewer role sees neither the current period tabs nor export controls.
+  test('Viewer cannot see report period or export controls (RBAC D-20)', async ({ browser }) => {
     const ctx = await newRoleContext(browser, 'viewer')
     const page = await ctx.newPage()
     await page.goto('/reports')
-    // Page may redirect or show access-restricted — in either case, no export buttons
-    // are visible. Allow up to 5 seconds for navigation to settle.
-    await page.waitForTimeout(2_000)
-    await expect(page.getByRole('button', { name: /Emitir Reporte/i })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: /Exportar Excel/i })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: /Exportar PDF/i })).toHaveCount(0)
+    await expect(page.getByText('Acceso restringido.', { exact: true })).toBeVisible()
+    await expect(page.getByTestId(SEL.reportPeriodTab('biweekly'))).toHaveCount(0)
+    await expect(page.getByTestId(SEL.reportPeriodTab('weekly'))).toHaveCount(0)
+    await expect(page.getByTestId(SEL.reportPeriodTab('monthly'))).toHaveCount(0)
+    await expect(page.getByTestId(SEL.exportExcelBtn)).toHaveCount(0)
+    await expect(page.getByTestId(SEL.exportPdfBtn)).toHaveCount(0)
+    await expect(page.getByTestId(SEL.exportCsvBtn)).toHaveCount(0)
     await ctx.close()
   })
 })

@@ -73,13 +73,16 @@ export const SEL = {
   newEmpForm: 'new-employee-form',
   newEmpSubmit: 'new-employee-submit',
   empActions: (id: string) => `emp-actions-${id}`,
-  empActionEdit: (id: string) => `emp-action-edit-${id}`,
-  empActionDeactivate: (id: string) => `emp-action-deactivate-${id}`,
+  empActionEdit: (id: string) => `employee-edit-${id}`,
+  empActionDeactivate: (id: string) => `employee-deactivate-${id}`,
 
   // Reports page
   reportsPage: 'reports-page',
-  exportExcelBtn: 'export-excel-btn',
-  exportPdfBtn: 'export-pdf-btn',
+  reportPeriodTab: (period: 'biweekly' | 'weekly' | 'monthly') =>
+    `period-tab-${period}`,
+  exportExcelBtn: 'export-excel',
+  exportPdfBtn: 'export-pdf',
+  exportCsvBtn: 'export-csv',
 
   // RBAC / Access denied
   accessRestricted: 'access-restricted',

@@ -33,7 +33,9 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
   // ── T-01: List renders with Spanish heading and seeded employees ──────────
   test('lists seeded employees with Spanish heading', async ({ page }) => {
     await page.goto('/employees')
-    await expect(page.getByText('Empleados')).toBeVisible()
+    await expect(
+      page.getByRole('heading', { name: 'Gestión de Empleados', exact: true })
+    ).toBeVisible()
     await expect(page.getByText('Ana Pérez')).toBeVisible()
     await expect(page.getByText('Luis García')).toBeVisible()
   })
@@ -67,7 +69,9 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
     await page.getByTestId(SEL.newEmpButton).click()
     await expect(page.getByTestId(SEL.newEmpForm)).toBeVisible({ timeout: 5_000 })
     // Form title
-    await expect(page.getByText('Nuevo Empleado')).toBeVisible()
+    await expect(
+      page.getByRole('heading', { name: 'Registrar Nuevo Empleado', exact: true })
+    ).toBeVisible()
   })
 
   // ── T-05: Validation — missing name shows form error ─────────────────────
@@ -93,17 +97,19 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
     await page.getByTestId(SEL.newEmpButton).click()
     await expect(page.getByTestId(SEL.newEmpForm)).toBeVisible({ timeout: 5_000 })
 
-    // Fill mandatory fields matching the dialog's label ids
-    await page.locator('#new-emp-name').fill('Test Empleado Plan09')
-    await page.locator('#new-emp-code').fill('EMP_TEST_09')
+    // Fill mandatory fields through their accessible labels.
+    await page.getByLabel('Nombre completo').fill('Test Empleado Plan09')
+    await page.getByLabel('Cédula').fill('EMP_TEST_09')
     // Department — select Producción (first non-empty option in the seeded list)
-    await page.locator('#new-emp-dept').selectOption({ label: 'Producción' })
+    await page.getByLabel(/^Departamento/).selectOption({ label: 'Producción' })
 
     await page.getByTestId(SEL.newEmpSubmit).click()
 
     // Dialog closes and new employee appears in the refreshed list
     await expect(page.getByTestId(SEL.newEmpForm)).toBeHidden({ timeout: 10_000 })
-    await expect(page.getByText('Test Empleado Plan09')).toBeVisible({ timeout: 10_000 })
+    await expect(
+      page.getByText('Test Empleado Plan09', { exact: true })
+    ).toBeVisible({ timeout: 10_000 })
 
     // Audit assertion — employees INSERT
     await expect.poll(
@@ -159,8 +165,8 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
     ).toBeGreaterThanOrEqual(1)
   })
 
-  // ── T-08: Deactivate employee → audit DELETE (soft delete) entry ──────────
-  test('deactivate employee → audit DELETE (soft delete) entry', async ({ page, request }) => {
+  // ── T-08: Deactivate employee → audit UPDATE (soft delete) entry ──────────
+  test('deactivate employee → audit UPDATE (soft delete) entry', async ({ page, request }) => {
     await page.goto('/employees')
     // Click the deactivate button for emp-luis
     await expect(page.getByTestId(SEL.empActionDeactivate('emp-luis'))).toBeVisible({ timeout: 10_000 })
@@ -171,19 +177,20 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
     await expect(confirmBtn).toBeVisible({ timeout: 5_000 })
     await confirmBtn.click()
 
-    // Audit assertion — employees DELETE (soft delete via DELETE /employees/:id)
+    // The DELETE endpoint performs an UPDATE to status=inactive, so the SQL
+    // trigger records the mutation as UPDATE.
     await expect.poll(
       async () => {
         const r = await getAudit(request, {
           record_id: 'emp-luis',
-          operation: 'DELETE',
+          operation: 'UPDATE',
           limit: 5,
         })
         if (r.status() !== 200) return null
         const body = await r.json()
         return body.total ?? body.data?.length ?? 0
       },
-      { timeout: 15_000, message: 'Expected audit_log entry for employees DELETE on emp-luis' },
+      { timeout: 15_000, message: 'Expected audit_log entry for employees UPDATE on emp-luis' },
     ).toBeGreaterThanOrEqual(1)
   })
 

@@ -26,7 +26,8 @@
  *
  * Seed data (seed_e2e.rs):
  *   Departments: dept-prod (Producción), dept-admin (Administración), dept-rrhh
- *   All mutations use the e2e_admin user (actor_id = 'e2e-admin-id')
+ *   SQL-trigger mutations have actor_id = null; app-code report exports capture
+ *   the authenticated e2e_admin user (actor_id = 'e2e-admin-id').
  */
 
 import { test, expect, newRoleContext } from './fixtures/auth'
@@ -44,7 +45,9 @@ test.describe('Audit log page (D-04 UAT)', () => {
   // ── T-01: Page structure renders correctly after reset ─────────────────────
   test('renders Auditoría header + filters + table container', async ({ page }) => {
     await page.goto('/audit')
-    await expect(page.getByText('Auditoría')).toBeVisible()
+    await expect(
+      page.getByRole('heading', { name: 'Auditoría', exact: true })
+    ).toBeVisible()
     await expect(page.getByTestId('audit-page')).toBeVisible()
     await expect(page.getByTestId('audit-filter-actor')).toBeVisible()
     await expect(page.getByTestId('audit-filter-from')).toBeVisible()
@@ -80,15 +83,58 @@ test.describe('Audit log page (D-04 UAT)', () => {
     page,
     request,
   }) => {
-    // Seed a mutation as the e2e_admin (default fixture role)
-    await request.post(`${API_BASE}/employees`, {
+    // Keep a trigger-created row with actor_id = null. It must be excluded by
+    // the actor filter below.
+    const triggerMutation = await request.post(`${API_BASE}/employees`, {
       data: { name: 'Admin Made', employee_code: 'ADM001', department_id: 'dept-prod' },
     })
+    expect(triggerMutation.ok()).toBe(true)
 
-    // Pre-verify the audit endpoint sees the row before the UI loads
-    const before = await getAudit(request, { limit: 50 })
-    const beforeBody = await before.json()
-    expect(beforeBody.total).toBeGreaterThan(0)
+    // Report exports are audited in app code, so the actor comes from the
+    // authenticated admin JWT instead of being lost in a SQL trigger.
+    const today = new Date()
+    const year = today.getFullYear()
+    const month = String(today.getMonth() + 1).padStart(2, '0')
+    const day = String(today.getDate()).padStart(2, '0')
+    const reportExport = await request.post(`${API_BASE}/reports/json`, {
+      data: {
+        period_type: 'monthly',
+        from_date: `${year}-${month}-01`,
+        to_date: `${year}-${month}-${day}`,
+        include_inactive: false,
+      },
+    })
+    expect(reportExport.ok()).toBe(true)
+
+    let nullActorRowId = ''
+    await expect.poll(
+      async () => {
+        const before = await getAudit(request, { limit: 50 })
+        if (!before.ok()) return false
+        const beforeBody = await before.json()
+        const entries: Array<{
+          id: string
+          table_name: string
+          operation: string
+          actor_id: string | null
+        }> = beforeBody.data ?? []
+        const nullActorRow = entries.find(
+          (entry) => entry.table_name === 'employees' && entry.actor_id === null
+        )
+        const adminActorRow = entries.find(
+          (entry) =>
+            entry.table_name === 'reports' &&
+            entry.operation === 'REPORT_EXPORT' &&
+            entry.actor_id === 'e2e-admin-id'
+        )
+        nullActorRowId = nullActorRow?.id ?? ''
+        return Boolean(nullActorRow && adminActorRow)
+      },
+      {
+        timeout: 10_000,
+        message: 'Expected both a null-actor trigger row and an admin report export row',
+      }
+    ).toBe(true)
 
     await page.goto('/audit')
 
@@ -96,15 +142,14 @@ test.describe('Audit log page (D-04 UAT)', () => {
     // Explicit visibility assertion — uses toBeVisible timeout, not sleep.
     await expect(page.getByTestId('audit-table')).toBeVisible({ timeout: 10_000 })
 
-    // Sanity gate (W6 mirror): actor dropdown must have at least one option
-    // beyond the default "Actor" placeholder. Fails fast if OPTION A derivation broke.
+    const actorFilter = page.getByTestId('audit-filter-actor')
     await expect(
-      page.getByTestId('audit-filter-actor').locator('option')
-    ).not.toHaveCount(0)
+      actorFilter.locator('option[value="e2e-admin-id"]')
+    ).toHaveCount(1, { timeout: 10_000 })
 
     // Select by actor_id (W6 OPTION A: value = actor_id string "e2e-admin-id").
     // See 09-05-SUMMARY.md: actor_id is users.id; the option value IS the actor_id.
-    await page.getByTestId('audit-filter-actor').selectOption('e2e-admin-id')
+    await actorFilter.selectOption('e2e-admin-id')
 
     // Explicit-wait for table to settle after filter change. Poll until table is
     // visible AND either rows exist OR empty-state is shown (expect.poll pattern).
@@ -121,10 +166,15 @@ test.describe('Audit log page (D-04 UAT)', () => {
       { timeout: 5_000, message: 'audit table did not settle after actor filter change' }
     ).toBe(true)
 
-    // At least one row must be visible (admin made the mutation above)
+    // The authenticated report export remains, while the null-actor trigger row
+    // is excluded. Every rendered actor cell must match the selected actor.
     const rows = page.locator('[data-testid^="audit-row-"]')
-    if ((await rows.count()) > 0) {
-      await expect(rows.first()).toBeVisible()
+    await expect(rows.first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId(`audit-row-${nullActorRowId}`)).toHaveCount(0)
+    const rowCount = await rows.count()
+    expect(rowCount).toBeGreaterThan(0)
+    for (let index = 0; index < rowCount; index += 1) {
+      await expect(rows.nth(index).locator('td').nth(1)).toHaveText('e2e-admin-id')
     }
   })
 
