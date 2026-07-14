@@ -7,7 +7,7 @@
 # The same commands are invoked by .github/workflows/ci.yml so local and CI runs
 # produce the same numbers (within toolchain version tolerance).
 
-.PHONY: test-ci-config check-db-write-queue coverage coverage-backend coverage-frontend
+.PHONY: test-ci-config check-db-write-queue write-queue-load-profiles coverage coverage-backend coverage-frontend
 
 test-ci-config:
 	bash scripts/tests/test-ci-node-version-files.sh
@@ -19,6 +19,10 @@ coverage: test-ci-config coverage-backend coverage-frontend
 
 check-db-write-queue:
 	python3 scripts/check_db_write_queue.py backend/src
+
+write-queue-load-profiles:
+	BASE_URL=http://127.0.0.1:4001 DURATION_SECONDS=60 \
+	  bash backend/scripts/run_write_queue_load_profiles.sh
 
 coverage-backend: check-db-write-queue
 	cd backend && cargo llvm-cov nextest --branch --all-features \

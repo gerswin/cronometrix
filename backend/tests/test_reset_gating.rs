@@ -73,6 +73,31 @@ async fn test_reset_returns_404_without_e2e_capability() {
 }
 
 #[tokio::test]
+async fn test_reset_returns_404_when_only_reset_capability_is_enabled() {
+    assert_eq!(
+        post_reset(false, true).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn handler_defense_in_depth_checks_each_capability() {
+    for (e2e_enabled, reset_enabled) in [(false, false), (false, true), (true, false)] {
+        let db = common::test_db().await;
+        let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), test_config());
+        state.e2e_enabled = e2e_enabled;
+        state.test_reset_enabled = reset_enabled;
+
+        assert_eq!(
+            cronometrix_api::test_reset::test_reset(axum::extract::State(state))
+                .await
+                .unwrap_err(),
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_reset_returns_404_when_reset_capability_is_disabled() {
     assert_eq!(
         post_reset(true, false).await.status(),

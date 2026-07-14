@@ -218,6 +218,32 @@ async fn after_commit_is_dropped_without_running_when_commit_fails() {
 }
 
 #[tokio::test]
+async fn panicking_after_commit_callback_is_isolated_from_the_worker() {
+    let db = test_db().await;
+    let (queue, rx) = DbWriteQueue::channel(config(8, Duration::from_secs(1)));
+    let worker = tokio::spawn(run_write_worker(db, rx));
+
+    let value = queue
+        .transact("panicking-post-commit", |tx| {
+            tx.after_commit(|| panic!("expected callback panic"));
+            Box::pin(async { Ok(42_u8) })
+        })
+        .await
+        .unwrap();
+    assert_eq!(value, 42);
+    assert_eq!(
+        queue
+            .job("worker-still-alive", |_conn| Box::pin(async { Ok(7_u8) }))
+            .await
+            .unwrap(),
+        7
+    );
+
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn capacity_one_queue_times_out_the_second_producer_as_busy() {
     let (queue, _rx) = DbWriteQueue::channel(config(1, Duration::from_millis(10)));
     let first_queue = queue.clone();
@@ -454,6 +480,29 @@ async fn enqueue_after_close_returns_closed() {
         .await
         .unwrap_err();
     assert!(matches!(error, DbWriteError::Closed));
+
+    assert!(matches!(queue.flush().await, Err(DbWriteError::Closed)));
+    assert!(matches!(
+        queue.close_and_flush().await,
+        Err(DbWriteError::Closed)
+    ));
+}
+
+#[tokio::test]
+async fn workers_db_write_wrapper_drains_and_stops() {
+    let db = test_db().await;
+    let (queue, rx) = DbWriteQueue::channel(config(2, Duration::from_secs(1)));
+    let worker = tokio::spawn(cronometrix_api::workers::db_write::run(db, rx));
+
+    assert_eq!(
+        queue
+            .job("wrapper-round-trip", |_conn| Box::pin(async { Ok(7_u8) }))
+            .await
+            .unwrap(),
+        7
+    );
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
 }
 
 #[tokio::test]

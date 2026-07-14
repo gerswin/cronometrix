@@ -81,6 +81,27 @@ async fn shutdown_signal_helper_accepts_sigterm() {
     assert_eq!(source, ShutdownSource::Terminate);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_signal_observes_process_sigterm() {
+    let listener = tokio::spawn(cronometrix_api::workers::shutdown_signal());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &std::process::id().to_string()])
+        .status()
+        .expect("send SIGTERM to test process");
+    assert!(status.success());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), listener)
+            .await
+            .expect("signal listener completed")
+            .expect("signal listener task did not panic")
+            .expect("signal listener installed"),
+        ShutdownSource::Terminate
+    );
+}
+
 async fn seed_employee_inactive(db: &libsql::Database) -> String {
     let conn = db.connect().unwrap();
     let dept_id = Uuid::new_v4().to_string();

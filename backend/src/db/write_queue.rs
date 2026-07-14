@@ -530,10 +530,8 @@ impl DbWriteQueue {
                 .fetch_add(1, Ordering::Relaxed);
             return Err(DbWriteError::Closed);
         }
-        if closing {
-            if self.inner.closed.swap(true, Ordering::AcqRel) {
-                return Err(DbWriteError::Closed);
-            }
+        if closing && self.inner.closed.swap(true, Ordering::AcqRel) {
+            return Err(DbWriteError::Closed);
         }
 
         let reserve = self.inner.tx.clone().reserve_owned();

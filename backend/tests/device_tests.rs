@@ -379,6 +379,35 @@ async fn viewer_can_list_devices() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn list_devices_filters_and_validates_direction() {
+    let db = common::test_db().await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_admin_id, token) = admin_token();
+    let _ = register_device(&app, &token, "Entry", "10.0.2.10", 8443, "https").await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/devices?direction=entry")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp.into_body()).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["direction"], "entry");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/devices?direction=sideways")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
 // =============================================================================
 // DEV-03: Command dispatch (wiremock)
 // =============================================================================
@@ -894,6 +923,70 @@ async fn patch_requires_correct_version() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body = body_to_json(resp.into_body()).await;
     assert_eq!(body["error"]["code"], "VERSION_CONFLICT");
+}
+
+#[tokio::test]
+async fn empty_patch_returns_the_current_device_without_bumping_version() {
+    let db = common::test_db().await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_admin_id, token) = admin_token();
+    let created = register_device(&app, &token, "Noop", "10.0.4.20", 8443, "https").await;
+    let id = created["id"].as_str().unwrap();
+
+    let patch_req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/api/v1/devices/{id}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::from(json!({"version": 1}).to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(patch_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp.into_body()).await;
+    assert_eq!(body["version"], 1);
+    assert_eq!(body["name"], "Noop");
+}
+
+#[tokio::test]
+async fn patch_updates_connection_and_lifecycle_fields_together() {
+    let db = common::test_db().await;
+    let (app, _tmp) = build_test_app(db).await;
+    let (_admin_id, token) = admin_token();
+    let created = register_device(&app, &token, "Before", "10.0.4.21", 8443, "https").await;
+    let id = created["id"].as_str().unwrap();
+
+    let patch_req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/api/v1/devices/{id}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::from(
+            json!({
+                "name": "After",
+                "ip": "10.0.4.22",
+                "port": 8080,
+                "scheme": "http",
+                "username": "operator",
+                "direction": "exit",
+                "allow_insecure_tls": false,
+                "status": "inactive",
+                "version": 1
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(patch_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp.into_body()).await;
+    assert_eq!(body["name"], "After");
+    assert_eq!(body["ip"], "10.0.4.22");
+    assert_eq!(body["port"], 8080);
+    assert_eq!(body["scheme"], "http");
+    assert_eq!(body["username"], "operator");
+    assert_eq!(body["direction"], "exit");
+    assert_eq!(body["allow_insecure_tls"], false);
+    assert_eq!(body["status"], "inactive");
+    assert_eq!(body["version"], 2);
 }
 
 #[tokio::test]

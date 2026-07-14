@@ -445,8 +445,7 @@ async fn push_enrollment_device(
     call_timeout: Duration,
 ) -> anyhow::Result<()> {
     // Find the push row id for this (enrollment_id, device_id) pair.
-    let (push_id, authorized) = if let Some((push_id, attempt)) = committed {
-        drop(attempt);
+    let (push_id, authorized) = if let Some((push_id, _)) = committed {
         (push_id, true)
     } else {
         let conn = state

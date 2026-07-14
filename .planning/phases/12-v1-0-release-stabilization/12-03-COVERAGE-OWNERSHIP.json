@@ -1,0 +1,50 @@
+{
+  "plan": "12-03",
+  "base_sha": "c3fe7935a8ccccc0b15826bcb82d413d22e83188",
+  "thresholds": {
+    "backend": {
+      "lines": 70,
+      "branches": 60
+    },
+    "frontend": {
+      "statements": 70,
+      "branches": 60,
+      "functions": 70,
+      "lines": 70
+    }
+  },
+  "backend": [
+    "backend/src/auth/handlers.rs",
+    "backend/src/daily_records/handlers.rs",
+    "backend/src/daily_records/service.rs",
+    "backend/src/db/mod.rs",
+    "backend/src/db/write_queue.rs",
+    "backend/src/departments/service.rs",
+    "backend/src/devices/service.rs",
+    "backend/src/employees/service.rs",
+    "backend/src/enrollments/dispatcher.rs",
+    "backend/src/enrollments/handlers.rs",
+    "backend/src/enrollments/pusher.rs",
+    "backend/src/enrollments/service.rs",
+    "backend/src/errors.rs",
+    "backend/src/events/service.rs",
+    "backend/src/leaves/handlers.rs",
+    "backend/src/leaves/service.rs",
+    "backend/src/recompute/worker.rs",
+    "backend/src/reports/handlers.rs",
+    "backend/src/reports/service.rs",
+    "backend/src/rules/handlers.rs",
+    "backend/src/setup/handlers.rs",
+    "backend/src/storage/atomic_file.rs",
+    "backend/src/supervisor/status.rs",
+    "backend/src/supervisor/watchdog.rs",
+    "backend/src/tenant_info/service.rs",
+    "backend/src/test_reset/mod.rs",
+    "backend/src/users/service.rs",
+    "backend/src/workers/capture_cleanup.rs",
+    "backend/src/workers/db_write.rs",
+    "backend/src/workers/mod.rs",
+    "backend/src/workers/purge.rs"
+  ],
+  "frontend": []
+}

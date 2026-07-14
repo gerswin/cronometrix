@@ -17,6 +17,14 @@ pub const CAPTURING_TTL: Duration = Duration::from_secs(45);
 pub const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
 pub const CLEANUP_CADENCE: Duration = Duration::from_secs(30);
 
+type ExpiredCapture = (
+    String,
+    String,
+    Option<PathBuf>,
+    Option<FileIdentity>,
+    Instant,
+);
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CleanupStats {
     pub timed_out: usize,
@@ -89,13 +97,7 @@ where
         }
     }
 
-    let expired: Vec<(
-        String,
-        String,
-        Option<PathBuf>,
-        Option<FileIdentity>,
-        Instant,
-    )> = {
+    let expired: Vec<ExpiredCapture> = {
         let entries = state.captures.read().await;
         entries
             .iter()
@@ -274,7 +276,7 @@ pub async fn shutdown_captures(state: &AppState) -> anyhow::Result<()> {
                 Ok(()) => {}
                 Err(error) => {
                     warn_delete_failure(&id, anyhow_error_kind(&error));
-                    return Err(error.into());
+                    return Err(error);
                 }
             }
         }

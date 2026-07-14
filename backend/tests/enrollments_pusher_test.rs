@@ -353,6 +353,22 @@ async fn tracker_shutdown_awaits_an_inflight_device_push_and_terminal_write() {
 }
 
 #[tokio::test]
+async fn dispatcher_rejects_a_second_start_and_close_is_idempotent() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let dispatcher = cronometrix_api::enrollments::dispatcher::EnrollmentDispatcher::default();
+
+    let handle = dispatcher.start(state.clone()).await.unwrap();
+    let second_start = dispatcher.start(state).await.unwrap_err();
+    assert!(second_start.to_string().contains("already started"));
+
+    dispatcher.close().unwrap();
+    dispatcher.close().unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn tracker_drain_reports_panicked_tasks_after_awaiting_them() {
     let db = common::test_db().await;
     let config = make_config();

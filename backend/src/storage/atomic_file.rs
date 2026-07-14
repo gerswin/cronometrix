@@ -181,7 +181,42 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
     const O_NOFOLLOW: i32 = 0x0000_0100;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // O_NOFOLLOW is architecture-specific on Linux/Android. ARM and PowerPC
+    // use octal 0100000 (0x8000), while the common x86 value is octal
+    // 0400000 (0x20000). Android/riscv64 uses its distinct UAPI value.
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "powerpc",
+            target_arch = "powerpc64",
+            target_arch = "m68k"
+        )
+    ))]
+    const O_NOFOLLOW: i32 = 0x0000_8000;
+    #[cfg(all(
+        target_os = "linux",
+        not(any(
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "powerpc",
+            target_arch = "powerpc64",
+            target_arch = "m68k"
+        ))
+    ))]
+    const O_NOFOLLOW: i32 = 0x0002_0000;
+    #[cfg(all(
+        target_os = "android",
+        any(target_arch = "aarch64", target_arch = "arm")
+    ))]
+    const O_NOFOLLOW: i32 = 0x0000_8000;
+    #[cfg(all(target_os = "android", target_arch = "riscv64"))]
+    const O_NOFOLLOW: i32 = 0x0040_0000;
+    #[cfg(all(
+        target_os = "android",
+        not(any(target_arch = "aarch64", target_arch = "arm", target_arch = "riscv64"))
+    ))]
     const O_NOFOLLOW: i32 = 0x0002_0000;
     #[cfg(not(any(
         target_os = "macos",

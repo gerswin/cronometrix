@@ -1,0 +1,2 @@
+database_is_locked_occurrences=0
+backend_sigterm_exit=0

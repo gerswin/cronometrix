@@ -127,9 +127,7 @@ impl RecomputeWorker {
                     if date >= to_date {
                         return None;
                     }
-                    let Some(next) = date.succ_opt() else {
-                        return None;
-                    };
+                    let next = date.succ_opt()?;
                     date = next;
                 }
 
