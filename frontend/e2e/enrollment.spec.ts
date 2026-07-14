@@ -15,21 +15,33 @@ const ENTRY_DEVICE_ID = 'dev-entry'
 const EXIT_DEVICE_ID = 'dev-exit'
 const NEW_EMPLOYEE_ID = 'emp-jose'
 
+// Linux CI has no hardware GPU, so Chromium must opt into ANGLE's software
+// renderer. On macOS, ANGLE auto-selects the native backend; forcing
+// SwiftShader there can stall TinyFaceDetector inference.
+const CHROMIUM_GRAPHICS_ARGS = process.platform === 'linux'
+  ? [
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+      '--enable-webgl',
+      '--ignore-gpu-blocklist',
+      '--enable-unsafe-swiftshader',
+    ]
+  : [
+      '--use-gl=angle',
+      '--enable-webgl',
+      '--ignore-gpu-blocklist',
+    ]
+
 test.describe.configure({ mode: 'serial' })
 
 test('mock_hikvision: resumes, captures, partially syncs, and retries enrollment', async () => {
   test.setTimeout(60_000)
 
-  // Chromium headless disables WebGL unless ANGLE is explicitly enabled. This
-  // keeps the production TinyFaceDetector unchanged while using the platform's
-  // native ANGLE backend (software SwiftShader stalls on this model on macOS).
+  // Keep the production TinyFaceDetector unchanged while selecting a graphics
+  // backend that is usable on both developer Macs and GPU-less Linux runners.
   const browser = await chromium.launch({
     headless: true,
-    args: [
-      '--use-gl=angle',
-      '--enable-webgl',
-      '--ignore-gpu-blocklist',
-    ],
+    args: CHROMIUM_GRAPHICS_ARGS,
   })
   const context = await browser.newContext({
     baseURL: 'http://localhost:3001',
@@ -105,15 +117,17 @@ test('mock_hikvision: resumes, captures, partially syncs, and retries enrollment
     }
 
     const page = await context.newPage()
-    expect(await page.evaluate(() => ({
-      webgl: Boolean(document.createElement('canvas').getContext('webgl', {
-        failIfMajorPerformanceCaveat: true,
-      })),
-      webgl2: Boolean(document.createElement('canvas').getContext('webgl2', {
-        failIfMajorPerformanceCaveat: true,
-      })),
-    })), 'TinyFaceDetector requires a usable WebGL context in headless Chromium')
-      .toEqual({ webgl: true, webgl2: true })
+    const graphics = await page.evaluate(() => {
+      const canvas = document.createElement('canvas')
+      return {
+        webgl: Boolean(canvas.getContext('webgl')),
+        webgl2: Boolean(canvas.getContext('webgl2')),
+      }
+    })
+    expect(
+      graphics.webgl || graphics.webgl2,
+      `TinyFaceDetector requires WebGL in headless Chromium: ${JSON.stringify(graphics)}`,
+    ).toBeTruthy()
     await page.goto('/enrollment')
     await expect(page.getByTestId(SEL.enrollmentPage)).toBeVisible()
 
@@ -276,14 +290,6 @@ test('mock_hikvision: resumes, captures, partially syncs, and retries enrollment
       && new URL(response.url()).pathname
         === `/api/v1/enrollments/${created.enrollment_id}/pushes/${EXIT_DEVICE_ID}/retry`,
     )
-    const successResponsePromise = page.waitForResponse(async (response) => {
-      if (
-        response.request().method() !== 'GET'
-        || new URL(response.url()).pathname !== `/api/v1/enrollments/${created.enrollment_id}`
-        || response.status() !== 200
-      ) return false
-      return (await response.json()).status === 'success'
-    })
     await page.getByTestId(SEL.enrollmentRetry(EXIT_DEVICE_ID)).click()
     const retryResponse = await retryResponsePromise
     expect(retryResponse.status()).toBe(202)
@@ -292,7 +298,17 @@ test('mock_hikvision: resumes, captures, partially syncs, and retries enrollment
       device_id: EXIT_DEVICE_ID,
       status: 'pending',
     })
-    expect((await successResponsePromise).status()).toBe(200)
+    // The retry push status and the aggregate enrollment status are serialized
+    // as separate queued writes. Poll the API directly until the aggregate
+    // settles instead of relying on the UI to emit another GET after `partial`.
+    await expect.poll(async () => {
+      const response = await context.request.get(
+        `${API_BASE}/enrollments/${created.enrollment_id}`,
+        { headers: authHeaders },
+      )
+      expect(response.status()).toBe(200)
+      return (await response.json()).status
+    }, { timeout: 10_000 }).toBe('success')
     await expect(page.getByTestId(SEL.enrollmentPushStatus(EXIT_DEVICE_ID))).toHaveText(
       'Sincronizado',
     )
