@@ -203,3 +203,23 @@ async fn stream_rejects_invalid_utf8_xml_part() {
         .expect_err("invalid UTF-8 must not enter the XML parser");
     assert!(error.to_string().contains("not valid UTF-8"));
 }
+
+#[tokio::test]
+async fn stream_surfaces_truncated_multipart_parser_error() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed_device(&conn, "truncated-multipart").await;
+    drop(conn);
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config());
+    let body = format!(
+        "--{BOUNDARY}\r\nContent-Type: application/xml\r\nContent-Length: 200\r\n\r\n<EventNotificationAlert>"
+    )
+    .into_bytes();
+    let addr = spawn_response(Some(&format!("multipart/mixed; boundary={BOUNDARY}")), body).await;
+
+    let error = connect_and_stream(&device("truncated-multipart", addr, "entry"), &state)
+        .await
+        .expect_err("a truncated field must not be treated as a clean stream close");
+    let message = error.to_string();
+    assert!(message.contains("incomplete data"), "{message}");
+}

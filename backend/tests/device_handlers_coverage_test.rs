@@ -58,6 +58,21 @@ fn admin_claims(actor_id: &str) -> Claims {
     }
 }
 
+fn update_request(version: i64) -> UpdateDeviceRequest {
+    UpdateDeviceRequest {
+        name: None,
+        ip: None,
+        port: None,
+        scheme: None,
+        username: None,
+        password: None,
+        direction: None,
+        allow_insecure_tls: None,
+        status: None,
+        version,
+    }
+}
+
 #[tokio::test]
 async fn create_publishes_backfill_even_when_lifecycle_receiver_is_closed() {
     let db = common::test_db().await;
@@ -100,6 +115,95 @@ async fn update_rejects_invalid_payload_before_database_mutation() {
     .await;
 
     assert!(matches!(result, Err(AppError::Validation { .. })));
+}
+
+#[tokio::test]
+async fn update_missing_device_and_empty_command_take_handler_validation_paths() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config());
+    let mut missing_update = update_request(1);
+    missing_update.port = Some(8443);
+    let missing = handlers::update_device(
+        State(state.clone()),
+        Path("missing-device".into()),
+        Json(missing_update),
+    )
+    .await;
+    assert!(matches!(missing, Err(AppError::NotFound { .. })));
+
+    let empty_command = handlers::dispatch_command(
+        State(state),
+        AuthUser(admin_claims("missing-actor")),
+        Path("missing-device".into()),
+        Json(CommandRequest {
+            command: String::new(),
+        }),
+    )
+    .await;
+    assert!(matches!(empty_command, Err(AppError::Validation { .. })));
+}
+
+#[tokio::test]
+async fn update_connection_fields_exercises_restart_decision_for_each_field() {
+    let db = common::test_db().await;
+    let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config());
+    let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
+    state.lifecycle_tx = Some(lifecycle_tx);
+    let (_, Json(mut device)) = handlers::create_device(
+        State(state.clone()),
+        Json(create_request("10.77.0.2", 8443)),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        lifecycle_rx.recv().await,
+        Some(cronometrix_api::supervisor::DeviceLifecycleEvent::Start(_))
+    ));
+
+    // Supplying the existing value touches connection configuration but must
+    // not emit a restart. It also forces every snapshot comparison, including
+    // the encrypted-password identity comparison, to evaluate false.
+    let mut same_port = update_request(device.version);
+    same_port.port = Some(device.port);
+    device = handlers::update_device(
+        State(state.clone()),
+        Path(device.id.clone()),
+        Json(same_port),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(lifecycle_rx.try_recv().is_err());
+
+    for mutation in [
+        ("port", "8081"),
+        ("scheme", "https"),
+        ("username", "operator"),
+        ("allow_insecure_tls", "true"),
+        ("status", "inactive"),
+    ] {
+        let mut request = update_request(device.version);
+        match mutation {
+            ("port", value) => request.port = Some(value.parse().unwrap()),
+            ("scheme", value) => request.scheme = Some(value.into()),
+            ("username", value) => request.username = Some(value.into()),
+            ("allow_insecure_tls", value) => {
+                request.allow_insecure_tls = Some(value.parse().unwrap())
+            }
+            ("status", value) => request.status = Some(value.into()),
+            _ => unreachable!(),
+        }
+        device =
+            handlers::update_device(State(state.clone()), Path(device.id.clone()), Json(request))
+                .await
+                .unwrap()
+                .0;
+        assert!(matches!(
+            lifecycle_rx.recv().await,
+            Some(cronometrix_api::supervisor::DeviceLifecycleEvent::Restart(ref id))
+                if id == &device.id
+        ));
+    }
 }
 
 #[tokio::test]

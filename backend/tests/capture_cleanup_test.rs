@@ -557,3 +557,19 @@ async fn cancelled_cleanup_worker_runs_final_active_state_timeout_pass() {
     assert_eq!(entry.status, "timeout");
     assert!(entry.terminal_at.is_some());
 }
+
+#[tokio::test]
+async fn shutdown_removes_capture_state_that_has_no_photo() {
+    let (state, _tmp) = state().await;
+    tokio::fs::create_dir_all(&state.paths.captures_tmp_root)
+        .await
+        .unwrap();
+    state.captures.write().await.insert(
+        "no-photo".into(),
+        capture("error", Instant::now(), Some(Instant::now())),
+    );
+
+    capture_cleanup::shutdown_captures(&state).await.unwrap();
+
+    assert!(state.captures.read().await.is_empty());
+}
