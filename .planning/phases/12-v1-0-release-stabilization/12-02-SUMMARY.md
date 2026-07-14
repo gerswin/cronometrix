@@ -14,9 +14,9 @@ is the sole unqualified release gate.
 ## Evidence Identity and Boundary
 
 - Branch: `codex/phase12-02-functional-contracts`
-- Tested implementation SHA: `baeb38f965b892b25a62693ccec706cc5045a0c1`
+- Tested implementation SHA: `0a698b5bee6e7b5bd91f3fa33ca1c3dd0470538f`
 - Owned-coverage base SHA: `5f877fe445dfb18e555870d22a37201c1a4ee483`
-- Immutable evidence directory: `/tmp/cronometrix-12-02-gate-vldLCKt8`
+- Immutable evidence directory: `/tmp/cronometrix-12-02-gate-ZVessY85`
 - Platform: macOS 26.3.1 (a), Darwin 25.3.0, arm64
 - Rust: `rustc 1.96.0-nightly (48cc71ee8 2026-03-31)` from pinned
   `nightly-2026-04-01`; Cargo 1.96.0-nightly
@@ -82,20 +82,56 @@ SHA and must not be represented as if the clean gate ran against it.
     extras, and malformed artifacts, and passes at the unchanged per-file
     floors.
 
+## Final Review Remediation
+
+- **Coordinated browser sessions.** Login, bootstrap refresh, request-time
+  refresh, and logout now share a session generation. Login waits for an older
+  refresh before sending credentials, supersedes a bootstrap refresh, and
+  prevents an obsolete async result from restoring or clearing a newer
+  session. Logout closes refresh admission, waits for the pending refresh, and
+  invalidates the cookie that actually won the browser ordering race.
+- **Stale logout compare-and-swap.** Backend logout clears the stored refresh
+  hash only when both user and caller token hash match. A stale logout still
+  expires its caller cookie but cannot invalidate a concurrent refresh winner.
+- **Run-id containment.** E2E run IDs accept only portable names whose resolved
+  paths are direct children of the OS temporary directory; teardown rejects
+  traversal, absolute, separator-bearing, and otherwise uncontained paths.
+- **External coverage identity and counters.** The owned checker requires
+  externally supplied expected plan and base-SHA identities, proves the base
+  is a strict ancestor, and validates frontend `total`, `covered`, `skipped`,
+  and percentage relationships rather than trusting percentages alone. Valid
+  Vitest zero-denominator encodings remain supported.
+- **Enrollment evidence boundary.** `face_quality_score` is now required typed
+  JSON with deny-unknown-field and consistency/acceptance validation. The
+  server still decodes and normalizes the JPEG separately; it does not claim
+  to run a second face detector. Filesystem `photo_path` is internal-only and
+  no longer appears in capture API responses or frontend types.
+- **Canonical employee and Node contracts.** The obsolete `cedula` employee
+  alias was removed in favor of `employee_code`. Standalone Node contract files
+  use the `.contract.ts` suffix, are executed explicitly by the
+  `node-contracts` gate, and are not collected as Playwright tests.
+
+Two security-review findings were assigned as executable work, not silently
+claimed here: capture TTL/orphan cleanup is **not implemented** in 12-02 and is
+executable 12-03 work; upstream gateway/container SSE token-log proof is **not
+implemented** in 12-02 and is executable 12-04 work. Application path-only
+tracing does not substitute for the latter proof.
+
 ## Clean-Gate Verification
 
 The exact command exits recorded in `commands.tsv` were:
 
 | Gate command | Exit | Result |
 |---|---:|---|
+| `node-contracts` | 0 | 4/4 standalone Node contracts passed |
 | `directed-vitest` | 0 | 7 files; 72/72 tests passed |
 | `cargo-fmt` | 0 | Rust formatting clean |
 | `cargo-clippy` | 0 | Strict Clippy clean |
-| `cargo-test` | 0 | 56 test binaries; 784 passed, 0 failed, 22 ignored |
+| `cargo-test` | 0 | 56 test binaries; 793 passed, 0 failed, 22 ignored |
 | `npm-ci` | 0 | Reproducible install completed; advisory debt retained below |
 | `typecheck` | 0 | TypeScript clean |
 | `frontend-build` | 0 | Production build generated 20/20 static pages |
-| `owned-fixtures` | 0 | 31/31 checker fixtures passed |
+| `owned-fixtures` | 0 | 46/46 checker fixtures passed |
 | `frontend-coverage` | 2 | Tests passed; unchanged global thresholds failed |
 | `backend-coverage` | 2 | Tests passed; unchanged global thresholds failed |
 | `owned-coverage` | 0 | Exact owned manifest passed |
@@ -109,24 +145,24 @@ The exact owned-gate output was:
 PASS owned-coverage plan=12-02 backend=12 frontend=25
 ```
 
-The full frontend coverage execution ran 54 files and passed all 424 tests;
+The full frontend coverage execution ran 54 files and passed all 429 tests;
 the raw exit remained 2 because project-wide coverage was below its unchanged
 gate:
 
 | Frontend metric | Covered / total | Actual | Gate |
 |---|---:|---:|---:|
-| Statements | 1220 / 1537 | 79.37% | 90% |
-| Branches | 758 / 1026 | 73.87% | 85% |
-| Functions | 345 / 460 | 75.00% | 90% |
-| Lines | 1131 / 1399 | 80.84% | 90% |
+| Statements | 1270 / 1596 | 79.57% | 90% |
+| Branches | 784 / 1061 | 73.89% | 85% |
+| Functions | 355 / 470 | 75.53% | 90% |
+| Lines | 1177 / 1451 | 81.11% | 90% |
 
-The full backend coverage execution passed its 784 tests; the raw exit
+The full backend coverage execution passed its 793 tests; the raw exit
 remained 2 because project-wide coverage was below its unchanged gate:
 
 | Backend metric | Covered / total | Actual | Gate |
 |---|---:|---:|---:|
-| Lines | 8788 / 11058 | 79.47% | 90% |
-| Branches | 583 / 968 | 60.23% | 85% |
+| Lines | 8839 / 11119 | 79.49% | 90% |
+| Branches | 600 / 994 | 60.36% | 85% |
 
 The unchanged per-file floors are backend lines 70% / branches 60%, and
 frontend statements 70% / branches 60% / functions 70% / lines 70%. The
@@ -175,7 +211,7 @@ Values are statements / branches / functions / lines percentages.
 - `users/service.rs`: lines 0.00%, branches 0.00%
 - `workers/db_write.rs`: lines 0.00%
 - `workers/purge.rs`: branches 55.56%
-- Project-wide branches: 60.23% < 85%.
+- Project-wide branches: 60.36% < 85%.
 
 `license/fingerprint.rs` and `license/service.rs` have a documented macOS
 pseudo-filesystem limitation because Darwin does not expose the Linux
@@ -240,7 +276,22 @@ the tested implementation SHA:
 - `dc81552` test(e2e): harden helper process coverage
 - `ac8a24d` test(coverage): enforce plan-owned floors
 - `baeb38f` fix(coverage): harden owned artifact parsing
+- `e655763` docs(12-02): record functional contract remediation
+- `60a4491` fix(auth): serialize login with pending refresh
+- `5d3d9f5` fix(auth): preserve refresh winner on stale logout
+- `27eb89a` fix(e2e): contain per-run teardown paths
+- `2a18e65` fix(coverage): fail closed on ownership identity
+- `cae2a8a` fix(enrollment): validate typed face quality evidence
+- `aea6f39` fix(enrollment): keep capture paths internal
+- `c15e63a` fix(frontend): remove obsolete employee aliases
+- `885fc4c` docs(12): assign deferred security cleanup
+- `8ade624` fix(auth): supersede bootstrap refresh on login
+- `0436a82` fix(auth): serialize logout with pending refresh
+- `25e7456` fix(coverage): require external plan identity
+- `87224af` fix(coverage): accept Vitest empty metrics
+- `0a698b5` fix(e2e): keep Node contracts out of Playwright
 
-The later `docs(12-02): record functional contract remediation` commit only
-records this checkpoint. It does not change the tested implementation SHA or
-promote the scoped PASS to a release PASS.
+The historical `e655763` summary commit is part of the now-tested 42-commit
+history. The later `docs(12-02): refresh final immutable gate evidence` commit
+only refreshes this checkpoint document; it remains outside the tested
+implementation SHA and does not promote the scoped PASS to a release PASS.
