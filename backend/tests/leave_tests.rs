@@ -633,7 +633,7 @@ async fn cancelled_request_after_leave_job_admission_keeps_committed_evidence() 
 }
 
 #[tokio::test]
-async fn extreme_leave_range_publishes_one_bounded_recompute_unit() {
+async fn maximum_leave_range_publishes_one_bounded_recompute_unit() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let dept = create_test_department_with_shift(
@@ -656,15 +656,15 @@ async fn extreme_leave_range_publishes_one_bounded_recompute_unit() {
         &admin,
         leaves::models::CreateLeaveRequest {
             employee_id: employee_id.clone(),
-            from_date: "0001-01-01".into(),
-            to_date: "9999-12-31".into(),
+            from_date: "2024-01-01".into(),
+            to_date: "2024-12-31".into(),
             leave_type: "manual".into(),
             justification: "bounded recompute publication".into(),
         },
         None,
     )
     .await
-    .expect("domain accepts the existing unrestricted leave range contract");
+    .expect("domain accepts the inclusive 366-day maximum");
 
     assert!(matches!(
         recompute_rx.try_recv().expect("one recompute unit"),
@@ -673,12 +673,159 @@ async fn extreme_leave_range_publishes_one_bounded_recompute_unit() {
             from_date,
             to_date,
         } if actual_employee == employee_id
-            && from_date == NaiveDate::from_ymd_opt(1, 1, 1).unwrap()
-            && to_date == NaiveDate::from_ymd_opt(9999, 12, 31).unwrap()
+            && from_date == NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+            && to_date == NaiveDate::from_ymd_opt(2024, 12, 31).unwrap()
     ));
     assert!(matches!(
         recompute_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn leave_range_over_366_days_is_rejected_before_write_admission() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-over-range", "day", false, 480, "08:00", "17:00")
+            .await;
+    let employee_id = seed_employee(&db, &dept, "E-OVER-RANGE").await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+    let accepted_before = state.db_write.stats().accepted;
+
+    let error = leaves::service::create_leave_queued(
+        &state,
+        &admin,
+        leaves::models::CreateLeaveRequest {
+            employee_id: employee_id.clone(),
+            from_date: "2024-01-01".into(),
+            to_date: "2025-01-01".into(),
+            leave_type: "manual".into(),
+            justification: "must be rejected before admission".into(),
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        cronometrix_api::errors::AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message,
+        } if message == "Leave range cannot exceed 366 days"
+    ));
+    assert_eq!(state.db_write.stats().accepted, accepted_before);
+    let conn = state.db.connect().unwrap();
+    let count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM leaves WHERE employee_id = ?1",
+            params![employee_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 0);
+    assert!(matches!(
+        recompute_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn cancelled_delete_after_admission_commits_and_publishes_recompute() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept = create_test_department_with_shift(
+        &db,
+        "D-cancel-delete",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+    let employee_id = seed_employee(&db, &dept, "E-CANCEL-DELETE").await;
+    let leave_id = create_test_leave(
+        &db,
+        &employee_id,
+        "vacation",
+        "2026-07-14",
+        "2026-07-16",
+        &admin,
+    )
+    .await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+    let app = build_test_app(state.clone());
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-cancel-delete", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let request = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/api/v1/leaves/{leave_id}?version=1"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let request_task = tokio::spawn(app.oneshot(request));
+    while state.db_write.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    release_tx.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    state.db_write.flush().await.unwrap();
+
+    let conn = state.db.connect().unwrap();
+    let status: String = conn
+        .query("SELECT status FROM leaves WHERE id = ?1", params![leave_id])
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    assert!(matches!(
+        recompute_rx
+            .try_recv()
+            .expect("committed cancellation must publish recompute"),
+        RecomputeRequest::Range {
+            employee_id: actual_employee,
+            from_date,
+            to_date,
+        } if actual_employee == employee_id
+            && from_date == NaiveDate::from_ymd_opt(2026, 7, 14).unwrap()
+            && to_date == NaiveDate::from_ymd_opt(2026, 7, 16).unwrap()
     ));
 }
 

@@ -1,12 +1,10 @@
-//! mpsc-driven recompute worker with 500ms debounce + HashSet dedup.
+//! Fair, bounded recompute scheduling plus producer-first shutdown.
 //!
-//! Mirrors the Phase 2 `Supervisor` pattern: biased `tokio::select!` between
-//! the shutdown cancellation token and the request receiver. On first receive,
-//! the worker drains the channel, waits 500ms, drains again — collapsing
-//! event bursts (e.g. multi-device punch storm) down to a single recompute
-//! per (employee_id, anchor_date). Errors are logged, not propagated.
+//! Leave ranges remain a constant-size request on the channel and are expanded
+//! here in 32-day chunks. Continuations go to the back of the local queue, so
+//! recent single-day work is not trapped behind a maximum-size leave.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use anyhow::Context;
 use chrono::NaiveDate;
@@ -20,6 +18,9 @@ use crate::state::AppState;
 
 use super::RecomputeRequest;
 
+const RANGE_CHUNK_DAYS: usize = 32;
+const RECEIVE_BURST_LIMIT: usize = 64;
+
 pub struct RecomputeWorker {
     state: AppState,
     shutdown: CancellationToken,
@@ -32,72 +33,111 @@ impl RecomputeWorker {
 
     pub async fn run(self, mut rx: mpsc::UnboundedReceiver<RecomputeRequest>) {
         let debounce = tokio::time::Duration::from_millis(500);
+        let mut ready = VecDeque::new();
+        let mut pending_days = HashSet::new();
+        let mut draining = false;
+        let mut drained = 0_u64;
+
         loop {
-            tokio::select! {
-                biased;
-                _ = self.shutdown.cancelled() => {
-                    let mut drained = 0_u64;
-                    while let Ok(request) = rx.try_recv() {
-                        self.process_request(request).await;
-                        drained += 1;
-                    }
+            if self.shutdown.is_cancelled() {
+                draining = true;
+            }
+
+            if let Some(request) = ready.pop_front() {
+                if let RecomputeRequest::Day {
+                    employee_id,
+                    anchor_date,
+                } = &request
+                {
+                    pending_days.remove(&(employee_id.clone(), *anchor_date));
+                }
+
+                let continuation = self.process_chunk(request).await;
+                if draining {
+                    drained += 1;
+                }
+
+                // Give requests which arrived during this chunk priority over
+                // its continuation. The bounded burst keeps local scheduling
+                // work predictable even when the channel is busy.
+                drain_receiver(&mut rx, &mut ready, &mut pending_days, RECEIVE_BURST_LIMIT);
+                if let Some(continuation) = continuation {
+                    ready.push_back(continuation);
+                }
+                continue;
+            }
+
+            if draining {
+                drain_receiver(&mut rx, &mut ready, &mut pending_days, RECEIVE_BURST_LIMIT);
+                if ready.is_empty() {
                     tracing::info!(drained, "recompute worker shutdown drained pending work");
                     break;
                 }
+                continue;
+            }
+
+            tokio::select! {
+                biased;
+                _ = self.shutdown.cancelled() => {
+                    draining = true;
+                }
                 maybe_req = rx.recv() => {
-                    let Some(req) = maybe_req else {
+                    let Some(request) = maybe_req else {
                         tracing::info!("recompute channel closed, worker exiting");
                         break;
                     };
-                    let mut pending: HashSet<(String, NaiveDate)> = HashSet::new();
-                    let first_range = collect_day_or_range(req, &mut pending);
-                    // Debounce window — let bursts collapse.
-                    tokio::time::sleep(debounce).await;
-                    if let Some(range) = first_range {
-                        self.process_request(range).await;
-                    }
-                    while let Ok(extra) = rx.try_recv() {
-                        match extra {
-                            RecomputeRequest::Day { employee_id, anchor_date } => {
-                                pending.insert((employee_id, anchor_date));
-                            }
-                            range @ RecomputeRequest::Range { .. } => {
-                                self.process_request(range).await;
-                            }
+                    enqueue(request, &mut ready, &mut pending_days);
+
+                    // Preserve burst collapsing for ordinary day requests.
+                    tokio::select! {
+                        biased;
+                        _ = self.shutdown.cancelled() => {
+                            draining = true;
                         }
+                        _ = tokio::time::sleep(debounce) => {}
                     }
-                    for (emp_id, date) in pending.drain() {
-                        self.process_day(&emp_id, date).await;
-                    }
+                    drain_receiver(
+                        &mut rx,
+                        &mut ready,
+                        &mut pending_days,
+                        RECEIVE_BURST_LIMIT,
+                    );
                 }
             }
         }
     }
 
-    async fn process_request(&self, request: RecomputeRequest) {
+    async fn process_chunk(&self, request: RecomputeRequest) -> Option<RecomputeRequest> {
         match request {
             RecomputeRequest::Day {
                 employee_id,
                 anchor_date,
-            } => self.process_day(&employee_id, anchor_date).await,
+            } => {
+                self.process_day(&employee_id, anchor_date).await;
+                None
+            }
             RecomputeRequest::Range {
                 employee_id,
                 from_date,
                 to_date,
             } => {
                 let mut date = from_date;
-                let mut processed = 0_u64;
-                while date <= to_date {
+                for _ in 0..RANGE_CHUNK_DAYS {
                     self.process_day(&employee_id, date).await;
-                    processed += 1;
-                    if processed % 64 == 0 {
-                        tokio::task::yield_now().await;
+                    if date >= to_date {
+                        return None;
                     }
                     let Some(next) = date.succ_opt() else {
-                        break;
+                        return None;
                     };
                     date = next;
                 }
+
+                Some(RecomputeRequest::Range {
+                    employee_id,
+                    from_date: date,
+                    to_date,
+                })
             }
         }
     }
@@ -111,19 +151,34 @@ impl RecomputeWorker {
     }
 }
 
-fn collect_day_or_range(
+fn enqueue(
     request: RecomputeRequest,
-    pending: &mut HashSet<(String, NaiveDate)>,
-) -> Option<RecomputeRequest> {
-    match request {
-        RecomputeRequest::Day {
-            employee_id,
-            anchor_date,
-        } => {
-            pending.insert((employee_id, anchor_date));
-            None
+    ready: &mut VecDeque<RecomputeRequest>,
+    pending_days: &mut HashSet<(String, NaiveDate)>,
+) {
+    if let RecomputeRequest::Day {
+        employee_id,
+        anchor_date,
+    } = &request
+    {
+        if !pending_days.insert((employee_id.clone(), *anchor_date)) {
+            return;
         }
-        range @ RecomputeRequest::Range { .. } => Some(range),
+    }
+    ready.push_back(request);
+}
+
+fn drain_receiver(
+    rx: &mut mpsc::UnboundedReceiver<RecomputeRequest>,
+    ready: &mut VecDeque<RecomputeRequest>,
+    pending_days: &mut HashSet<(String, NaiveDate)>,
+    limit: usize,
+) {
+    for _ in 0..limit {
+        let Ok(request) = rx.try_recv() else {
+            break;
+        };
+        enqueue(request, ready, pending_days);
     }
 }
 
@@ -138,10 +193,13 @@ pub async fn shutdown_after_producers(
     recompute_handle: JoinHandle<()>,
     db_write_handle: JoinHandle<Result<(), DbWriteError>>,
 ) -> anyhow::Result<()> {
-    db_write
+    // Do not short-circuit cleanup. Preserve the initial flush error because it
+    // is the earliest failure, while still deterministically joining workers.
+    let flush_result = db_write
         .flush()
         .await
-        .context("flush accepted writes before recompute shutdown")?;
+        .context("flush accepted writes before recompute shutdown");
+
     recompute_shutdown.cancel();
     let recompute_result = recompute_handle
         .await
@@ -150,10 +208,14 @@ pub async fn shutdown_after_producers(
         .close_and_flush()
         .await
         .context("close database writer after recompute drain");
-    let writer_result = db_write_handle
-        .await
-        .context("join database writer during shutdown")?
-        .map_err(anyhow::Error::from);
+    let writer_result = match db_write_handle.await {
+        Ok(result) => result.map_err(anyhow::Error::from),
+        Err(error) => {
+            Err(anyhow::Error::new(error).context("join database writer during shutdown"))
+        }
+    };
+
+    flush_result?;
     recompute_result?;
     close_result?;
     writer_result

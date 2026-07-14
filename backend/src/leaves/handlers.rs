@@ -12,8 +12,8 @@
 //! - Evidence read path canonicalizes + verifies under `state.paths.leaves_root` (T-3-18).
 //! - Content-Type enum restricted to pdf/jpeg/png (T-3-16).
 //! - Hard size cap 10MB enforced before DB commit (T-3-21).
-//! - Create + cancel publish RecomputeRequest for each anchor_date in the
-//!   leave range so existing daily_records pick up (or drop) the overlay.
+//! - Create + cancel publish bounded recompute range work after commit so
+//!   existing daily_records pick up (or drop) the overlay.
 
 use std::path::PathBuf;
 
@@ -23,14 +23,12 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::NaiveDate;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
-use crate::recompute::RecomputeRequest;
 use crate::state::AppState;
 use crate::storage::atomic_file::AtomicFileGuard;
 
@@ -224,9 +222,7 @@ pub async fn cancel_leave(
     Path(id): Path<String>,
     Query(q): Query<CancelQuery>,
 ) -> Result<StatusCode, AppError> {
-    let leave = service::cancel_queued(&state, &id, q.version).await?;
-
-    publish_recompute_for_range(&state, &leave.employee_id, &leave.from_date, &leave.to_date);
+    service::cancel_queued(&state, &id, q.version).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -318,36 +314,4 @@ pub async fn get_leave_evidence(
         }),
     );
     Ok((StatusCode::OK, headers, bytes).into_response())
-}
-
-/// Publish one bounded range work unit for [from_date, to_date].
-/// Silently no-ops if recompute_tx is None or the date strings don't parse.
-fn publish_recompute_for_range(
-    state: &AppState,
-    employee_id: &str,
-    from_date: &str,
-    to_date: &str,
-) {
-    let Some(tx) = state.recompute_tx.as_ref() else {
-        return;
-    };
-    let Ok(from) = NaiveDate::parse_from_str(from_date, "%Y-%m-%d") else {
-        return;
-    };
-    let Ok(to) = NaiveDate::parse_from_str(to_date, "%Y-%m-%d") else {
-        return;
-    };
-    if tx
-        .send(RecomputeRequest::Range {
-            employee_id: employee_id.to_string(),
-            from_date: from,
-            to_date: to,
-        })
-        .is_err()
-    {
-        tracing::warn!(
-            operation = "leaves.cancel",
-            "post-commit recompute unavailable; identifiers omitted"
-        );
-    }
 }

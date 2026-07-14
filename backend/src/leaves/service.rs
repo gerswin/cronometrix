@@ -25,6 +25,7 @@ use super::models::{CreateLeaveRequest, LeaveListQuery, LeaveResponse};
 const LEAVE_SELECT_COLS: &str =
     "id, employee_id, from_date, to_date, leave_type, justification, evidence_path, \
      created_by, status, deleted_at, version, created_at, updated_at";
+const MAX_LEAVE_DAYS: i64 = 366;
 
 /// Create a new leave row.
 ///
@@ -74,6 +75,12 @@ pub async fn create_leave(
         return Err(AppError::Validation {
             code: "VALIDATION_ERROR",
             message: "from_date must be <= to_date".into(),
+        });
+    }
+    if (to - from).num_days() + 1 > MAX_LEAVE_DAYS {
+        return Err(AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "Leave range cannot exceed 366 days".into(),
         });
     }
 
@@ -180,6 +187,12 @@ pub async fn create_leave_queued_guarded(
         return Err(AppError::Validation {
             code: "VALIDATION_ERROR",
             message: "from_date must be <= to_date".into(),
+        });
+    }
+    if (to - from).num_days() + 1 > MAX_LEAVE_DAYS {
+        return Err(AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "Leave range cannot exceed 366 days".into(),
         });
     }
     let id = Uuid::new_v4().to_string();
@@ -439,6 +452,7 @@ pub async fn cancel_queued(
 ) -> Result<LeaveResponse, AppError> {
     let id = id.to_string();
     let select_sql = format!("SELECT {} FROM leaves WHERE id = ?1", LEAVE_SELECT_COLS);
+    let recompute_tx = state.recompute_tx.clone();
     state
         .db_write
         .transact(
@@ -472,6 +486,26 @@ pub async fn cancel_queued(
                                 .to_string(),
                         }));
                     }
+                    let employee_id = leave.employee_id.clone();
+                    let from_date = NaiveDate::parse_from_str(&leave.from_date, "%Y-%m-%d")?;
+                    let to_date = NaiveDate::parse_from_str(&leave.to_date, "%Y-%m-%d")?;
+                    tx.after_commit(move || {
+                        if let Some(sender) = recompute_tx {
+                            if sender
+                                .send(crate::recompute::RecomputeRequest::Range {
+                                    employee_id,
+                                    from_date,
+                                    to_date,
+                                })
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    operation = "leaves.cancel",
+                                    "post-commit recompute unavailable; identifiers omitted"
+                                );
+                            }
+                        }
+                    });
                     Ok(leave)
                 })
             },

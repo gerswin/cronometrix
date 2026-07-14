@@ -13,6 +13,7 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -192,6 +193,143 @@ async fn shutdown_drains_accepted_callback_recompute_before_channels_close() {
             .await,
         Err(cronometrix_api::db::write_queue::DbWriteError::Closed)
     ));
+}
+
+#[tokio::test]
+async fn shutdown_closes_workers_even_when_initial_flush_fails() {
+    let (db_write, receiver) = DbWriteQueue::channel(DbWriteQueueConfig::default());
+    drop(receiver);
+    let closed_probe = db_write.clone();
+    let recompute_shutdown = CancellationToken::new();
+    let recompute_cancelled = Arc::new(AtomicBool::new(false));
+    let recompute_cancelled_task = recompute_cancelled.clone();
+    let recompute_token = recompute_shutdown.clone();
+    let recompute_handle = tokio::spawn(async move {
+        recompute_token.cancelled().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        recompute_cancelled_task.store(true, Ordering::SeqCst);
+    });
+    let writer_joined = Arc::new(AtomicBool::new(false));
+    let writer_joined_task = writer_joined.clone();
+    let db_write_handle = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        writer_joined_task.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+
+    let error = cronometrix_api::recompute::worker::shutdown_after_producers(
+        db_write,
+        recompute_shutdown,
+        recompute_handle,
+        db_write_handle,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("flush accepted writes before recompute shutdown"));
+    assert!(recompute_cancelled.load(Ordering::SeqCst));
+    assert!(writer_joined.load(Ordering::SeqCst));
+    let close_error = closed_probe
+        .job("test.probe-closed", |_| Box::pin(async { Ok(()) }))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        close_error,
+        cronometrix_api::db::write_queue::DbWriteError::Closed
+    ));
+}
+
+#[tokio::test]
+async fn maximum_range_interleaves_recent_day_and_shutdown_drains_all_work() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let range_employee = seed_full(&state.db).await;
+    let recent_employee = seed_full(&state.db).await;
+    let recent_date = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let worker = RecomputeWorker::new(state.clone(), shutdown.clone());
+    let handle = tokio::spawn(worker.run(rx));
+
+    tx.send(RecomputeRequest::Range {
+        employee_id: range_employee.clone(),
+        from_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+        to_date: NaiveDate::from_ymd_opt(2024, 12, 31).unwrap(),
+    })
+    .unwrap();
+    tx.send(RecomputeRequest::Day {
+        employee_id: recent_employee.clone(),
+        anchor_date: recent_date,
+    })
+    .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let conn = state.db.connect().unwrap();
+            let count: i64 = conn
+                .query(
+                    "SELECT COUNT(*) FROM daily_records WHERE employee_id = ?1 AND anchor_date = ?2",
+                    params![recent_employee.clone(), recent_date.to_string()],
+                )
+                .await
+                .unwrap()
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get(0)
+                .unwrap();
+            if count == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("recent Day must overtake the unfinished extreme Range");
+
+    let conn = state.db.connect().unwrap();
+    let range_before_shutdown: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM daily_records WHERE employee_id = ?1",
+            params![range_employee.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert!(
+        range_before_shutdown < 366,
+        "recent Day must run before the maximum Range completes"
+    );
+
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("shutdown must drain the contract-bounded Range")
+        .unwrap();
+
+    let conn = state.db.connect().unwrap();
+    let range_after_shutdown: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM daily_records WHERE employee_id = ?1",
+            params![range_employee],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(range_after_shutdown, 366);
 }
 
 // =============================================================================
