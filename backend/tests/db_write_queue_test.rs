@@ -505,6 +505,49 @@ async fn workers_db_write_wrapper_drains_and_stops() {
     worker.await.unwrap().unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn writer_waits_for_a_transient_external_lock_instead_of_failing_immediately() {
+    let db = test_db().await;
+    let blocker = db.connect().unwrap();
+    blocker
+        .execute("CREATE TABLE transient_lock (value INTEGER NOT NULL)", ())
+        .await
+        .unwrap();
+    let (queue, rx) = DbWriteQueue::channel(config(2, Duration::from_secs(1)));
+    let worker = tokio::spawn(run_write_worker(db, rx));
+    queue.flush().await.unwrap();
+
+    blocker.execute_batch("BEGIN IMMEDIATE").await.unwrap();
+    let write_queue = queue.clone();
+    let write = tokio::spawn(async move {
+        write_queue
+            .statement(
+                "transient-lock-regression",
+                "INSERT INTO transient_lock (value) VALUES (1)",
+                Vec::new(),
+            )
+            .await
+    });
+    wait_for_accepted(&queue, 1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !write.is_finished(),
+        "writer must wait for a short external lock"
+    );
+
+    blocker.execute_batch("COMMIT").await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), write)
+            .await
+            .expect("writer resumes after lock release")
+            .unwrap()
+            .unwrap(),
+        1
+    );
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn stats_count_depth_and_every_terminal_outcome() {
     let db = test_db().await;

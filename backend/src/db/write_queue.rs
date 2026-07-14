@@ -602,6 +602,21 @@ pub async fn run_write_worker(
         tracing::error!(err = %error, "DbWriteQueue: failed to open writer connection");
         DbWriteError::WorkerStopped
     })?;
+    // `busy_timeout` and `foreign_keys` are connection-local SQLite settings.
+    // Configuring them only on the migration connection does not affect this
+    // long-lived writer connection. A short external lock (for example an
+    // embedded-replica checkpoint) must wait instead of surfacing immediately
+    // as `database is locked`.
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON; \
+         PRAGMA synchronous = NORMAL; \
+         PRAGMA busy_timeout = 5000;",
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(err = %error, "DbWriteQueue: failed to configure writer connection");
+        DbWriteError::WorkerStopped
+    })?;
 
     while let Some(command) = receiver.rx.recv().await {
         match command {
