@@ -159,6 +159,15 @@ async fn main() -> anyhow::Result<()> {
     // capture orphan inspection cannot complete. The periodic owner only
     // expires live in-memory sessions and never re-runs this bootstrap sweep.
     let bootstrap_result = async {
+        // `run_write_worker` opens and configures its own SQLite connection
+        // before it receives commands. Waiting on a FIFO barrier prevents the
+        // recovery readers below from racing those connection-local PRAGMAs
+        // immediately after the migration connection is released.
+        state
+            .db_write
+            .flush()
+            .await
+            .map_err(|error| anyhow::anyhow!("initialize database writer: {error}"))?;
         capture_cleanup::startup_sweep(&state, capture_cleanup::CleanupNow::now()).await?;
         cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state).await?;
         anyhow::Ok(())
