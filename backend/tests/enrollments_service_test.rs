@@ -1053,6 +1053,270 @@ async fn startup_recovery_marks_prepared_backfill_and_purge_manual() {
     assert_eq!(mapping_state, "pending_delete");
 }
 
+async fn replace_checkpoint(
+    state: &cronometrix_api::state::AppState,
+    operation_key: &str,
+    operation: &str,
+    checkpoint_state: &str,
+) {
+    let conn = state.db.connect().unwrap();
+    conn.execute("PRAGMA ignore_check_constraints = ON", ())
+        .await
+        .unwrap();
+    conn.execute("DELETE FROM device_operation_checkpoints", ())
+        .await
+        .unwrap();
+    conn.execute(
+        "INSERT INTO device_operation_checkpoints \
+         (operation_key, operation, state, updated_at) VALUES (?1, ?2, ?3, unixepoch())",
+        params![operation_key, operation, checkpoint_state],
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn startup_recovery_rejects_corrupt_checkpoint_metadata() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute("PRAGMA ignore_check_constraints = ON", ())
+        .await
+        .unwrap();
+
+    replace_checkpoint(&state, "corrupt-state", "purge_delete", "unexpected").await;
+    let error = cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("invalid checkpoint state"));
+
+    replace_checkpoint(&state, "unsupported", "unexpected", "manual").await;
+    let error = cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("unsupported checkpoint operation"));
+}
+
+#[tokio::test]
+async fn startup_recovery_rejects_malformed_and_dangling_enrollment_checkpoints() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    for (key, expected) in [
+        ("not-an-enrollment-key", "invalid enrollment checkpoint key"),
+        ("enrollment:", "invalid enrollment checkpoint key"),
+        (
+            "enrollment:missing-push",
+            "checkpoint references missing enrollment push",
+        ),
+    ] {
+        replace_checkpoint(&state, key, "enrollment_push", "prepared").await;
+        let error = cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
+}
+
+#[tokio::test]
+async fn startup_recovery_rejects_enrollment_employee_without_face_id() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (_dept, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device(&state.db, &state.config.device_creds_key).await;
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "device",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET face_id=NULL WHERE id=?1",
+            params![employee_id],
+        )
+        .await
+        .unwrap();
+
+    let error = cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("checkpoint enrollment employee has no face id"));
+    assert!(!started.device_pushes.is_empty());
+}
+
+#[tokio::test]
+async fn startup_recovery_validates_every_backfill_reference() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    for (key, expected) in [
+        ("wrong-prefix", "invalid backfill checkpoint key"),
+        ("backfill:missing-pair", "invalid backfill checkpoint key"),
+        (
+            "backfill:missing-device:missing-face",
+            "backfill checkpoint has no active employee",
+        ),
+    ] {
+        replace_checkpoint(&state, key, "backfill_push", "prepared").await;
+        let error = cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
+
+    let (_dept, employee_id, _user_id) = seed_dept_emp_user(&state.db).await;
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET face_id='known-face' WHERE id=?1",
+            params![employee_id],
+        )
+        .await
+        .unwrap();
+    replace_checkpoint(
+        &state,
+        "backfill:missing-device:known-face",
+        "backfill_push",
+        "prepared",
+    )
+    .await;
+    let error = cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("backfill checkpoint references missing device"));
+}
+
+#[tokio::test]
+async fn startup_recovery_completes_device_applied_backfill() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (_dept, employee_id, _user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &state.config.device_creds_key).await;
+    let face_id = "applied-backfill-face";
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET face_id=?1 WHERE id=?2",
+            params![face_id, employee_id.clone()],
+        )
+        .await
+        .unwrap();
+    replace_checkpoint(
+        &state,
+        &service::backfill_checkpoint_key(&device_id, face_id),
+        "backfill_push",
+        "device_applied",
+    )
+    .await;
+
+    cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap();
+    let conn = state.db.connect().unwrap();
+    let mapping_count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM device_face_mappings \
+             WHERE device_id=?1 AND face_id=?2 AND employee_id=?3",
+            params![device_id, face_id, employee_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(mapping_count, 1);
+}
+
+#[tokio::test]
+async fn startup_recovery_validates_and_completes_purge_checkpoints() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    for (key, expected) in [
+        ("wrong-prefix", "invalid purge checkpoint key"),
+        ("purge:", "invalid purge checkpoint key"),
+        (
+            "purge:missing-mapping",
+            "purge checkpoint references missing mapping",
+        ),
+    ] {
+        replace_checkpoint(&state, key, "purge_delete", "prepared").await;
+        let error = cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
+
+    let (_dept, employee_id, _user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &state.config.device_creds_key).await;
+    let mapping_id = Uuid::new_v4().to_string();
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "INSERT INTO device_face_mappings \
+             (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+             VALUES (?1, ?2, 'purge-face', ?3, 'pending_delete', 1, unixepoch(), unixepoch())",
+            params![mapping_id.clone(), device_id, employee_id],
+        )
+        .await
+        .unwrap();
+    replace_checkpoint(
+        &state,
+        &service::purge_checkpoint_key(&mapping_id),
+        "purge_delete",
+        "device_applied",
+    )
+    .await;
+
+    cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state)
+        .await
+        .unwrap();
+    let count: i64 = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT COUNT(*) FROM device_face_mappings WHERE id=?1",
+            params![mapping_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
 // ---------------------------------------------------------------------------
 // get_enrollment_with_pushes
 // ---------------------------------------------------------------------------
