@@ -325,12 +325,15 @@ pub async fn cancel_queued(
                             })
                         })?;
                     let leave = row_to_leave(leave_row).map_err(anyhow::Error::new)?;
+                    let employee_id = leave.employee_id.clone();
+                    let from_date = NaiveDate::parse_from_str(&leave.from_date, "%Y-%m-%d")?;
+                    let to_date = NaiveDate::parse_from_str(&leave.to_date, "%Y-%m-%d")?;
 
                     let rows_affected = tx
                         .statement(
                             "UPDATE leaves SET status = 'cancelled', cancelled_by = ?3, deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
                              WHERE id = ?1 AND status = 'active' AND version = ?2",
-                            params![id, version, actor_id],
+                            params![id.clone(), version, actor_id],
                         )
                         .await?;
                     if rows_affected == 0 {
@@ -340,9 +343,13 @@ pub async fn cancel_queued(
                                 .to_string(),
                         }));
                     }
-                    let employee_id = leave.employee_id.clone();
-                    let from_date = NaiveDate::parse_from_str(&leave.from_date, "%Y-%m-%d")?;
-                    let to_date = NaiveDate::parse_from_str(&leave.to_date, "%Y-%m-%d")?;
+                    let cancelled = tx
+                        .query(&select_sql, params![id])
+                        .await?
+                        .next()
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("cancelled leave vanished"))?;
+                    let cancelled = row_to_leave(cancelled).map_err(anyhow::Error::new)?;
                     tx.after_commit(move || {
                         if let Some(sender) = recompute_tx {
                             if sender
@@ -360,7 +367,7 @@ pub async fn cancel_queued(
                             }
                         }
                     });
-                    Ok(leave)
+                    Ok(cancelled)
                 })
             },
         )

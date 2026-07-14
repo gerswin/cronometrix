@@ -14,7 +14,7 @@ export async function getAudit(
     actor_id: string
     table_name: string
     record_id: string
-    operation: 'INSERT' | 'UPDATE' | 'DELETE'
+    operation: 'INSERT' | 'UPDATE' | 'DELETE' | 'REPORT_EXPORT'
     from_ts: number
     to_ts: number
     limit: number

@@ -476,9 +476,20 @@ async fn cancel_then_recancel_409() {
     )
     .await
     .unwrap();
-    ls::cancel_queued(&state, &admin, &leave.id, leave.version)
+    let cancelled = ls::cancel_queued(&state, &admin, &leave.id, leave.version)
         .await
         .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.cancelled_by.as_deref(), Some(admin.as_str()));
+    assert_eq!(cancelled.version, leave.version + 1);
+
+    let persisted = ls::get_by_id(&db.connect().unwrap(), &leave.id)
+        .await
+        .unwrap();
+    assert_eq!(persisted.status, cancelled.status);
+    assert_eq!(persisted.cancelled_by, cancelled.cancelled_by);
+    assert_eq!(persisted.version, cancelled.version);
+
     let err = ls::cancel_queued(&state, &admin, &leave.id, leave.version + 1)
         .await
         .expect_err("second cancel must 409");

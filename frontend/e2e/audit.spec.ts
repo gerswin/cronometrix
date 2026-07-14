@@ -106,6 +106,18 @@ test.describe('Audit log page (D-04 UAT)', () => {
     expect(triggerMutation.ok()).toBe(true)
     const triggerEmployee = await triggerMutation.json()
 
+    const reportAuditBefore = await getAudit(request, {
+      table_name: 'reports',
+      operation: 'REPORT_EXPORT',
+      actor_id: 'e2e-admin-id',
+      limit: 200,
+    })
+    expect(reportAuditBefore.ok()).toBe(true)
+    const reportAuditBeforeBody = await reportAuditBefore.json()
+    const reportAuditBaseline = new Set<string>(
+      (reportAuditBeforeBody.data ?? []).map((entry: { id: string }) => entry.id)
+    )
+
     // Report exports are audited in app code, so the actor comes from the
     // authenticated admin JWT instead of being lost in a SQL trigger.
     const today = new Date()
@@ -123,32 +135,41 @@ test.describe('Audit log page (D-04 UAT)', () => {
     expect(reportExport.ok()).toBe(true)
 
     let nullActorRowId = ''
+    let reportAuditRowId = ''
     await expect.poll(
       async () => {
-        const before = await getAudit(request, { from_ts: fromTs, limit: 50 })
-        if (!before.ok()) return false
-        const beforeBody = await before.json()
-        const entries: Array<{
+        const employeeEvidence = await getAudit(request, {
+          table_name: 'employees',
+          record_id: triggerEmployee.id,
+          operation: 'INSERT',
+          from_ts: fromTs,
+          limit: 5,
+        })
+        const reportEvidence = await getAudit(request, {
+          table_name: 'reports',
+          operation: 'REPORT_EXPORT',
+          actor_id: 'e2e-admin-id',
+          limit: 200,
+        })
+        if (!employeeEvidence.ok() || !reportEvidence.ok()) return false
+        const employeeBody = await employeeEvidence.json()
+        const reportBody = await reportEvidence.json()
+        const employeeEntries: Array<{
           id: string
-          table_name: string
           record_id: string
-          operation: string
           actor_id: string | null
-        }> = beforeBody.data ?? []
-        const nullActorRow = entries.find(
+        }> = employeeBody.data ?? []
+        const nullActorRow = employeeEntries.find(
           (entry) =>
-            entry.table_name === 'employees' &&
             entry.record_id === triggerEmployee.id &&
             entry.actor_id === null
         )
-        const adminActorRow = entries.find(
-          (entry) =>
-            entry.table_name === 'reports' &&
-            entry.operation === 'REPORT_EXPORT' &&
-            entry.actor_id === 'e2e-admin-id'
+        const newReportRow = (reportBody.data ?? []).find(
+          (entry: { id: string }) => !reportAuditBaseline.has(entry.id)
         )
         nullActorRowId = nullActorRow?.id ?? ''
-        return Boolean(nullActorRow && adminActorRow)
+        reportAuditRowId = newReportRow?.id ?? ''
+        return Boolean(nullActorRowId && reportAuditRowId)
       },
       {
         message: 'Expected both a null-actor trigger row and an admin report export row',
@@ -189,6 +210,7 @@ test.describe('Audit log page (D-04 UAT)', () => {
     // is excluded. Every rendered actor cell must match the selected actor.
     const rows = page.locator('[data-testid^="audit-row-"]')
     await expect(rows.first()).toBeVisible()
+    await expect(page.getByTestId(`audit-row-${reportAuditRowId}`)).toBeVisible()
     await expect(page.getByTestId(`audit-row-${nullActorRowId}`)).toHaveCount(0)
     const rowCount = await rows.count()
     expect(rowCount).toBeGreaterThan(0)
@@ -210,6 +232,8 @@ test.describe('Audit log page (D-04 UAT)', () => {
     })
     expect(mutation.ok()).toBe(true)
     const employee = await mutation.json()
+    let auditId = ''
+    let auditCreatedAt = 0
     await expect.poll(async () => {
       const evidence = await getAudit(request, {
         table_name: 'employees',
@@ -219,7 +243,9 @@ test.describe('Audit log page (D-04 UAT)', () => {
       })
       if (!evidence.ok()) return false
       const body = await evidence.json()
-      return (body.data?.length ?? 0) > 0
+      auditId = body.data?.[0]?.id ?? ''
+      auditCreatedAt = body.data?.[0]?.created_at ?? 0
+      return Boolean(auditId && auditCreatedAt)
     }).toBe(true)
 
     await page.goto('/audit')
@@ -228,30 +254,20 @@ test.describe('Audit log page (D-04 UAT)', () => {
     // Explicit-wait on visibility via toBeVisible timeout.
     await expect(page.getByTestId('audit-table')).toBeVisible({ timeout: 10_000 })
 
-    // Set from = today, to = today (YYYY-MM-DD format for <input type="date">)
-    const today = new Date().toISOString().slice(0, 10)
+    // Select the business-local day that contains the exact audit row.
+    const dateParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Caracas',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date(auditCreatedAt * 1000))
+    const part = (type: Intl.DateTimeFormatPartTypes) =>
+      dateParts.find(value => value.type === type)?.value ?? ''
+    const today = `${part('year')}-${part('month')}-${part('day')}`
     await page.getByTestId('audit-filter-from').fill(today)
     await page.getByTestId('audit-filter-to').fill(today)
 
-    // Explicit-wait for table to refetch — poll until visible AND
-    // either has rows OR shows empty-state (expect.poll, not sleep).
-    await expect.poll(
-      async () => {
-        const visible = await page.getByTestId('audit-table').isVisible()
-        const rowCount = await page.locator('[data-testid^="audit-row-"]').count()
-        const emptyVisible = await page
-          .getByTestId('audit-empty')
-          .isVisible()
-          .catch(() => false)
-        return visible && (rowCount > 0 || emptyVisible)
-      },
-      { timeout: 5_000, message: 'audit table did not settle after date filter' }
-    ).toBe(true)
-
-    const rows = page.locator('[data-testid^="audit-row-"]')
-    if ((await rows.count()) > 0) {
-      await expect(rows.first()).toBeVisible()
-    }
+    await expect(page.getByTestId(`audit-row-${auditId}`)).toBeVisible({ timeout: 5_000 })
   })
 
   // ── T-05: Viewer is denied access (RBAC gate) ─────────────────────────────

@@ -16,7 +16,6 @@ import { test, expect, API_BASE } from './fixtures/auth'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import {
-  auditWindowStart,
   resetMutableTables,
   getAudit,
   pushHikvisionEvent,
@@ -153,7 +152,6 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     page,
     request,
   }) => {
-    const fromTs = auditWindowStart()
     await seedAnaAndWait(page, request)
 
     // Click the row-level edit button (pencil icon) for the first daily record
@@ -187,7 +185,19 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
       buffer: Buffer.from('%PDF-1.4 fake content for plan 09-09'),
     })
 
+    const overrideResponsePromise = page.waitForResponse(response => {
+      const url = new URL(response.url())
+      return (
+        response.request().method() === 'POST' &&
+        url.pathname.startsWith('/api/v1/daily-records/') &&
+        url.pathname.endsWith('/overrides')
+      )
+    })
     await page.getByTestId(SEL.novedadSubmit).click()
+    const overrideResponse = await overrideResponsePromise
+    expect(overrideResponse.ok()).toBe(true)
+    const createdOverride: { id: string } = await overrideResponse.json()
+    expect(createdOverride.id).toBeTruthy()
 
     // Modal closes on success (TanStack mutation onSuccess → onClose())
     await expect(page.getByTestId(SEL.novedadModal)).toBeHidden({ timeout: 15_000 })
@@ -198,17 +208,19 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
       async () => {
         const r = await getAudit(request, {
           table_name: 'daily_record_overrides',
+          record_id: createdOverride.id,
           operation: 'INSERT',
           actor_id: 'e2e-admin-id',
-          from_ts: fromTs,
           limit: 5,
         })
         if (r.status() !== 200) return null
         const body = await r.json()
-        return body.total ?? body.data?.length ?? 0
+        return body.data?.some(
+          (entry: { record_id: string }) => entry.record_id === createdOverride.id
+        ) ?? false
       },
       { timeout: 15_000, message: 'Expected audit_log entry for daily_record_overrides INSERT' },
-    ).toBeGreaterThanOrEqual(1)
+    ).toBe(true)
   })
 
   // ── T-08: Audit entry falls back to /leaves if no daily record selected ───
@@ -216,7 +228,6 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     page,
     request,
   }) => {
-    const fromTs = auditWindowStart()
     await page.goto('/timesheet')
     // Use the global button (no row selected → posts to /leaves)
     await page.getByTestId(SEL.openNovedadModal).first().click()
@@ -237,7 +248,15 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
       buffer: Buffer.from('%PDF-1.4'),
     })
 
+    const leaveResponsePromise = page.waitForResponse(response => {
+      const url = new URL(response.url())
+      return response.request().method() === 'POST' && url.pathname === '/api/v1/leaves'
+    })
     await page.getByTestId(SEL.novedadSubmit).click()
+    const leaveResponse = await leaveResponsePromise
+    expect(leaveResponse.ok()).toBe(true)
+    const createdLeave: { id: string } = await leaveResponse.json()
+    expect(createdLeave.id).toBeTruthy()
     await expect(page.getByTestId(SEL.novedadModal)).toBeHidden({ timeout: 15_000 })
 
     // Audit assertion — leaves INSERT (global button posts to /leaves)
@@ -245,16 +264,18 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
       async () => {
         const r = await getAudit(request, {
           table_name: 'leaves',
+          record_id: createdLeave.id,
           operation: 'INSERT',
           actor_id: 'e2e-admin-id',
-          from_ts: fromTs,
           limit: 5,
         })
         if (r.status() !== 200) return null
         const body = await r.json()
-        return body.total ?? body.data?.length ?? 0
+        return body.data?.some(
+          (entry: { record_id: string }) => entry.record_id === createdLeave.id
+        ) ?? false
       },
       { timeout: 15_000, message: 'Expected audit_log entry for leaves INSERT' },
-    ).toBeGreaterThanOrEqual(1)
+    ).toBe(true)
   })
 })

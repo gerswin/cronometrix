@@ -18,14 +18,19 @@ interface AuditFiltersProps {
 
 /** Convert an HTML date-input value (YYYY-MM-DD) to epoch seconds (start/end of day). */
 function dateToEpoch(dateStr: string, endOfDay = false): number | undefined {
-  if (!dateStr) return undefined
-  const d = new Date(dateStr)
-  if (isNaN(d.getTime())) return undefined
-  if (endOfDay) {
-    d.setHours(23, 59, 59, 999)
-  } else {
-    d.setHours(0, 0, 0, 0)
-  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr)
+  if (!match) return undefined
+  const year = Number(match[1])
+  const month = Number(match[2]) - 1
+  const day = Number(match[3])
+  const d = endOfDay
+    ? new Date(year, month, day, 23, 59, 59, 999)
+    : new Date(year, month, day, 0, 0, 0, 0)
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month ||
+    d.getDate() !== day
+  ) return undefined
   return Math.floor(d.getTime() / 1000)
 }
 
@@ -34,7 +39,10 @@ function epochToDate(epoch: number | undefined): string {
   if (epoch === undefined) return ''
   const d = new Date(epoch * 1000)
   if (isNaN(d.getTime())) return ''
-  return d.toISOString().slice(0, 10)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 /**

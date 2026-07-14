@@ -294,8 +294,10 @@ describe('AuditFilters', () => {
       from_ts: expect.any(Number),
     }))
     const call = onChange.mock.calls[0][0]
-    // Should be a valid epoch (seconds since 1970)
-    expect(call.from_ts).toBeGreaterThan(0)
+    // Date-only input must be parsed as local calendar fields, never as UTC
+    // followed by a local mutation. The expectation is portable across CI TZs.
+    const expected = Math.floor(new Date(2024, 0, 15, 0, 0, 0, 0).getTime() / 1000)
+    expect(call.from_ts).toBe(expected)
   })
 
   it('to date input calls onChange with to_ts epoch (end of day)', () => {
@@ -313,6 +315,9 @@ describe('AuditFilters', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       to_ts: expect.any(Number),
     }))
+    const call = onChange.mock.calls[0][0]
+    const expected = Math.floor(new Date(2024, 0, 15, 23, 59, 59, 999).getTime() / 1000)
+    expect(call.to_ts).toBe(expected)
   })
 
   it('clearing from date input calls onChange with from_ts undefined', () => {
@@ -332,18 +337,31 @@ describe('AuditFilters', () => {
   })
 
   it('from date input shows current from_ts value as YYYY-MM-DD', () => {
-    // epoch for 2024-01-15T00:00:00Z = 1705276800
+    const localStart = Math.floor(new Date(2024, 0, 15, 0, 0, 0, 0).getTime() / 1000)
     render(
       <AuditFilters
-        value={{ from_ts: 1705276800 }}
+        value={{ from_ts: localStart }}
         onChange={() => {}}
         actors={actors}
         tables={tables}
       />
     )
     const fromInput = document.querySelector('[data-testid="audit-filter-from"]') as HTMLInputElement
-    // epochToDate converts back to YYYY-MM-DD
-    expect(fromInput.value).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(fromInput.value).toBe('2024-01-15')
+  })
+
+  it('to date input keeps the local calendar day for its end-of-day epoch', () => {
+    const localEnd = Math.floor(new Date(2024, 0, 15, 23, 59, 59, 999).getTime() / 1000)
+    render(
+      <AuditFilters
+        value={{ to_ts: localEnd }}
+        onChange={() => {}}
+        actors={actors}
+        tables={tables}
+      />
+    )
+    const toInput = document.querySelector('[data-testid="audit-filter-to"]') as HTMLInputElement
+    expect(toInput.value).toBe('2024-01-15')
   })
 
   it('clearing actor dropdown sets actor_id to undefined', () => {
