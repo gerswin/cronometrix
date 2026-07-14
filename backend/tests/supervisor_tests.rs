@@ -242,6 +242,30 @@ async fn bootstrap_spawns_one_task_per_active_device() {
 }
 
 #[tokio::test]
+async fn stop_for_an_untracked_device_is_idempotent() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
+    let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    state.lifecycle_tx = Some(lifecycle_tx.clone());
+    let shutdown = CancellationToken::new();
+    let supervisor = Supervisor::new(state, shutdown.clone());
+    let handle = tokio::spawn(async move {
+        supervisor.run(lifecycle_rx).await;
+    });
+
+    lifecycle_tx
+        .send(DeviceLifecycleEvent::Stop("missing-device".to_string()))
+        .expect("supervisor channel open");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    shutdown.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(result.is_ok(), "supervisor must stop promptly");
+    assert!(result.unwrap().is_ok(), "supervisor must not panic");
+}
+
+#[tokio::test]
 async fn start_signal_spawns_new_task() {
     let db = common::test_db().await;
     let config = make_config();
