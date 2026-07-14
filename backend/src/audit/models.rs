@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A single audit log entry (read-only view of the audit_log table).
-/// The audit_log table is append-only — no UPDATE or DELETE triggers exist.
+/// The audit_log table is append-only — database triggers reject UPDATE and DELETE.
 /// old_data and new_data are stored as TEXT (JSON) and deserialized here to
 /// serde_json::Value so the frontend can render diffs without a second parse.
 #[derive(Debug, Clone, Serialize)]

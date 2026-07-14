@@ -2,6 +2,11 @@ import type { APIRequestContext, APIResponse } from '@playwright/test'
 
 export const API_BASE = 'http://127.0.0.1:4001/api/v1'
 
+/** Inclusive epoch-second boundary for isolating audit evidence from prior E2E runs. */
+export function auditWindowStart(): number {
+  return Math.floor(Date.now() / 1000)
+}
+
 /** GET /audit — typed wrapper for assertions in CRUD specs (mutation→audit). */
 export async function getAudit(
   req: APIRequestContext,

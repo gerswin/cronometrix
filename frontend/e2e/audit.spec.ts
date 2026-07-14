@@ -2,7 +2,7 @@
  * Audit log page E2E spec — Plan 09-11 (D-04 audit-screen UAT)
  *
  * Covers:
- *   T-01: renders Auditoría header + filters + (initially empty) table
+ *   T-01: renders Auditoría header + filters + table
  *   T-02: list shows immutable entries after a mutation elsewhere
  *   T-03: filter by actor — select admin actor_id → only admin-actor rows
  *   T-04: filter by date range narrows results
@@ -31,7 +31,7 @@
  */
 
 import { test, expect, newRoleContext } from './fixtures/auth'
-import { resetMutableTables, getAudit, API_BASE } from './fixtures/api'
+import { auditWindowStart, resetMutableTables, getAudit, API_BASE } from './fixtures/api'
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -58,24 +58,34 @@ test.describe('Audit log page (D-04 UAT)', () => {
 
   // ── T-02: Mutation elsewhere seeds an audit_log entry ─────────────────────
   test('list shows immutable entries after a mutation elsewhere', async ({ page, request }) => {
+    const fromTs = auditWindowStart()
     // POST /employees triggers the employees INSERT audit trigger
     const r = await request.post(`${API_BASE}/employees`, {
       data: {
         name: 'Audit Test User',
-        employee_code: 'AUD001',
+        employee_code: `AUD${Date.now()}`,
         department_id: 'dept-prod',
       },
     })
 
-    // If the backend accepted the create (200/201), an audit row must appear
-    if (r.ok()) {
-      await page.goto('/audit')
-      // Explicit-wait: poll until at least one audit-row-* is visible.
-      // Uses locator count assertion as the deterministic gate (explicit-wait, not sleep).
-      const rows = page.locator('[data-testid^="audit-row-"]')
-      await expect(rows.first()).toBeVisible({ timeout: 10_000 })
-      await expect(rows).not.toHaveCount(0)
-    }
+    expect(r.ok()).toBe(true)
+    const employee = await r.json()
+    let auditId = ''
+    await expect.poll(async () => {
+      const evidence = await getAudit(request, {
+        table_name: 'employees',
+        record_id: employee.id,
+        operation: 'INSERT',
+        from_ts: fromTs,
+        limit: 5,
+      })
+      if (!evidence.ok()) return false
+      const body = await evidence.json()
+      auditId = body.data?.[0]?.id ?? ''
+      return Boolean(auditId)
+    }).toBe(true)
+    await page.goto('/audit')
+    await expect(page.getByTestId(`audit-row-${auditId}`)).toBeVisible({ timeout: 10_000 })
   })
 
   // ── T-03: Actor filter — select admin actor_id → only admin-actor rows ─────
@@ -83,12 +93,18 @@ test.describe('Audit log page (D-04 UAT)', () => {
     page,
     request,
   }) => {
+    const fromTs = auditWindowStart()
     // Keep a trigger-created row with actor_id = null. It must be excluded by
     // the actor filter below.
     const triggerMutation = await request.post(`${API_BASE}/employees`, {
-      data: { name: 'Admin Made', employee_code: 'ADM001', department_id: 'dept-prod' },
+      data: {
+        name: 'Admin Made',
+        employee_code: `ADM${Date.now()}`,
+        department_id: 'dept-prod',
+      },
     })
     expect(triggerMutation.ok()).toBe(true)
+    const triggerEmployee = await triggerMutation.json()
 
     // Report exports are audited in app code, so the actor comes from the
     // authenticated admin JWT instead of being lost in a SQL trigger.
@@ -109,17 +125,21 @@ test.describe('Audit log page (D-04 UAT)', () => {
     let nullActorRowId = ''
     await expect.poll(
       async () => {
-        const before = await getAudit(request, { limit: 50 })
+        const before = await getAudit(request, { from_ts: fromTs, limit: 50 })
         if (!before.ok()) return false
         const beforeBody = await before.json()
         const entries: Array<{
           id: string
           table_name: string
+          record_id: string
           operation: string
           actor_id: string | null
         }> = beforeBody.data ?? []
         const nullActorRow = entries.find(
-          (entry) => entry.table_name === 'employees' && entry.actor_id === null
+          (entry) =>
+            entry.table_name === 'employees' &&
+            entry.record_id === triggerEmployee.id &&
+            entry.actor_id === null
         )
         const adminActorRow = entries.find(
           (entry) =>
@@ -179,14 +199,28 @@ test.describe('Audit log page (D-04 UAT)', () => {
 
   // ── T-04: Date range filter narrows results ────────────────────────────────
   test('filter by date range narrows results', async ({ page, request }) => {
+    const fromTs = auditWindowStart()
     // Pre-insert a deterministic audit entry
-    await request.post(`${API_BASE}/employees`, {
+    const mutation = await request.post(`${API_BASE}/employees`, {
       data: {
         name: 'Date Filter Test',
-        employee_code: 'DTE001',
+        employee_code: `DTE${Date.now()}`,
         department_id: 'dept-prod',
       },
     })
+    expect(mutation.ok()).toBe(true)
+    const employee = await mutation.json()
+    await expect.poll(async () => {
+      const evidence = await getAudit(request, {
+        table_name: 'employees',
+        record_id: employee.id,
+        operation: 'INSERT',
+        from_ts: fromTs,
+      })
+      if (!evidence.ok()) return false
+      const body = await evidence.json()
+      return (body.data?.length ?? 0) > 0
+    }).toBe(true)
 
     await page.goto('/audit')
 

@@ -24,7 +24,7 @@ use super::models::{CreateLeaveRequest, LeaveListQuery, LeaveResponse};
 
 const LEAVE_SELECT_COLS: &str =
     "id, employee_id, from_date, to_date, leave_type, justification, evidence_path, \
-     created_by, status, deleted_at, version, created_at, updated_at";
+     created_by, cancelled_by, status, deleted_at, version, created_at, updated_at";
 const MAX_LEAVE_DAYS: i64 = 366;
 
 /// Create a new leave row.
@@ -299,9 +299,11 @@ pub async fn list(
 /// cancelled; `NotFound` if the row doesn't exist at all.
 pub async fn cancel_queued(
     state: &AppState,
+    actor_id: &str,
     id: &str,
     version: i64,
 ) -> Result<LeaveResponse, AppError> {
+    let actor_id = actor_id.to_string();
     let id = id.to_string();
     let select_sql = format!("SELECT {} FROM leaves WHERE id = ?1", LEAVE_SELECT_COLS);
     let recompute_tx = state.recompute_tx.clone();
@@ -326,9 +328,9 @@ pub async fn cancel_queued(
 
                     let rows_affected = tx
                         .statement(
-                            "UPDATE leaves SET status = 'cancelled', deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
+                            "UPDATE leaves SET status = 'cancelled', cancelled_by = ?3, deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
                              WHERE id = ?1 AND status = 'active' AND version = ?2",
-                            params![id, version],
+                            params![id, version, actor_id],
                         )
                         .await?;
                     if rows_affected == 0 {
@@ -422,10 +424,11 @@ fn row_to_leave(row: libsql::Row) -> Result<LeaveResponse, AppError> {
         justification: row.get(5).map_err(|e| AppError::Internal(e.into()))?,
         evidence_path: row.get(6).map_err(|e| AppError::Internal(e.into()))?,
         created_by: row.get(7).map_err(|e| AppError::Internal(e.into()))?,
-        status: row.get(8).map_err(|e| AppError::Internal(e.into()))?,
-        deleted_at: epoch_to_iso_opt(row.get(9).map_err(|e| AppError::Internal(e.into()))?),
-        version: row.get(10).map_err(|e| AppError::Internal(e.into()))?,
-        created_at: epoch_to_iso(row.get(11).map_err(|e| AppError::Internal(e.into()))?),
-        updated_at: epoch_to_iso(row.get(12).map_err(|e| AppError::Internal(e.into()))?),
+        cancelled_by: row.get(8).map_err(|e| AppError::Internal(e.into()))?,
+        status: row.get(9).map_err(|e| AppError::Internal(e.into()))?,
+        deleted_at: epoch_to_iso_opt(row.get(10).map_err(|e| AppError::Internal(e.into()))?),
+        version: row.get(11).map_err(|e| AppError::Internal(e.into()))?,
+        created_at: epoch_to_iso(row.get(12).map_err(|e| AppError::Internal(e.into()))?),
+        updated_at: epoch_to_iso(row.get(13).map_err(|e| AppError::Internal(e.into()))?),
     })
 }

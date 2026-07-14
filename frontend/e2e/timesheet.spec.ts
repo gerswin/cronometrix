@@ -15,7 +15,12 @@ import { type Page, type APIRequestContext } from '@playwright/test'
 import { test, expect, API_BASE } from './fixtures/auth'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { resetMutableTables, getAudit, pushHikvisionEvent } from './fixtures/api'
+import {
+  auditWindowStart,
+  resetMutableTables,
+  getAudit,
+  pushHikvisionEvent,
+} from './fixtures/api'
 import { SEL } from './fixtures/selectors'
 
 // ---------------------------------------------------------------------------
@@ -148,6 +153,7 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     page,
     request,
   }) => {
+    const fromTs = auditWindowStart()
     await seedAnaAndWait(page, request)
 
     // Click the row-level edit button (pencil icon) for the first daily record
@@ -193,6 +199,8 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
         const r = await getAudit(request, {
           table_name: 'daily_record_overrides',
           operation: 'INSERT',
+          actor_id: 'e2e-admin-id',
+          from_ts: fromTs,
           limit: 5,
         })
         if (r.status() !== 200) return null
@@ -208,6 +216,7 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     page,
     request,
   }) => {
+    const fromTs = auditWindowStart()
     await page.goto('/timesheet')
     // Use the global button (no row selected → posts to /leaves)
     await page.getByTestId(SEL.openNovedadModal).first().click()
@@ -234,7 +243,13 @@ test.describe('Timesheet (Marcaciones) — D-03 CRUD UAT', () => {
     // Audit assertion — leaves INSERT (global button posts to /leaves)
     await expect.poll(
       async () => {
-        const r = await getAudit(request, { table_name: 'leaves', operation: 'INSERT', limit: 5 })
+        const r = await getAudit(request, {
+          table_name: 'leaves',
+          operation: 'INSERT',
+          actor_id: 'e2e-admin-id',
+          from_ts: fromTs,
+          limit: 5,
+        })
         if (r.status() !== 200) return null
         const body = await r.json()
         return body.total ?? body.data?.length ?? 0

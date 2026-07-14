@@ -918,7 +918,7 @@ async fn cancel_leave_optimistic_concurrency() {
     let conn = state.db.connect().expect("connect");
     let mut rows = conn
         .query(
-            "SELECT status, deleted_at FROM leaves WHERE id = ?1",
+            "SELECT status, deleted_at, cancelled_by FROM leaves WHERE id = ?1",
             params![leave_id.clone()],
         )
         .await
@@ -926,8 +926,31 @@ async fn cancel_leave_optimistic_concurrency() {
     let row = rows.next().await.unwrap().expect("row");
     let status: String = row.get(0).unwrap();
     let deleted_at: Option<i64> = row.get(1).unwrap();
+    let cancelled_by: Option<String> = row.get(2).unwrap();
     assert_eq!(status, "cancelled");
     assert!(deleted_at.is_some());
+    assert_eq!(cancelled_by.as_deref(), Some(admin.as_str()));
+
+    let audit = conn
+        .query(
+            "SELECT actor_id, json_extract(new_data, '$.cancelled_by'), json_extract(new_data, '$.justification') \
+             FROM audit_log WHERE table_name = 'leaves' AND record_id = ?1 AND operation = 'UPDATE' \
+             ORDER BY created_at DESC LIMIT 1",
+            params![leave_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("cancellation appends audit evidence");
+    assert_eq!(audit.get::<String>(0).unwrap(), admin);
+    assert_eq!(audit.get::<String>(1).unwrap(), admin);
+    assert_eq!(
+        audit.get::<String>(2).unwrap(),
+        "test justification",
+        "legal justification must remain in cancellation audit JSON"
+    );
 }
 
 // -----------------------------------------------------------------------------

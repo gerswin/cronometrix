@@ -428,7 +428,7 @@ async fn cancel_404_unknown_id() {
     let db = Arc::new(common::test_db().await);
     let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
     let _conn = db.connect().unwrap();
-    let err = ls::cancel_queued(&state, "no-such", 1)
+    let err = ls::cancel_queued(&state, "not-used", "no-such", 1)
         .await
         .expect_err("must 404");
     assert!(err.to_string().contains("not found"));
@@ -450,7 +450,7 @@ async fn cancel_409_stale_version() {
     )
     .await
     .unwrap();
-    let err = ls::cancel_queued(&state, &leave.id, leave.version + 99)
+    let err = ls::cancel_queued(&state, &admin, &leave.id, leave.version + 99)
         .await
         .expect_err("must 409");
     assert!(
@@ -476,10 +476,10 @@ async fn cancel_then_recancel_409() {
     )
     .await
     .unwrap();
-    ls::cancel_queued(&state, &leave.id, leave.version)
+    ls::cancel_queued(&state, &admin, &leave.id, leave.version)
         .await
         .unwrap();
-    let err = ls::cancel_queued(&state, &leave.id, leave.version + 1)
+    let err = ls::cancel_queued(&state, &admin, &leave.id, leave.version + 1)
         .await
         .expect_err("second cancel must 409");
     assert!(err.to_string().contains("conflict") || err.to_string().contains("modified"));
@@ -555,7 +555,7 @@ async fn fetch_active_leave_skips_cancelled_leaves() {
     )
     .await
     .unwrap();
-    ls::cancel_queued(&state, &leave.id, leave.version)
+    ls::cancel_queued(&state, &admin, &leave.id, leave.version)
         .await
         .unwrap();
     let anchor = NaiveDate::from_ymd_opt(2026, 4, 22).unwrap();

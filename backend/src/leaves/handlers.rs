@@ -219,10 +219,11 @@ pub struct CancelQuery {
 /// DELETE /api/v1/leaves/{id}?version=N — soft-delete + recompute the range.
 pub async fn cancel_leave(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
     Query(q): Query<CancelQuery>,
 ) -> Result<StatusCode, AppError> {
-    service::cancel_queued(&state, &id, q.version).await?;
+    service::cancel_queued(&state, &claims.sub, &id, q.version).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

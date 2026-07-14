@@ -88,3 +88,44 @@ async fn test_reset_returns_200_when_both_capabilities_are_enabled() {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body, serde_json::json!({"reset": true}));
 }
+
+#[tokio::test]
+async fn test_reset_preserves_existing_audit_evidence() {
+    let db = Arc::new(common::test_db().await);
+    let conn = db.connect().unwrap();
+    conn.execute(
+        "INSERT INTO audit_log (id, table_name, record_id, operation, new_data, created_at) \
+         VALUES ('reset-proof', 'employees', 'employee-proof', 'INSERT', '{}', 1770000000)",
+        (),
+    )
+    .await
+    .unwrap();
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), test_config());
+
+    let response = build_router(state, true, true)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/__test_reset")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM audit_log WHERE id = 'reset-proof'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 1, "E2E reset must never erase legal audit evidence");
+}

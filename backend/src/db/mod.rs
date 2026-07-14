@@ -79,6 +79,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "019_device_operation_checkpoints",
         include_str!("migrations/019_device_operation_checkpoints.sql"),
     ),
+    (
+        "020_audit_immutability",
+        include_str!("migrations/020_audit_immutability.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded
