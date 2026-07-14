@@ -55,7 +55,13 @@ function frontendMetrics(overrides = {}) {
   }
 }
 
-function writeFrontendSummary(root, files) {
+function artifactSourcePath(root, relativePath, side, style) {
+  if (style === 'repo-relative') return relativePath
+  if (style === 'side-relative') return relativePath.slice(`${side}/`.length)
+  return path.join(root, relativePath)
+}
+
+function writeFrontendSummary(root, files, style = 'absolute') {
   const summary = {
     total: frontendMetrics({
       statements: { total: 0, covered: 0, skipped: 0, pct: 100 },
@@ -65,17 +71,17 @@ function writeFrontendSummary(root, files) {
     }),
   }
   for (const [relativePath, metrics] of Object.entries(files)) {
-    summary[path.join(root, relativePath)] = metrics
+    summary[artifactSourcePath(root, relativePath, 'frontend', style)] = metrics
   }
   const output = path.join(root, 'coverage-summary.json')
   writeFileSync(output, `${JSON.stringify(summary)}\n`)
   return output
 }
 
-function writeBackendLcov(root, files) {
+function writeBackendLcov(root, files, style = 'absolute') {
   const records = Object.entries(files).map(
     ([relativePath, counters]) => [
-      `SF:${path.join(root, relativePath)}`,
+      `SF:${artifactSourcePath(root, relativePath, 'backend', style)}`,
       `LF:${counters.LF}`,
       `LH:${counters.LH}`,
       `BRF:${counters.BRF}`,
@@ -179,6 +185,44 @@ test('passes a backend-only manifest and artifact', () => {
   }), 1, 0)
 })
 
+test('normalizes repo-relative paths from both coverage artifacts', () => {
+  const backendFile = 'backend/src/auth/service.rs'
+  const frontendFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([backendFile, frontendFile])
+  const backendLcov = writeBackendLcov(root, {
+    [backendFile]: { LF: 10, LH: 7, BRF: 10, BRH: 6 },
+  }, 'repo-relative')
+  const frontendSummary = writeFrontendSummary(root, {
+    [frontendFile]: frontendMetrics(),
+  }, 'repo-relative')
+
+  expectPass(runChecker({
+    root,
+    manifest: manifest(baseSha, { backend: [backendFile], frontend: [frontendFile] }),
+    frontendSummary,
+    backendLcov,
+  }), 1, 1)
+})
+
+test('normalizes side-relative src paths from both coverage artifacts', () => {
+  const backendFile = 'backend/src/auth/service.rs'
+  const frontendFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([backendFile, frontendFile])
+  const backendLcov = writeBackendLcov(root, {
+    [backendFile]: { LF: 10, LH: 7, BRF: 10, BRH: 6 },
+  }, 'side-relative')
+  const frontendSummary = writeFrontendSummary(root, {
+    [frontendFile]: frontendMetrics(),
+  }, 'side-relative')
+
+  expectPass(runChecker({
+    root,
+    manifest: manifest(baseSha, { backend: [backendFile], frontend: [frontendFile] }),
+    frontendSummary,
+    backendLcov,
+  }), 1, 1)
+})
+
 test('fails when a changed covered file is omitted from the manifest', () => {
   const frontendFile = 'frontend/src/lib/api.ts'
   const { root, baseSha } = makeRepo([frontendFile])
@@ -230,6 +274,25 @@ test('fails when a manifest side is null instead of absent or an array', () => {
   }), /FAIL:.*manifest backend must be an array/i)
 })
 
+for (const [label, thresholds] of [
+  ['absent', undefined],
+  ['null', null],
+  ['malformed', { backend: 'invalid', frontend: 'invalid' }],
+]) {
+  test(`fails cleanly when thresholds are ${label} for a present side`, () => {
+    const frontendFile = 'frontend/src/lib/api.ts'
+    const { root, baseSha } = makeRepo([frontendFile])
+    const frontendSummary = writeFrontendSummary(root, {
+      [frontendFile]: frontendMetrics(),
+    })
+    expectFail(runChecker({
+      root,
+      manifest: manifest(baseSha, { thresholds, frontend: [frontendFile] }),
+      frontendSummary,
+    }), /FAIL:.*frontend thresholds/i)
+  })
+}
+
 test('fails closed on malformed frontend JSON', () => {
   const { root, baseSha } = makeRepo()
   const frontendSummary = path.join(root, 'coverage-summary.json')
@@ -253,6 +316,42 @@ test('fails closed on malformed backend LCOV counters', () => {
     manifest: manifest(baseSha, { backend: [backendFile] }),
     backendLcov,
   }), /FAIL:.*backend.*malformed.*LF/i)
+})
+
+test('fails closed when a required backend LCOV counter is absent', () => {
+  const backendFile = 'backend/src/auth/service.rs'
+  const { root, baseSha } = makeRepo([backendFile])
+  const backendLcov = path.join(root, 'lcov.info')
+  writeFileSync(backendLcov, `SF:${path.join(root, backendFile)}\nLF:10\nLH:7\nBRF:10\nend_of_record\n`)
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha, { backend: [backendFile] }),
+    backendLcov,
+  }), /FAIL:.*backend.*missing BRH.*backend\/src\/auth\/service\.rs/i)
+})
+
+test('does not split an LCOV record when end_of_record occurs inside FN and FNDA', () => {
+  const backendFile = 'backend/src/auth/service.rs'
+  const { root, baseSha } = makeRepo([backendFile])
+  const backendLcov = path.join(root, 'lcov.info')
+  writeFileSync(backendLcov, [
+    `SF:${path.join(root, backendFile)}`,
+    'FN:1,helper_end_of_record_name',
+    'FNDA:1,helper_end_of_record_name',
+    'LF:10',
+    'LH:7',
+    'BRF:10',
+    'BRH:6',
+    'end_of_record',
+    '',
+  ].join('\n'))
+
+  expectPass(runChecker({
+    root,
+    manifest: manifest(baseSha, { backend: [backendFile] }),
+    backendLcov,
+  }), 1, 0)
 })
 
 for (const [metric, threshold] of Object.entries({
@@ -299,6 +398,56 @@ test('rejects missing, malformed, non-finite, and Unknown frontend metrics', () 
       frontendSummary,
     }), new RegExp(`FAIL:.*frontend.*lines.*${label}`, 'i'))
   }
+})
+
+test('rejects frontend pct metrics outside the inclusive zero-to-100 range', () => {
+  for (const value of [-0.01, 100.01]) {
+    const frontendFile = 'frontend/src/lib/api.ts'
+    const { root, baseSha } = makeRepo([frontendFile])
+    const frontendSummary = writeFrontendSummary(root, {
+      [frontendFile]: frontendMetrics({ lines: { pct: value } }),
+    })
+
+    expectFail(runChecker({
+      root,
+      manifest: manifest(baseSha, { frontend: [frontendFile] }),
+      frontendSummary,
+    }), new RegExp(`FAIL:.*frontend lines.*out of range.*${String(value).replace('.', '\\.')}`, 'i'))
+  }
+})
+
+test('rejects duplicate frontend keys after path normalization', () => {
+  const frontendFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([frontendFile])
+  const frontendSummary = path.join(root, 'coverage-summary.json')
+  writeFileSync(frontendSummary, `${JSON.stringify({
+    total: frontendMetrics(),
+    [path.join(root, frontendFile)]: frontendMetrics(),
+    [frontendFile]: frontendMetrics(),
+  })}\n`)
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha, { frontend: [frontendFile] }),
+    frontendSummary,
+  }), /FAIL:.*frontend.*duplicate.*frontend\/src\/lib\/api\.ts/i)
+})
+
+test('rejects normalized duplicate keys even when the first metrics are malformed', () => {
+  const frontendFile = 'frontend/src/lib/api.ts'
+  const { root, baseSha } = makeRepo([frontendFile])
+  const frontendSummary = path.join(root, 'coverage-summary.json')
+  writeFileSync(frontendSummary, `${JSON.stringify({
+    total: frontendMetrics(),
+    [path.join(root, frontendFile)]: { lines: { pct: 'invalid' } },
+    [frontendFile]: frontendMetrics(),
+  })}\n`)
+
+  expectFail(runChecker({
+    root,
+    manifest: manifest(baseSha, { frontend: [frontendFile] }),
+    frontendSummary,
+  }), /FAIL:.*frontend.*duplicate.*frontend\/src\/lib\/api\.ts/i)
 })
 
 test('fails when backend line coverage is below its floor', () => {

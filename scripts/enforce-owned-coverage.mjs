@@ -98,12 +98,16 @@ function validateManifest(raw, errors) {
   return result
 }
 
-function repoRelative(repoRoot, rawPath, label, errors) {
+function repoRelative(repoRoot, side, rawPath, label, errors) {
   if (typeof rawPath !== 'string' || rawPath.length === 0) {
     errors.push(`${label} contains an empty source path`)
     return undefined
   }
-  const resolved = path.isAbsolute(rawPath) ? path.normalize(rawPath) : path.resolve(repoRoot, rawPath)
+  const resolved = path.isAbsolute(rawPath)
+    ? path.normalize(rawPath)
+    : rawPath.startsWith(`${side}/`)
+      ? path.resolve(repoRoot, rawPath)
+      : path.resolve(repoRoot, side, rawPath)
   let absolute = resolved
   try {
     absolute = realpathSync(resolved)
@@ -142,7 +146,7 @@ function parseBackendLcov(filePath, repoRoot, errors) {
     return new Map()
   }
   const files = new Map()
-  for (const block of content.split(/end_of_record\s*/)) {
+  for (const block of content.split(/^end_of_record\r?$/m)) {
     const record = block.split(/\r?\n/).filter(Boolean)
     if (record.length === 0) continue
     const sourceLines = record.filter((line) => line.startsWith('SF:'))
@@ -150,7 +154,7 @@ function parseBackendLcov(filePath, repoRoot, errors) {
       errors.push('backend malformed LCOV record has missing or duplicate SF')
       continue
     }
-    const file = repoRelative(repoRoot, sourceLines[0].slice(3), 'backend LCOV', errors)
+    const file = repoRelative(repoRoot, 'backend', sourceLines[0].slice(3), 'backend LCOV', errors)
     if (file === undefined) continue
     const LF = parseCounter(record, 'LF', file, errors)
     const LH = parseCounter(record, 'LH', file, errors)
@@ -191,12 +195,17 @@ function frontendMetric(metrics, metric, file, errors) {
     errors.push(`frontend ${metric} metric is malformed for ${file}`)
     return undefined
   }
+  if (value < 0 || value > 100) {
+    errors.push(`frontend ${metric} metric is out of range for ${file}: ${value}`)
+    return undefined
+  }
   return value
 }
 
 function parseFrontendSummary(filePath, repoRoot, errors) {
   const raw = readJson(filePath, 'frontend coverage summary', errors)
   const files = new Map()
+  const seen = new Set()
   if (raw === undefined) return files
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     errors.push('frontend coverage summary JSON must be an object')
@@ -204,8 +213,13 @@ function parseFrontendSummary(filePath, repoRoot, errors) {
   }
   for (const [rawPath, metrics] of Object.entries(raw)) {
     if (rawPath === 'total') continue
-    const file = repoRelative(repoRoot, rawPath, 'frontend coverage summary', errors)
+    const file = repoRelative(repoRoot, 'frontend', rawPath, 'frontend coverage summary', errors)
     if (file === undefined) continue
+    if (seen.has(file)) {
+      errors.push(`frontend coverage summary contains duplicate normalized source path ${file}`)
+      continue
+    }
+    seen.add(file)
     if (metrics === null || typeof metrics !== 'object' || Array.isArray(metrics)) {
       errors.push(`frontend metrics are malformed for ${file}`)
       continue
@@ -283,6 +297,7 @@ function main() {
   const rawManifest = readJson(manifestPath, 'manifest', errors)
   const manifest = rawManifest === undefined ? undefined : validateManifest(rawManifest, errors)
   if (manifest === undefined) return fail(errors)
+  if (errors.length > 0) return fail(errors)
 
   const frontendPath = flags.get('--frontend-summary')
   const backendPath = flags.get('--backend-lcov')
