@@ -4,8 +4,10 @@
 //! HTTP. The mock is a deterministic protocol fixture; it does not prove
 //! digest authentication or compatibility with physical Hikvision hardware.
 
+use std::io::Read;
 use std::net::TcpListener;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use image::GenericImageView;
@@ -34,6 +36,67 @@ fn assert_success(output: &Output, context: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn drain_pipe<R>(mut pipe: R) -> JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_pipe(reader: JoinHandle<std::io::Result<Vec<u8>>>, name: &str) -> Vec<u8> {
+    reader
+        .join()
+        .unwrap_or_else(|_| panic!("{name} reader thread panicked"))
+        .unwrap_or_else(|error| panic!("read child {name}: {error}"))
+}
+
+fn run_with_deadline(mut command: Command, timeout: Duration, context: &str) -> Output {
+    let child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {context}: {error}"));
+    let mut guard = ChildGuard::new(child);
+    let stdout_reader = drain_pipe(guard.child_mut().stdout.take().expect("child stdout pipe"));
+    let stderr_reader = drain_pipe(guard.child_mut().stderr.take().expect("child stderr pipe"));
+    let deadline = Instant::now() + timeout;
+
+    let status = loop {
+        if guard
+            .try_wait()
+            .unwrap_or_else(|error| panic!("poll {context}: {error}"))
+            .is_some()
+        {
+            break guard
+                .reap()
+                .unwrap_or_else(|error| panic!("reap {context}: {error}"));
+        }
+        if Instant::now() >= deadline {
+            let status = guard
+                .kill_and_wait()
+                .unwrap_or_else(|error| panic!("kill timed-out {context}: {error}"));
+            let stdout = join_pipe(stdout_reader, "stdout");
+            let stderr = join_pipe(stderr_reader, "stderr");
+            panic!(
+                "{context} exceeded {timeout:?}; terminated with {status:?}\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    Output {
+        status,
+        stdout: join_pipe(stdout_reader, "stdout"),
+        stderr: join_pipe(stderr_reader, "stderr"),
+    }
 }
 
 async fn scalar_count(conn: &Connection, table: &str) -> i64 {
@@ -81,18 +144,22 @@ fn seeded_command(db_path: &std::path::Path) -> Command {
 
 #[tokio::test]
 async fn seed_e2e_refuses_unsafe_use_and_idempotently_seeds_stable_domain_data() {
-    let refused = isolated_command(env!("CARGO_BIN_EXE_seed_e2e"))
-        .output()
-        .expect("spawn refused seed_e2e");
+    let refused = run_with_deadline(
+        isolated_command(env!("CARGO_BIN_EXE_seed_e2e")),
+        Duration::from_secs(30),
+        "refused seed_e2e",
+    );
     assert_eq!(refused.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&refused.stderr)
         .contains("seed_e2e refuses to run without CRONOMETRIX_E2E=true"));
 
     let tempdir = tempfile::TempDir::new().expect("seed tempdir");
     let db_path = tempdir.path().join("seed.db");
-    let first = seeded_command(&db_path)
-        .output()
-        .expect("spawn first seed_e2e");
+    let first = run_with_deadline(
+        seeded_command(&db_path),
+        Duration::from_secs(30),
+        "first seed_e2e",
+    );
     assert_success(&first, "first seed_e2e run");
     assert!(String::from_utf8_lossy(&first.stdout).contains("seed_e2e: complete"));
 
@@ -232,9 +299,11 @@ async fn seed_e2e_refuses_unsafe_use_and_idempotently_seeds_stable_domain_data()
     drop(conn);
     drop(db);
 
-    let second = seeded_command(&db_path)
-        .output()
-        .expect("spawn second seed_e2e");
+    let second = run_with_deadline(
+        seeded_command(&db_path),
+        Duration::from_secs(30),
+        "second seed_e2e",
+    );
     assert_success(&second, "second seed_e2e run");
     assert!(String::from_utf8_lossy(&second.stdout).contains("seed_e2e: complete"));
 
@@ -265,22 +334,41 @@ impl ChildGuard {
         self.child.as_mut().expect("child still owned")
     }
 
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.child_mut().try_wait()
+    }
+
+    fn reap(&mut self) -> std::io::Result<ExitStatus> {
+        let status = self.child_mut().wait()?;
+        self.child.take();
+        Ok(status)
+    }
+
+    fn kill_and_wait(&mut self) -> std::io::Result<ExitStatus> {
+        if let Err(kill_error) = self.child_mut().kill() {
+            if self.child_mut().try_wait()?.is_none() {
+                return Err(kill_error);
+            }
+        }
+        self.reap()
+    }
+
     fn sigint_and_wait(mut self) -> std::process::ExitStatus {
-        let mut child = self.child.take().expect("child still owned");
+        let child_id = self.child_mut().id().to_string();
         let signal = Command::new("/bin/kill")
-            .args(["-INT", &child.id().to_string()])
+            .args(["-INT", &child_id])
             .status()
             .expect("send SIGINT");
         assert!(signal.success(), "SIGINT command failed: {signal:?}");
 
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(status) = child.try_wait().expect("poll mock child") {
-                return status;
+            if self.try_wait().expect("poll mock child").is_some() {
+                return self.reap().expect("reap mock child after SIGINT");
             }
             if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
+                self.kill_and_wait()
+                    .expect("kill mock after SIGINT timeout");
                 panic!("mock did not exit within 10s after SIGINT");
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -308,26 +396,75 @@ fn pick_two_ports() -> (u16, u16) {
     ports
 }
 
+enum Readiness {
+    Ready,
+    Exited(ExitStatus),
+    TimedOut,
+}
+
 async fn wait_until_ready(
     client: &Client,
-    child: &mut Child,
+    guard: &mut ChildGuard,
     admin_url: &str,
-) -> Result<(), String> {
+) -> Result<Readiness, String> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            return Err(format!("mock exited before readiness: {status:?}"));
+        if let Some(status) = guard.try_wait().map_err(|error| error.to_string())? {
+            return Ok(Readiness::Exited(status));
         }
         if let Ok(response) = client.get(format!("{admin_url}/admin/health")).send().await {
-            if response.status().is_success() {
-                return Ok(());
+            let is_ready = response.status().is_success()
+                && response.text().await.is_ok_and(|body| body == "ok");
+            if is_ready {
+                if let Some(status) = guard.try_wait().map_err(|error| error.to_string())? {
+                    return Ok(Readiness::Exited(status));
+                }
+                return Ok(Readiness::Ready);
             }
         }
         if Instant::now() >= deadline {
-            return Err("mock readiness timed out after 20s".into());
+            return Ok(Readiness::TimedOut);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+async fn spawn_ready_mock(client: &Client) -> Result<(ChildGuard, String, String), String> {
+    const MAX_ATTEMPTS: usize = 3;
+    let mut early_exits = Vec::new();
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let (public_port, admin_port) = pick_two_ports();
+        let public_url = format!("http://127.0.0.1:{public_port}");
+        let admin_url = format!("http://127.0.0.1:{admin_port}");
+        let child = isolated_command(env!("CARGO_BIN_EXE_mock_hikvision"))
+            .env("MOCK_HIKVISION_PORT", public_port.to_string())
+            .env("MOCK_HIKVISION_ADMIN_PORT", admin_port.to_string())
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("spawn mock_hikvision attempt {attempt}: {error}"))?;
+        let mut guard = ChildGuard::new(child);
+
+        match wait_until_ready(client, &mut guard, &admin_url).await? {
+            Readiness::Ready => return Ok((guard, public_url, admin_url)),
+            Readiness::Exited(status) => {
+                early_exits.push(format!("attempt {attempt}: {status:?}"));
+                drop(guard);
+            }
+            Readiness::TimedOut => {
+                return Err(format!(
+                    "mock readiness timed out after 20s on attempt {attempt}"
+                ));
+            }
+        }
+    }
+
+    Err(format!(
+        "mock exited before readiness on all {MAX_ATTEMPTS} fresh port pairs: {}",
+        early_exits.join(", ")
+    ))
 }
 
 async fn response_json(response: reqwest::Response) -> Value {
@@ -339,28 +476,27 @@ async fn response_json(response: reqwest::Response) -> Value {
         .expect("JSON response")
 }
 
+fn command_triples(commands: &[Value]) -> Vec<(&str, &str, &str)> {
+    commands
+        .iter()
+        .map(|entry| {
+            (
+                entry["method"].as_str().expect("logged method"),
+                entry["path"].as_str().expect("logged path"),
+                entry["body"].as_str().expect("logged body"),
+            )
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
-    let (public_port, admin_port) = pick_two_ports();
-    let public_url = format!("http://127.0.0.1:{public_port}");
-    let admin_url = format!("http://127.0.0.1:{admin_port}");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("HTTP client");
 
-    let child = isolated_command(env!("CARGO_BIN_EXE_mock_hikvision"))
-        .env("MOCK_HIKVISION_PORT", public_port.to_string())
-        .env("MOCK_HIKVISION_ADMIN_PORT", admin_port.to_string())
-        .env("RUST_LOG", "warn")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn mock_hikvision");
-    let mut guard = ChildGuard::new(child);
-    wait_until_ready(&client, guard.child_mut(), &admin_url)
-        .await
-        .expect("mock readiness");
+    let (guard, public_url, admin_url) = spawn_ready_mock(&client).await.expect("mock readiness");
 
     let health = client
         .get(format!("{admin_url}/admin/health"))
@@ -397,6 +533,7 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
         .send()
         .await
         .expect("alert stream");
+    assert_eq!(stream.status(), StatusCode::OK);
     assert_eq!(
         stream.headers()[reqwest::header::CONTENT_TYPE],
         "multipart/mixed; boundary=MIME_boundary"
@@ -405,14 +542,13 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
     assert!(stream_body.contains("--MIME_boundary"));
     assert!(stream_body.contains(event_xml));
     assert!(stream_body.ends_with("--MIME_boundary--\r\n"));
-    let drained = client
+    let drained_response = client
         .get(format!("{public_url}/ISAPI/Event/notification/alertStream"))
         .send()
         .await
-        .expect("drained alert stream")
-        .text()
-        .await
-        .expect("drained stream body");
+        .expect("drained alert stream");
+    assert_eq!(drained_response.status(), StatusCode::OK);
+    let drained = drained_response.text().await.expect("drained stream body");
     assert_eq!(drained, "--MIME_boundary--\r\n");
 
     response_json(
@@ -433,11 +569,13 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
     )
     .await;
     assert_eq!(cleared["cleared"], true);
-    let cleared_stream = client
+    let cleared_stream_response = client
         .get(format!("{public_url}/ISAPI/Event/notification/alertStream"))
         .send()
         .await
-        .expect("cleared alert stream")
+        .expect("cleared alert stream");
+    assert_eq!(cleared_stream_response.status(), StatusCode::OK);
+    let cleared_stream = cleared_stream_response
         .text()
         .await
         .expect("cleared stream body");
@@ -533,17 +671,33 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
     )
     .await;
     let commands = log["commands"].as_array().expect("commands array");
-    assert_eq!(commands.len(), 6);
-    assert!(commands.iter().any(|entry| {
-        entry["method"] == "PUT"
-            && entry["path"] == "/ISAPI/AccessControl/RemoteControl/door/1"
-            && entry["body"] == "<door>open</door>"
-    }));
-    assert!(commands.iter().any(|entry| {
-        entry["method"] == "POST"
-            && entry["path"] == "/ISAPI/AccessControl/UserInfo/Record"
-            && entry["body"] == r#"{"employeeNo":"EMP001"}"#
-    }));
+    assert_eq!(
+        command_triples(commands),
+        vec![
+            (
+                "PUT",
+                "/ISAPI/AccessControl/RemoteControl/door/1",
+                "<door>open</door>"
+            ),
+            ("PUT", "/ISAPI/System/reboot", "<reboot>true</reboot>"),
+            ("POST", "/ISAPI/AccessControl/CaptureFaceData", "<capture/>"),
+            (
+                "PUT",
+                "/ISAPI/AccessControl/UserInfoDetail/Delete",
+                "<delete>EMP999</delete>"
+            ),
+            (
+                "POST",
+                "/ISAPI/AccessControl/UserInfo/Record",
+                r#"{"employeeNo":"EMP001"}"#
+            ),
+            (
+                "POST",
+                "/ISAPI/Intelligent/FDLib/FaceDataRecord",
+                r#"{"employeeNo":"EMP001","faceURL":"data"}"#
+            ),
+        ]
+    );
     assert!(commands
         .iter()
         .all(|entry| entry["timestamp_ms"].as_u64().is_some()));
@@ -641,13 +795,26 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
     let scripted_commands = scripted_log["commands"]
         .as_array()
         .expect("scripted commands");
-    assert_eq!(scripted_commands.len(), 3);
-    assert!(scripted_commands.iter().all(|entry| {
-        entry["method"] == "POST"
-            && entry["body"]
-                .as_str()
-                .is_some_and(|body| body.contains("EMP002"))
-    }));
+    assert_eq!(
+        command_triples(scripted_commands),
+        vec![
+            (
+                "POST",
+                "/ISAPI/AccessControl/UserInfo/Record",
+                r#"{"employeeNo":"EMP002"}"#
+            ),
+            (
+                "POST",
+                "/ISAPI/Intelligent/FDLib/FaceDataRecord",
+                r#"{"employeeNo":"EMP002"}"#
+            ),
+            (
+                "POST",
+                "/ISAPI/Intelligent/FDLib/FaceDataRecord",
+                r#"{"employeeNo":"EMP002"}"#
+            ),
+        ]
+    );
 
     let status = guard.sigint_and_wait();
     assert!(status.success(), "mock SIGINT exit failed: {status:?}");
