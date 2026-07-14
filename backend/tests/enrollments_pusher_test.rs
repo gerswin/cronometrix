@@ -1014,6 +1014,59 @@ async fn transport_error_with_empty_password_preserves_the_error_text() {
 }
 
 #[tokio::test]
+async fn authorized_dispatch_admission_failure_terminalizes_the_committed_push() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_department_id, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device_at(&state.db, &config.device_creds_key, "http://127.0.0.1:1").await;
+    state.enrollment_tasks.stop_and_join().await.unwrap();
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "device",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+
+    let dispatcher = state
+        .enrollment_dispatcher
+        .start(state.clone())
+        .await
+        .unwrap();
+    state.enrollment_dispatcher.close().unwrap();
+    dispatcher.await.unwrap().unwrap();
+
+    let row = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT e.status, p.status, p.error_message \
+             FROM enrollments e JOIN enrollment_device_pushes p ON p.enrollment_id=e.id \
+             WHERE e.id=?1",
+            params![started.enrollment_id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert_eq!(row.get::<String>(1).unwrap(), "failed");
+    assert!(row
+        .get::<Option<String>>(2)
+        .unwrap()
+        .unwrap()
+        .contains("could not be admitted"));
+}
+
+#[tokio::test]
 async fn spawn_enrollment_pushes_zero_devices_finalises_failed() {
     let db = common::test_db().await;
     let config = make_config();
