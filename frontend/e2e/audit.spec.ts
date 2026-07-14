@@ -131,7 +131,6 @@ test.describe('Audit log page (D-04 UAT)', () => {
         return Boolean(nullActorRow && adminActorRow)
       },
       {
-        timeout: 10_000,
         message: 'Expected both a null-actor trigger row and an admin report export row',
       }
     ).toBe(true)
@@ -145,7 +144,7 @@ test.describe('Audit log page (D-04 UAT)', () => {
     const actorFilter = page.getByTestId('audit-filter-actor')
     await expect(
       actorFilter.locator('option[value="e2e-admin-id"]')
-    ).toHaveCount(1, { timeout: 10_000 })
+    ).toHaveCount(1)
 
     // Select by actor_id (W6 OPTION A: value = actor_id string "e2e-admin-id").
     // See 09-05-SUMMARY.md: actor_id is users.id; the option value IS the actor_id.
@@ -169,7 +168,7 @@ test.describe('Audit log page (D-04 UAT)', () => {
     // The authenticated report export remains, while the null-actor trigger row
     // is excluded. Every rendered actor cell must match the selected actor.
     const rows = page.locator('[data-testid^="audit-row-"]')
-    await expect(rows.first()).toBeVisible({ timeout: 10_000 })
+    await expect(rows.first()).toBeVisible()
     await expect(page.getByTestId(`audit-row-${nullActorRowId}`)).toHaveCount(0)
     const rowCount = await rows.count()
     expect(rowCount).toBeGreaterThan(0)

@@ -148,7 +148,6 @@ test.describe('Reports (Reportes) — D-03 export verification', () => {
         return names.join('|')
       },
       {
-        timeout: 15_000,
         message: 'Monthly report never contained Ana or Luis after event ingestion',
       }
     ).toMatch(/Ana|Luis/i)
