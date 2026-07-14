@@ -20,6 +20,12 @@
 - Do not log, commit, or attach licenses, Cloudflare tokens, GHCR tokens, JWT secrets, device credentials, `.env` files, SQLite databases, face images, or source-bearing HTML reports.
 - Keep real Hikvision validation and cross-host LIC-05 validation explicitly deferred; mocks are not evidence that those live checks passed.
 - A plan is complete only when its summary records the tested SHA, exact commands, exit codes, and remaining risks.
+- Plans 12-02 through 12-04 close scoped checkpoints, not the release gate. Their
+  summaries may record `Verdict: PASS — scoped <name> checkpoint` only when
+  their owned behavior and every production file they modified meet the
+  repository per-file floors. Raw project-wide coverage failures remain
+  `Release gate: FAIL — deferred to 12-05`; they are never normalized away.
+- Plan 12-05 is the only plan allowed to record an unqualified release `PASS`.
 
 ## Execution graph
 
@@ -48,8 +54,8 @@ Phase 13 live validation
 |---|---|---|---|
 | `12-01-PLAN.md` | reproducible Node/Rust harness and truthful planning baseline | design approval | no |
 | `12-02-PLAN.md` | auth, devices, enrollment, timesheet, and SSE contracts fixed | 12-01 | no; integrate before 12-03 starts |
-| `12-03-PLAN.md` | bounded single-writer queue, atomic domains, immutable audit log | integrated 12-02 PASS | no |
-| `12-04-PLAN.md` | same-origin gateway, private GHCR images, private installer bundle | 12-02 and 12-03 | no |
+| `12-03-PLAN.md` | bounded single-writer queue, atomic domains, immutable audit log | integrated 12-02 scoped functional PASS | no |
+| `12-04-PLAN.md` | same-origin gateway, private GHCR images, private installer bundle | 12-02 and 12-03 scoped PASS | no |
 | `12-05-PLAN.md` | fmt, lint, type, tests, coverage, E2E, containers all green on one SHA | 12-04 | no |
 
 ## Required summaries
@@ -67,4 +73,6 @@ The summary commit is evidence after the tested implementation. Identify it in
 the handoff/git history; never try to embed its not-yet-created SHA inside its
 own file.
 
-The phase closes only when all five summaries exist and `12-05-SUMMARY.md` records `Verdict: PASS`.
+The phase closes only when all five summaries exist and `12-05-SUMMARY.md`
+records the sole unqualified `Verdict: PASS`. Earlier summaries preserve their
+scoped verdicts and their raw release-gate failures until that convergence.
