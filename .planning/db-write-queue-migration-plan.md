@@ -1,3 +1,26 @@
+# Status: superseded/completed by Phase 12 Plan 12-03
+
+This document is retained as historical planning input. Its executable
+replacement is
+`.planning/phases/12-v1-0-release-stabilization/12-03-PLAN.md`, which completed
+the original intent with a bounded/drained queue, atomic domain transitions,
+an enforced queue-only boundary, immutable audit rows, and load evidence.
+
+| Historical sprint | Completed by Phase 12 Plan 12-03 |
+|---|---|
+| Sprint 1 — close existing queue gaps | Tasks 1, 3, and 5 |
+| Sprint 2 — migrate core CRUD writes | Tasks 1 and 5 |
+| Sprint 3 — leave, timesheet, and daily records | Tasks 2, 4, and 5 |
+| Sprint 4 — system writers and background jobs | Tasks 1, 3, and 5 |
+| Sprint 5 — eliminate direct helpers | Task 5 static queue-only gate |
+| Sprint 6 — prove contention is gone | Task 7 four-profile load proof |
+
+The historical Sprint 6 path `scripts/load_test.sh` was inaccurate. The real
+and retained script is `backend/scripts/load_test.sh`; the Phase 12 orchestration
+entry point is `backend/scripts/run_write_queue_load_profiles.sh`.
+
+---
+
 # Plan: DB Write Queue Migration
 
 **Generated**: 2026-04-30

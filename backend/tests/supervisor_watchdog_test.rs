@@ -196,6 +196,7 @@ async fn watchdog_task_runs_iteration_after_advance() {
     let cancel = CancellationToken::new();
     let cancel_for_task = cancel.clone();
     let state_for_task = state.clone();
+    let queue = state.db_write.clone();
 
     let handle = tokio::spawn(async move {
         watchdog::watchdog_task(state_for_task, cancel_for_task).await;
@@ -203,11 +204,16 @@ async fn watchdog_task_runs_iteration_after_advance() {
 
     // Advance past the first scheduled tick (10s interval; the first immediate
     // tick is consumed by the task itself).
+    tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(15)).await;
-    // Yield repeatedly so the spawned task gets a chance to execute the iteration.
-    for _ in 0..40 {
+    // Observe queue completion so cancellation cannot win before run_once.
+    for _ in 0..100 {
+        if queue.stats().completed > 0 {
+            break;
+        }
         tokio::task::yield_now().await;
     }
+    assert_eq!(queue.stats().completed, 1);
 
     // Without resuming the clock, the libSQL UPDATE itself uses real wall
     // time for unixepoch() — but the iteration body does run. We cannot
@@ -231,6 +237,36 @@ async fn watchdog_task_runs_iteration_after_advance() {
     let row = rows.next().await.unwrap().unwrap();
     let cs: String = row.get(0).unwrap();
     assert_eq!(cs, "offline");
+}
+
+#[tokio::test(start_paused = true)]
+async fn watchdog_task_survives_a_closed_write_queue_iteration() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    state.db_write.close_and_flush().await.unwrap();
+    let queue = state.db_write.clone();
+    let cancel = CancellationToken::new();
+    let cancel_for_task = cancel.clone();
+
+    let handle = tokio::spawn(async move {
+        watchdog::watchdog_task(state, cancel_for_task).await;
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(15)).await;
+    for _ in 0..100 {
+        if queue.stats().closed_rejections > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(queue.stats().closed_rejections, 1);
+    cancel.cancel();
+
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("watchdog exits after a failed iteration")
+        .expect("watchdog does not panic on a failed iteration");
 }
 
 // =============================================================================

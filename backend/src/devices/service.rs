@@ -68,63 +68,6 @@ fn val_err(msg: impl Into<String>) -> AppError {
 
 /// Create a new device. Encrypts the password with AES-256-GCM per D-01 before
 /// INSERT. Returns `Conflict(DEVICE_IP_EXISTS)` on unique-index violation.
-pub async fn create(
-    conn: &Connection,
-    req: CreateDeviceRequest,
-    key: &[u8; 32],
-) -> Result<DeviceResponse, AppError> {
-    // Enum/format checks that validator::Validate can't express inline.
-    validate_ip(&req.ip).map_err(val_err)?;
-    validate_scheme(&req.scheme).map_err(val_err)?;
-    validate_direction(&req.direction).map_err(val_err)?;
-
-    let encrypted_password =
-        crypto::encrypt_password(&req.password, key).map_err(AppError::Internal)?;
-
-    let id = Uuid::new_v4().to_string();
-    let allow_int: i64 = if req.allow_insecure_tls { 1 } else { 0 };
-
-    let result = conn
-        .execute(
-            "INSERT INTO devices (\
-                 id, name, ip, port, scheme, username, encrypted_password, \
-                 direction, allow_insecure_tls, connection_state, status, version, \
-                 created_at, updated_at\
-             ) VALUES (\
-                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'offline', 'active', 1, unixepoch(), unixepoch()\
-             )",
-            params![
-                id.clone(),
-                req.name.clone(),
-                req.ip.clone(),
-                req.port,
-                req.scheme.clone(),
-                req.username.clone(),
-                encrypted_password,
-                req.direction.clone(),
-                allow_int,
-            ],
-        )
-        .await;
-
-    if let Err(e) = result {
-        let msg = e.to_string();
-        // SQLite reports the partial unique index by index name when it fires.
-        if msg.contains("UNIQUE constraint failed")
-            && (msg.contains("idx_devices_ip_port_active")
-                || (msg.contains("devices.ip") && msg.contains("devices.port")))
-        {
-            return Err(AppError::Conflict {
-                code: "DEVICE_IP_EXISTS",
-                message: format!("Device with IP {}:{} is already active", req.ip, req.port),
-            });
-        }
-        return Err(AppError::Internal(e.into()));
-    }
-
-    get_by_id(conn, &id).await
-}
-
 pub async fn create_queued(
     state: &AppState,
     req: CreateDeviceRequest,
@@ -141,7 +84,8 @@ pub async fn create_queued(
 
     let result = state
         .db_write
-        .execute(
+        .statement(
+            "devices.create",
             "INSERT INTO devices (\
                  id, name, ip, port, scheme, username, encrypted_password, \
                  direction, allow_insecure_tls, connection_state, status, version, \
@@ -174,7 +118,7 @@ pub async fn create_queued(
                 message: format!("Device with IP {}:{} is already active", req.ip, req.port),
             });
         }
-        return Err(AppError::Internal(e));
+        return Err(AppError::from(e));
     }
 
     let conn = state
@@ -286,133 +230,6 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> Result<DeviceResponse, Ap
 /// changes, the alertStream supervisor introduced in plan 02-03 should observe the
 /// updated_at/version bump and reconcile its per-device task. Phase 2-01 does not
 /// start the supervisor, so we emit no lifecycle event here.
-pub async fn update(
-    conn: &Connection,
-    id: &str,
-    req: UpdateDeviceRequest,
-    key: &[u8; 32],
-) -> Result<DeviceResponse, AppError> {
-    if let Some(ip) = req.ip.as_deref() {
-        validate_ip(ip).map_err(val_err)?;
-    }
-    if let Some(scheme) = req.scheme.as_deref() {
-        validate_scheme(scheme).map_err(val_err)?;
-    }
-    if let Some(direction) = req.direction.as_deref() {
-        validate_direction(direction).map_err(val_err)?;
-    }
-    if let Some(status) = req.status.as_deref() {
-        validate_status(status).map_err(val_err)?;
-    }
-
-    let mut sets: Vec<String> = Vec::new();
-    let mut values: Vec<libsql::Value> = Vec::new();
-
-    if let Some(name) = req.name {
-        sets.push(format!("name = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(name));
-    }
-    if let Some(ip) = req.ip {
-        sets.push(format!("ip = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(ip));
-    }
-    if let Some(port) = req.port {
-        sets.push(format!("port = ?{}", values.len() + 1));
-        values.push(libsql::Value::Integer(port));
-    }
-    if let Some(scheme) = req.scheme {
-        sets.push(format!("scheme = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(scheme));
-    }
-    if let Some(username) = req.username {
-        sets.push(format!("username = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(username));
-    }
-    if let Some(password) = req.password {
-        let encrypted = crypto::encrypt_password(&password, key).map_err(AppError::Internal)?;
-        sets.push(format!("encrypted_password = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(encrypted));
-    }
-    if let Some(direction) = req.direction {
-        sets.push(format!("direction = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(direction));
-    }
-    if let Some(allow) = req.allow_insecure_tls {
-        sets.push(format!("allow_insecure_tls = ?{}", values.len() + 1));
-        values.push(libsql::Value::Integer(if allow { 1 } else { 0 }));
-    }
-    if let Some(status) = req.status {
-        sets.push(format!("status = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(status));
-    }
-
-    if sets.is_empty() {
-        return get_by_id(conn, id).await;
-    }
-
-    sets.push("updated_at = unixepoch()".to_string());
-    sets.push("version = version + 1".to_string());
-
-    let set_clause = sets.join(", ");
-    let version_param = values.len() + 1;
-    let id_param = values.len() + 2;
-
-    values.push(libsql::Value::Integer(req.version));
-    values.push(libsql::Value::Text(id.to_string()));
-
-    let sql = format!(
-        "UPDATE devices SET {} WHERE id = ?{} AND version = ?{}",
-        set_clause, id_param, version_param
-    );
-
-    let result = conn.execute(&sql, libsql::params_from_iter(values)).await;
-
-    let rows_affected = match result {
-        Ok(n) => n,
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint failed")
-                && (msg.contains("idx_devices_ip_port_active")
-                    || (msg.contains("devices.ip") && msg.contains("devices.port")))
-            {
-                return Err(AppError::Conflict {
-                    code: "DEVICE_IP_EXISTS",
-                    message: "Another active device already uses this IP:port".to_string(),
-                });
-            }
-            return Err(AppError::Internal(e.into()));
-        }
-    };
-
-    if rows_affected == 0 {
-        let exists = conn
-            .query(
-                "SELECT id FROM devices WHERE id = ?1",
-                params![id.to_string()],
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .next()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-
-        if exists.is_none() {
-            return Err(AppError::NotFound {
-                code: "DEVICE_NOT_FOUND",
-                message: format!("Device '{}' not found", id),
-            });
-        }
-
-        return Err(AppError::Conflict {
-            code: "VERSION_CONFLICT",
-            message: "Device was modified by another request. Fetch the latest version and retry."
-                .to_string(),
-        });
-    }
-
-    get_by_id(conn, id).await
-}
-
 pub async fn update_queued(
     state: &AppState,
     id: &str,
@@ -491,7 +308,10 @@ pub async fn update_queued(
         set_clause, id_param, version_param
     );
 
-    let result = state.db_write.execute(sql, values).await;
+    let result = state
+        .db_write
+        .statement("devices.update", sql, values)
+        .await;
     let rows_affected = match result {
         Ok(n) => n,
         Err(e) => {
@@ -505,7 +325,7 @@ pub async fn update_queued(
                     message: "Another active device already uses this IP:port".to_string(),
                 });
             }
-            return Err(AppError::Internal(e));
+            return Err(AppError::from(e));
         }
     };
 
@@ -542,38 +362,18 @@ pub async fn update_queued(
 
 /// Soft-delete: status=inactive, deleted_at set. Unique index on (ip,port) is
 /// partial (active-only), so the same IP+port can be re-registered afterwards.
-pub async fn deactivate(conn: &Connection, id: &str) -> Result<(), AppError> {
-    let rows_affected = conn
-        .execute(
-            "UPDATE devices SET status = 'inactive', deleted_at = unixepoch(), \
-             updated_at = unixepoch(), version = version + 1 \
-             WHERE id = ?1 AND status = 'active'",
-            params![id.to_string()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    if rows_affected == 0 {
-        return Err(AppError::NotFound {
-            code: "DEVICE_NOT_FOUND",
-            message: format!("Device '{}' not found or already inactive", id),
-        });
-    }
-
-    Ok(())
-}
-
 pub async fn deactivate_queued(state: &AppState, id: &str) -> Result<(), AppError> {
     let rows_affected = state
         .db_write
-        .execute(
+        .statement(
+            "devices.deactivate",
             "UPDATE devices SET status = 'inactive', deleted_at = unixepoch(), \
              updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND status = 'active'",
             vec![libsql::Value::Text(id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     if rows_affected == 0 {
         return Err(AppError::NotFound {
@@ -706,53 +506,6 @@ pub async fn list_active(
 }
 
 /// Append a command_audit_log row. Writes on every dispatch outcome (ok/error/timeout).
-pub async fn write_command_audit(
-    conn: &Connection,
-    actor_id: &str,
-    device_id: &str,
-    command: Command,
-    outcome: &CommandAuditOutcome,
-    dispatched_at: i64,
-    completed_at: i64,
-) -> Result<(), AppError> {
-    let (result, error_code, error_message) = match outcome {
-        CommandAuditOutcome::Ok(body) => (Some(body.clone()), None, None),
-        CommandAuditOutcome::Error { code, message } => {
-            (None, Some(code.to_string()), Some(message.clone()))
-        }
-        CommandAuditOutcome::Timeout => (
-            None,
-            Some("DEVICE_TIMEOUT".to_string()),
-            Some("Device did not respond within 10 seconds".to_string()),
-        ),
-    };
-
-    let id = Uuid::new_v4().to_string();
-
-    conn.execute(
-        "INSERT INTO command_audit_log (\
-             id, actor_id, device_id, command, outcome, result, error_code, error_message, \
-             dispatched_at, completed_at\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            id,
-            actor_id.to_string(),
-            device_id.to_string(),
-            command.as_str().to_string(),
-            outcome.outcome_str().to_string(),
-            result,
-            error_code,
-            error_message,
-            dispatched_at,
-            completed_at,
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    Ok(())
-}
-
 pub async fn write_command_audit_queued(
     state: &crate::state::AppState,
     actor_id: &str,
@@ -777,7 +530,8 @@ pub async fn write_command_audit_queued(
     let id = Uuid::new_v4().to_string();
     state
         .db_write
-        .execute(
+        .statement(
+            "devices.record-command-audit",
             "INSERT INTO command_audit_log (\
                  id, actor_id, device_id, command, outcome, result, error_code, error_message, \
                  dispatched_at, completed_at\
@@ -802,6 +556,6 @@ pub async fn write_command_audit_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }

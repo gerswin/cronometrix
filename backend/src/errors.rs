@@ -6,6 +6,8 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
+use crate::db::write_queue::DbWriteError;
+
 /// Application error type. Converts to structured JSON HTTP responses per D-11.
 ///
 /// Response body format:
@@ -43,6 +45,9 @@ pub enum AppError {
 
     #[error("leave conflict")]
     LeaveConflict { code: &'static str, message: String },
+
+    #[error(transparent)]
+    DbWrite(DbWriteError),
 
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
@@ -83,6 +88,24 @@ impl IntoResponse for AppError {
             AppError::LeaveConflict { code, message } => {
                 (StatusCode::CONFLICT, *code, message.clone())
             }
+            AppError::DbWrite(DbWriteError::Busy) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DB_WRITE_QUEUE_BUSY",
+                "Database write queue is busy".to_string(),
+            ),
+            AppError::DbWrite(DbWriteError::Closed | DbWriteError::WorkerStopped) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DB_WRITE_QUEUE_UNAVAILABLE",
+                "Database write queue is unavailable".to_string(),
+            ),
+            AppError::DbWrite(DbWriteError::Job(error)) => {
+                tracing::error!("Database write job failed: {:?}", error);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "An unexpected error occurred".to_string(),
+                )
+            }
             AppError::Internal(e) => {
                 // Log the internal error but don't expose details to clients
                 tracing::error!("Internal server error: {:?}", e);
@@ -103,5 +126,17 @@ impl IntoResponse for AppError {
         }));
 
         (status, body).into_response()
+    }
+}
+
+impl From<DbWriteError> for AppError {
+    fn from(error: DbWriteError) -> Self {
+        match error {
+            DbWriteError::Job(error) => match error.downcast::<AppError>() {
+                Ok(domain_error) => domain_error,
+                Err(error) => AppError::DbWrite(DbWriteError::Job(error)),
+            },
+            error => AppError::DbWrite(error),
+        }
     }
 }

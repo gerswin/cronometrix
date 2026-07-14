@@ -30,7 +30,8 @@ pub async fn generate_json(
         code: "VALIDATION_ERROR",
         message: e.to_string(),
     })?;
-    let payload = service::compute_report(&state, &claims.sub, &params, "json").await?;
+    let payload = service::compute_report(&state, &params).await?;
+    service::record_export(&state, &claims.sub, &params, "json").await?;
     Ok(Json(payload))
 }
 
@@ -41,11 +42,11 @@ pub async fn generate_json(
 /// - `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
 /// - `Content-Disposition: attachment; filename="prenomina_{from}_{to}.xlsx"`
 ///
-/// Gated by `require_supervisor_or_above` at the route layer (D-20). Reuses
-/// `compute_report(.., "excel")` so the audit insert from Plan 05-02 records
-/// `format="excel"` automatically (D-21). Wraps the synchronous workbook
-/// builder in `tokio::task::spawn_blocking` to avoid stalling the async
-/// runtime (Pitfall 6 / T-05-15).
+/// Gated by `require_supervisor_or_above` at the route layer (D-20). The audit
+/// is recorded only after the workbook is fully built, and before any bytes are
+/// returned. The synchronous workbook builder is wrapped in
+/// `tokio::task::spawn_blocking` to avoid stalling the async runtime (Pitfall 6
+/// / T-05-15).
 pub async fn generate_excel(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
@@ -56,8 +57,7 @@ pub async fn generate_excel(
         message: e.to_string(),
     })?;
 
-    // compute_report writes the audit row on success (Plan 05-02 service).
-    let payload = service::compute_report(&state, &claims.sub, &params, "excel").await?;
+    let payload = service::compute_report(&state, &params).await?;
 
     // Pitfall 6: spawn_blocking to avoid blocking the async runtime. The xlsx
     // builder is CPU-bound and synchronous (zip compression + format string
@@ -66,6 +66,8 @@ pub async fn generate_excel(
     let bytes = tokio::task::spawn_blocking(move || excel::build_workbook(&payload))
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("spawn_blocking join: {}", e)))??;
+
+    service::record_export(&state, &claims.sub, &params, "excel").await?;
 
     let filename = format!("prenomina_{}_{}.xlsx", params.from_date, params.to_date);
     let mut headers = HeaderMap::new();

@@ -15,6 +15,7 @@ pub struct LeaveResponse {
     pub justification: String,
     pub evidence_path: Option<String>,
     pub created_by: String,
+    pub cancelled_by: Option<String>,
     pub status: String,
     pub deleted_at: Option<String>,
     pub version: i64,

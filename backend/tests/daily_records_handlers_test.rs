@@ -641,3 +641,132 @@ async fn create_override_201_png_extension() {
     assert!(evidence.ends_with(".png"));
     assert!(overrides_root.join(evidence).exists());
 }
+
+#[tokio::test]
+async fn failed_override_write_removes_evidence_file() {
+    let db = common::test_db().await;
+    let (_, _, dr_id) = seed_dr(&db, "2026-04-20").await;
+    let (_admin_id, token) = admin_user_with_token(&db).await;
+    let (state, _tmp) = make_state(db);
+    let overrides_root = state.paths.overrides_root.clone();
+    state.db_write.close_and_flush().await.unwrap();
+    let app = build_test_app(state.clone());
+
+    let (body, ct) = build_multipart(
+        &[("justification", "must compensate evidence")],
+        Some(("application/pdf", MINI_PDF)),
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/daily-records/{}/overrides", dr_id))
+        .header(header::CONTENT_TYPE, ct)
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let conn = state.db.connect().unwrap();
+    let count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM daily_record_overrides WHERE daily_record_id = ?1",
+            params![dr_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 0);
+    let files = std::fs::read_dir(&overrides_root)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(files, 0, "failed override must remove evidence");
+}
+
+#[tokio::test]
+async fn cancelled_request_after_override_job_admission_keeps_committed_evidence() {
+    let db = common::test_db().await;
+    let (_, emp_id, dr_id) = seed_dr(&db, "2026-04-21").await;
+    let (_admin_id, token) = admin_user_with_token(&db).await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+    let overrides_root = state.paths.overrides_root.clone();
+    let app = build_test_app(state.clone());
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-cancelled-override", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let (body, ct) = build_multipart(
+        &[(
+            "justification",
+            "request cancellation must not orphan override",
+        )],
+        Some(("application/pdf", MINI_PDF)),
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/daily-records/{}/overrides", dr_id))
+        .header(header::CONTENT_TYPE, ct)
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::from(body))
+        .unwrap();
+    let request_task = tokio::spawn(app.oneshot(request));
+    while state.db_write.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    release_tx.send(()).expect("release blocker");
+    blocker.await.unwrap().unwrap();
+    while state.db_write.stats().completed < 2 {
+        tokio::task::yield_now().await;
+    }
+
+    let conn = state.db.connect().unwrap();
+    let evidence_path: String = conn
+        .query(
+            "SELECT evidence_path FROM daily_record_overrides WHERE daily_record_id = ?1",
+            params![dr_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("accepted override transaction committed")
+        .get(0)
+        .unwrap();
+    assert!(
+        overrides_root.join(evidence_path).exists(),
+        "committed override row must retain its evidence after request cancellation"
+    );
+    let recompute = recompute_rx
+        .try_recv()
+        .expect("committed override must publish recompute after request cancellation");
+    assert!(matches!(
+        recompute,
+        cronometrix_api::recompute::RecomputeRequest::Day {
+            employee_id,
+            anchor_date,
+        } if employee_id == emp_id
+            && anchor_date == chrono::NaiveDate::from_ymd_opt(2026, 4, 21).unwrap()
+    ));
+}

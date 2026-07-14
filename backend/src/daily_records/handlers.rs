@@ -72,7 +72,7 @@ pub async fn create_override(
     AuthUser(claims): AuthUser,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<OverrideResponse>), AppError> {
-    use crate::events::service::write_photo_atomic;
+    use crate::storage::atomic_file::AtomicFileGuard;
 
     const MAX_EVIDENCE_BYTES: usize = 10 * 1024 * 1024; // 10MB backend cap; frontend enforces 5MB
 
@@ -186,106 +186,109 @@ pub async fn create_override(
         }
     }
 
-    // WR-03: verify daily_record exists FIRST so a 404 path does not leave
-    // an orphaned evidence file on disk. write_photo_atomic comes after.
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let exists: bool = conn
-        .query(
-            "SELECT 1 FROM daily_records WHERE id = ?1 LIMIT 1",
-            libsql::params![daily_record_id.clone()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .is_some();
-    if !exists {
-        return Err(AppError::NotFound {
-            code: "DAILY_RECORD_NOT_FOUND",
-            message: "daily_record not found".into(),
-        });
-    }
-
     // Write evidence to disk — UUID path (same pattern as leaves, T-4-10 mitigation).
     // Phase 8 (D-18/D-19): the overrides root comes from `state.paths.overrides_root`
     // (populated once at startup from `DATA_DIR`/overrides via Paths::from_env).
-    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext)
-    {
-        let rel = format!("{}.{}", Uuid::new_v4(), ext);
-        let overrides_root = state.paths.overrides_root.clone();
-        write_photo_atomic(&overrides_root, &rel, bytes).map_err(AppError::Internal)?;
-        Some(rel)
-    } else {
-        None
-    };
+    let (evidence_relpath, evidence_guard) =
+        if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext) {
+            let rel = format!("{}.{}", Uuid::new_v4(), ext);
+            let overrides_root = state.paths.overrides_root.clone();
+            let guard =
+                AtomicFileGuard::write(&overrides_root, &rel, bytes).map_err(AppError::Internal)?;
+            (Some(rel), Some(guard))
+        } else {
+            (None, None)
+        };
 
     let now = Utc::now().timestamp();
     let id = Uuid::new_v4().to_string();
-
-    state
+    let actor_id = claims.sub;
+    let recompute_tx = state.recompute_tx.clone();
+    let response = state
         .db_write
-        .execute(
-            "INSERT INTO daily_record_overrides
-               (id, daily_record_id, override_work_minutes, override_entry_at, override_exit_at,
-                justification, evidence_path, overridden_by, overridden_at, status, version, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',1,?9,?9)",
-            vec![
-                libsql::Value::Text(id.clone()),
-                libsql::Value::Text(daily_record_id.clone()),
-                override_work_minutes.map(libsql::Value::Integer).unwrap_or(libsql::Value::Null),
-                override_entry_at.map(libsql::Value::Integer).unwrap_or(libsql::Value::Null),
-                override_exit_at.map(libsql::Value::Integer).unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(justification.clone()),
-                evidence_relpath.clone().map(libsql::Value::Text).unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(claims.sub.clone()),
-                libsql::Value::Integer(now),
-            ],
+        .transact(
+            "daily-records.create-override",
+            move |tx| {
+                Box::pin(async move {
+                    let daily_record = tx
+                        .query(
+                            "SELECT employee_id, anchor_date FROM daily_records WHERE id = ?1",
+                            libsql::params![daily_record_id.clone()],
+                        )
+                        .await?
+                        .next()
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow::Error::new(AppError::NotFound {
+                                code: "DAILY_RECORD_NOT_FOUND",
+                                message: "daily_record not found".into(),
+                            })
+                        })?;
+                    let employee_id: String = daily_record.get(0)?;
+                    let anchor_date: String = daily_record.get(1)?;
+
+                    tx.statement(
+                        "INSERT INTO daily_record_overrides
+                           (id, daily_record_id, override_work_minutes, override_entry_at, override_exit_at,
+                            justification, evidence_path, overridden_by, overridden_at, status, version, created_at, updated_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',1,?9,?9)",
+                        libsql::params![
+                            id.clone(),
+                            daily_record_id.clone(),
+                            override_work_minutes,
+                            override_entry_at,
+                            override_exit_at,
+                            justification.clone(),
+                            evidence_relpath.clone(),
+                            actor_id.clone(),
+                            now,
+                        ],
+                    )
+                    .await?;
+
+                    let response = OverrideResponse {
+                        id,
+                        daily_record_id,
+                        override_work_minutes,
+                        override_entry_at,
+                        override_exit_at,
+                        justification,
+                        evidence_path: evidence_relpath,
+                        overridden_by: actor_id,
+                        overridden_at: now,
+                        status: "active".into(),
+                        version: 1,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    tx.after_commit(move || {
+                        if let Some(guard) = evidence_guard {
+                            guard.keep();
+                        }
+                        if let (Some(sender), Ok(anchor_date)) = (
+                            recompute_tx,
+                            chrono::NaiveDate::parse_from_str(&anchor_date, "%Y-%m-%d"),
+                        ) {
+                            if sender
+                                .send(crate::recompute::RecomputeRequest::Day {
+                                    employee_id,
+                                    anchor_date,
+                                })
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    operation = "daily-records.create-override",
+                                    "post-commit recompute unavailable; identifiers omitted"
+                                );
+                            }
+                        }
+                    });
+                    Ok(response)
+                })
+            },
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
-    // Publish recompute so the daily_record reflects the override promptly
-    if let Some(tx) = state.recompute_tx.as_ref() {
-        if let Ok(mut rows) = conn
-            .query(
-                "SELECT anchor_date, employee_id FROM daily_records WHERE id = ?1",
-                libsql::params![daily_record_id.clone()],
-            )
-            .await
-        {
-            if let Ok(Some(row)) = rows.next().await {
-                if let (Ok(date_str), Ok(emp_id)) = (row.get::<String>(0), row.get::<String>(1)) {
-                    if let Ok(date) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                        let _ = tx.send(crate::recompute::RecomputeRequest {
-                            employee_id: emp_id,
-                            anchor_date: date,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    Ok((
-        StatusCode::CREATED,
-        Json(OverrideResponse {
-            id,
-            daily_record_id,
-            override_work_minutes,
-            override_entry_at,
-            override_exit_at,
-            justification,
-            evidence_path: evidence_relpath,
-            overridden_by: claims.sub,
-            overridden_at: now,
-            status: "active".into(),
-            version: 1,
-            created_at: now,
-            updated_at: now,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(response)))
 }

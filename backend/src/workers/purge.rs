@@ -34,11 +34,29 @@ pub struct PurgeRequest {
 pub struct PurgeWorker {
     state: AppState,
     shutdown: CancellationToken,
+    call_timeout: Duration,
 }
 
 impl PurgeWorker {
     pub fn new(state: AppState, shutdown: CancellationToken) -> Self {
-        Self { state, shutdown }
+        Self {
+            state,
+            shutdown,
+            call_timeout: Duration::from_secs(30),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_timeout(
+        state: AppState,
+        shutdown: CancellationToken,
+        call_timeout: Duration,
+    ) -> Self {
+        Self {
+            state,
+            shutdown,
+            call_timeout,
+        }
     }
 
     pub async fn run(self, mut rx: UnboundedReceiver<PurgeRequest>) {
@@ -169,6 +187,52 @@ impl PurgeWorker {
                 }
             };
 
+            let checkpoint_key = enrollment_service::purge_checkpoint_key(&mapping_id);
+            let checkpoint = match enrollment_service::admit_device_operation(
+                &self.state,
+                &checkpoint_key,
+                "purge_delete",
+            )
+            .await
+            {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    tracing::error!(%mapping_id, %error, "PurgeWorker: checkpoint admission failed");
+                    continue;
+                }
+            };
+            if !checkpoint.fresh {
+                match checkpoint.state {
+                    enrollment_service::DeviceOperationState::DeviceApplied => {
+                        if let Err(error) = enrollment_service::complete_purge_mapping(
+                            &self.state,
+                            &checkpoint_key,
+                            &mapping_id,
+                        )
+                        .await
+                        {
+                            tracing::error!(%mapping_id, %error, "PurgeWorker: DB-only purge recovery failed");
+                        }
+                    }
+                    enrollment_service::DeviceOperationState::Prepared
+                    | enrollment_service::DeviceOperationState::Manual => {
+                        let _ = enrollment_service::mark_device_operation(
+                            &self.state,
+                            &checkpoint_key,
+                            enrollment_service::DeviceOperationState::Manual,
+                        )
+                        .await;
+                        let _ = enrollment_service::mark_mapping_pending_delete_queued(
+                            &self.state,
+                            &mapping_id,
+                        )
+                        .await;
+                        tracing::error!(%mapping_id, "PurgeWorker: ambiguous device delete requires manual reconciliation");
+                    }
+                }
+                continue;
+            }
+
             let isapi = match DeviceConnection::new(
                 &device.base_url,
                 &device.username,
@@ -186,22 +250,55 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
+                    let _ =
+                        enrollment_service::clear_device_operation(&self.state, &checkpoint_key)
+                            .await;
                     continue;
                 }
             };
 
             let fid = face_id.clone();
-            let result = tokio::time::timeout(Duration::from_secs(30), async move {
-                isapi.delete_user(&fid).await
-            })
-            .await;
+            let result =
+                tokio::time::timeout(
+                    self.call_timeout,
+                    async move { isapi.delete_user(&fid).await },
+                )
+                .await;
 
             match result {
                 Ok(Ok(_)) => {
-                    if let Err(e) =
-                        enrollment_service::delete_mapping_queued(&self.state, &mapping_id).await
+                    if let Err(error) = enrollment_service::mark_device_operation(
+                        &self.state,
+                        &checkpoint_key,
+                        enrollment_service::DeviceOperationState::DeviceApplied,
+                    )
+                    .await
+                    {
+                        let _ = enrollment_service::mark_device_operation(
+                            &self.state,
+                            &checkpoint_key,
+                            enrollment_service::DeviceOperationState::Manual,
+                        )
+                        .await;
+                        let _ = enrollment_service::mark_mapping_pending_delete_queued(
+                            &self.state,
+                            &mapping_id,
+                        )
+                        .await;
+                        tracing::error!(%mapping_id, %error, "PurgeWorker: successful delete needs manual recovery");
+                    } else if let Err(e) = enrollment_service::complete_purge_mapping(
+                        &self.state,
+                        &checkpoint_key,
+                        &mapping_id,
+                    )
+                    .await
                     {
                         tracing::error!(mapping_id = %mapping_id, err = %e, "PurgeWorker: failed to delete mapping row");
+                        let _ = enrollment_service::mark_mapping_pending_delete_queued(
+                            &self.state,
+                            &mapping_id,
+                        )
+                        .await;
                     } else {
                         tracing::info!(
                             employee_id = %employee_id,
@@ -221,6 +318,12 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete");
                     }
+                    let _ = enrollment_service::mark_device_operation(
+                        &self.state,
+                        &checkpoint_key,
+                        enrollment_service::DeviceOperationState::Manual,
+                    )
+                    .await;
                 }
                 Err(_timeout) => {
                     tracing::warn!(device_id = %device_id, "PurgeWorker: delete_user timeout");
@@ -232,6 +335,12 @@ impl PurgeWorker {
                     {
                         tracing::error!(err = %ue, "PurgeWorker: failed to mark pending_delete after timeout");
                     }
+                    let _ = enrollment_service::mark_device_operation(
+                        &self.state,
+                        &checkpoint_key,
+                        enrollment_service::DeviceOperationState::Manual,
+                    )
+                    .await;
                 }
             }
         }

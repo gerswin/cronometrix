@@ -97,7 +97,8 @@ setup("verify backend sees seeded database", async ({ request }) => {
 });
 
 setup("reset mutable tables (clean slate per run)", async ({ request }) => {
-  // D-12: at the start of EVERY full test run, wipe attendance_events / leaves /
-  // audit_log so seeded events from prior runs don't leak in.
+  // D-12: wipe mutable attendance state at the start of every full run.
+  // audit_log is append-only legal evidence and is deliberately preserved;
+  // specs isolate current-run evidence with record IDs and time windows.
   await resetMutableTables(request);
 });

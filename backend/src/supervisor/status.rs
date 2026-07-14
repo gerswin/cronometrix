@@ -22,7 +22,8 @@ pub async fn update_connection_state(
 ) -> Result<()> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "supervisor.connection-state",
             "UPDATE devices SET connection_state = ?1, updated_at = unixepoch() WHERE id = ?2",
             vec![
                 libsql::Value::Text(new_state.to_string()),
@@ -39,7 +40,8 @@ pub async fn update_connection_state(
 pub async fn touch_last_seen(state: &AppState, device_id: &str) -> Result<()> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "supervisor.touch-last-seen",
             "UPDATE devices SET last_seen_at = unixepoch() WHERE id = ?1",
             vec![libsql::Value::Text(device_id.to_string())],
         )

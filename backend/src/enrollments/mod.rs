@@ -1,3 +1,4 @@
+pub mod dispatcher;
 pub mod handlers;
 pub mod image_pipeline;
 pub mod isapi_face;

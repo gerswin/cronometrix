@@ -9,6 +9,44 @@ mod common;
 use cronometrix_api::enrollments::models::EnrollmentListQuery;
 use cronometrix_api::enrollments::service;
 
+#[tokio::test]
+async fn device_operation_checkpoint_migration_is_idempotent() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    cronometrix_api::db::run_migrations(&conn).await.unwrap();
+    cronometrix_api::db::run_migrations(&conn).await.unwrap();
+
+    let table_count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='table' AND name='device_operation_checkpoints'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    let migration_count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM _migrations WHERE name='019_device_operation_checkpoints'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(table_count, 1);
+    assert_eq!(migration_count, 1);
+}
+
 // ---------------------------------------------------------------------------
 // Task 2 — audit trigger test (populated after migrations 016/017 land)
 // ---------------------------------------------------------------------------

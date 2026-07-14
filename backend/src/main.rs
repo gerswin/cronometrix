@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use axum::{
     extract::State,
     routing::{delete, get, patch, post},
@@ -32,7 +33,9 @@ use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
 use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
 use cronometrix_api::users;
-use cronometrix_api::workers::{backfill::BackfillWorker, db_write, purge::PurgeWorker};
+use cronometrix_api::workers::{
+    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -59,9 +62,9 @@ async fn main() -> anyhow::Result<()> {
     // single recompute per (employee_id, anchor_date).
     let (recompute_tx, recompute_rx) = mpsc::unbounded_channel::<RecomputeRequest>();
 
-    // Single-writer channel for SQLite/libSQL mutations.
-    let (db_write_tx, db_write_rx) =
-        mpsc::unbounded_channel::<cronometrix_api::db::write_queue::WriteCommand>();
+    // Bounded single-writer channel for SQLite/libSQL mutations.
+    let (db_write, db_write_rx) =
+        cronometrix_api::db::write_queue::DbWriteQueue::channel(Default::default());
 
     // Event broadcast: attendance service -> SSE stream clients. Buffer 256 events;
     // lagged subscribers (slow clients) simply drop missed events — non-fatal for a
@@ -69,6 +72,12 @@ async fn main() -> anyhow::Result<()> {
     let (event_tx, _) = broadcast::channel::<AttendanceEventSSEPayload>(256);
 
     let shutdown = CancellationToken::new();
+    // Recompute remains alive after producer cancellation so accepted database
+    // callbacks can publish their final work before its own drain begins.
+    let recompute_shutdown = CancellationToken::new();
+    // Capture cleanup remains alive until every tracked capture task is joined
+    // and its final compensation pass has completed.
+    let capture_cleanup_shutdown = CancellationToken::new();
 
     // Phase 6: license gate. load_and_validate_license is fail-closed —
     // if file missing, signature invalid, or fingerprint mismatched, the
@@ -124,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
         db: Arc::new(db),
         config: Arc::new(config.clone()),
         paths,
-        db_write: cronometrix_api::db::write_queue::DbWriteQueue::new(db_write_tx),
+        db_write,
         lifecycle_tx: Some(lifecycle_tx),
         recompute_tx: Some(recompute_tx),
         event_broadcast: Some(event_tx),
@@ -132,9 +141,44 @@ async fn main() -> anyhow::Result<()> {
         purge_tx: Some(purge_tx),
         backfill_tx: Some(backfill_tx),
         captures: cronometrix_api::enrollments::handlers::new_captures_map(),
+        enrollment_tasks: cronometrix_api::enrollments::pusher::EnrollmentTaskTracker::new(),
+        enrollment_dispatcher: cronometrix_api::enrollments::dispatcher::EnrollmentDispatcher::new(
+        ),
         e2e_enabled: e2e,
         test_reset_enabled,
     };
+
+    // The single writer must be alive for every bootstrap reconciliation.
+    // Nothing that can produce a device call starts until these scans finish.
+    let db_write_handle = tokio::spawn({
+        let db = state.db.clone();
+        async move { db_write::run(db, db_write_rx).await }
+    });
+
+    // Crash recovery is a startup prerequisite: fail before HTTP/workers if
+    // capture orphan inspection cannot complete. The periodic owner only
+    // expires live in-memory sessions and never re-runs this bootstrap sweep.
+    let bootstrap_result = async {
+        // `run_write_worker` opens and configures its own SQLite connection
+        // before it receives commands. Waiting on a FIFO barrier prevents the
+        // recovery readers below from racing those connection-local PRAGMAs
+        // immediately after the migration connection is released.
+        state
+            .db_write
+            .flush()
+            .await
+            .map_err(|error| anyhow::anyhow!("initialize database writer: {error}"))?;
+        capture_cleanup::startup_sweep(&state, capture_cleanup::CleanupNow::now()).await?;
+        cronometrix_api::enrollments::dispatcher::recover_startup_checkpoints(&state).await?;
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(error) = bootstrap_result {
+        let _ = state.db_write.close_and_flush().await;
+        let _ = db_write_handle.await;
+        return Err(error);
+    }
+    let enrollment_dispatcher_handle = state.enrollment_dispatcher.start(state.clone()).await?;
 
     // Start the supervisor: one tokio task per active device for alertStream
     // consumption. Reconcile loop watches the lifecycle channel.
@@ -153,18 +197,16 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Start the Phase 3 recompute worker (mpsc + 500ms debounce + HashSet dedup).
-    let recompute_worker = recompute::worker::RecomputeWorker::new(state.clone(), shutdown.clone());
+    let recompute_worker =
+        recompute::worker::RecomputeWorker::new(state.clone(), recompute_shutdown.clone());
     let recompute_handle = tokio::spawn(async move {
         recompute_worker.run(recompute_rx).await;
     });
 
-    let _db_write_handle = tokio::spawn({
-        let db = state.db.clone();
-        let c = shutdown.clone();
-        async move {
-            db_write::run(db, db_write_rx, c).await;
-        }
-    });
+    let capture_cleanup_handle = tokio::spawn(capture_cleanup::run(
+        state.clone(),
+        capture_cleanup_shutdown.clone(),
+    ));
 
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
     let purge_worker = PurgeWorker::new(state.clone(), shutdown.clone());
@@ -431,7 +473,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest("/api/v1", api_v1)
-        .with_state(state)
+        .with_state(state.clone())
         .layer(http_trace::layer())
         .layer(cors);
 
@@ -443,23 +485,121 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown({
             let shutdown = shutdown.clone();
             async move {
-                let _ = tokio::signal::ctrl_c().await;
-                tracing::info!("ctrl_c received, initiating graceful shutdown");
+                match cronometrix_api::workers::shutdown_signal().await {
+                    Ok(source) => tracing::info!(?source, "shutdown signal received"),
+                    Err(error) => tracing::error!(%error, "failed to install shutdown signal"),
+                }
                 shutdown.cancel();
             }
         })
         .await?;
 
-    // Await supervisor + watchdog shutdown so all child reqwest streams drain
-    // before process exit. Also drain the Phase 3 recompute worker, the
-    // nightly reconcile task, and Phase 7 workers so their last ops commit.
-    let _ = supervisor_handle.await;
-    let _ = watchdog_handle.await;
-    let _ = recompute_handle.await;
-    let _ = nightly_handle.await;
-    let _ = renewal_handle.await;
-    let _ = purge_handle.await;
-    let _ = backfill_handle.await;
+    fn remember_shutdown_error(
+        first: &mut Option<anyhow::Error>,
+        result: anyhow::Result<()>,
+        phase: &'static str,
+    ) {
+        if let Err(error) = result.context(phase) {
+            tracing::error!(%error, phase, "shutdown phase failed");
+            if first.is_none() {
+                *first = Some(error);
+            }
+        }
+    }
+
+    let mut first_shutdown_error = None;
+    // Stop every producer before the two-stage writer/recompute drain. A panic
+    // in one owner is recorded but never prevents the remaining owners from
+    // draining.
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        supervisor_handle.await.map_err(anyhow::Error::from),
+        "join supervisor",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        watchdog_handle.await.map_err(anyhow::Error::from),
+        "join watchdog",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        nightly_handle.await.map_err(anyhow::Error::from),
+        "join nightly reconcile",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        renewal_handle.await.map_err(anyhow::Error::from),
+        "join license renewal",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        purge_handle.await.map_err(anyhow::Error::from),
+        "join purge worker",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        backfill_handle.await.map_err(anyhow::Error::from),
+        "join backfill worker",
+    );
+
+    // No new HTTP requests or worker retries can be admitted now. Await each
+    // accepted enrollment operation through its device result and terminal DB
+    // write before capture/recompute and the single writer are drained.
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        state.db_write.flush().await.map_err(anyhow::Error::from),
+        "flush accepted writes before enrollment drain",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        state.enrollment_dispatcher.close(),
+        "close enrollment dispatcher",
+    );
+    let dispatcher_result = match enrollment_dispatcher_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(error.into()),
+    };
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        dispatcher_result,
+        "drain enrollment dispatcher",
+    );
+
+    // The HTTP server is no longer accepting requests. Stop and await all
+    // capture tasks, remove their state/JPEGs, then stop the periodic owner.
+    // SIGKILL bypasses this block; the next startup orphan sweep recovers it.
+    let capture_shutdown_result = capture_cleanup::shutdown_captures(&state).await;
+    capture_cleanup_shutdown.cancel();
+    let capture_cleanup_result = match capture_cleanup_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(error.into()),
+    };
+
+    let recompute_result = recompute::worker::shutdown_after_producers(
+        state.db_write.clone(),
+        recompute_shutdown,
+        recompute_handle,
+        db_write_handle,
+    )
+    .await;
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        capture_shutdown_result,
+        "shutdown capture tasks",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        capture_cleanup_result,
+        "shutdown capture cleanup owner",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        recompute_result,
+        "shutdown recompute and database writer",
+    );
+    if let Some(error) = first_shutdown_error {
+        return Err(error);
+    }
     tracing::info!("shutdown complete");
 
     Ok(())

@@ -27,6 +27,7 @@ use cronometrix_api::config::Config;
 use cronometrix_api::devices::crypto;
 use cronometrix_api::enrollments::service as enrollment_service;
 use cronometrix_api::workers::purge::{PurgeRequest, PurgeWorker};
+use cronometrix_api::workers::{first_shutdown_signal, ShutdownSource};
 use libsql::params;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -66,6 +67,39 @@ fn url_lite_split(url: &str) -> (String, u16, String) {
     let (host, port_str) = rest.rsplit_once(':').unwrap_or((rest, "80"));
     let port: u16 = port_str.parse().unwrap_or(80);
     (host.to_string(), port, scheme)
+}
+
+#[tokio::test]
+async fn shutdown_signal_helper_accepts_ctrl_c() {
+    let source = first_shutdown_signal(std::future::ready(()), std::future::pending()).await;
+    assert_eq!(source, ShutdownSource::Interrupt);
+}
+
+#[tokio::test]
+async fn shutdown_signal_helper_accepts_sigterm() {
+    let source = first_shutdown_signal(std::future::pending(), std::future::ready(())).await;
+    assert_eq!(source, ShutdownSource::Terminate);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_signal_observes_process_sigterm() {
+    let listener = tokio::spawn(cronometrix_api::workers::shutdown_signal());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &std::process::id().to_string()])
+        .status()
+        .expect("send SIGTERM to test process");
+    assert!(status.success());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), listener)
+            .await
+            .expect("signal listener completed")
+            .expect("signal listener task did not panic")
+            .expect("signal listener installed"),
+        ShutdownSource::Terminate
+    );
 }
 
 async fn seed_employee_inactive(db: &libsql::Database) -> String {
@@ -180,7 +214,7 @@ async fn purge_skips_when_employee_is_active() {
 
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-x", &emp_id)
+    enrollment_service::upsert_device_face_mapping_queued(&state, &device_id, "face-x", &emp_id)
         .await
         .unwrap();
     drop(conn);
@@ -251,9 +285,14 @@ async fn purge_success_deletes_mapping_row() {
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
 
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-purge-1", &emp_id)
-        .await
-        .unwrap();
+    enrollment_service::upsert_device_face_mapping_queued(
+        &state,
+        &device_id,
+        "face-purge-1",
+        &emp_id,
+    )
+    .await
+    .unwrap();
     drop(conn);
 
     let shutdown = CancellationToken::new();
@@ -284,6 +323,101 @@ async fn purge_success_deletes_mapping_row() {
     let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
 }
 
+#[tokio::test]
+async fn purge_mapping_delete_failure_keeps_pending_delete_recovery_state() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("PUT"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfoDetail/Delete"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let emp_id = seed_employee_inactive(&state.db).await;
+    let device_id = seed_device_at(&state.db, &state.config.device_creds_key, &server.uri()).await;
+    let conn = state.db.connect().unwrap();
+    enrollment_service::upsert_device_face_mapping_queued(
+        &state,
+        &device_id,
+        "face-delete-db",
+        &emp_id,
+    )
+    .await
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_mapping_delete BEFORE DELETE ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced mapping delete failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel::<PurgeRequest>();
+    let worker = PurgeWorker::new(state.clone(), shutdown.clone());
+    let handle = tokio::spawn(async move { worker.run(rx).await });
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+
+    let mut pending = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let row = conn
+            .query(
+                "SELECT state FROM device_face_mappings WHERE employee_id=?1",
+                params![emp_id.clone()],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        if row.get::<String>(0).unwrap() == "pending_delete" {
+            pending = true;
+            break;
+        }
+    }
+    assert!(
+        pending,
+        "DB delete failure must retain an explicit retry state"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    conn.execute_batch("DROP TRIGGER fail_mapping_delete;")
+        .await
+        .unwrap();
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    let mut recovered = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let count: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM device_face_mappings WHERE employee_id=?1",
+                params![emp_id.clone()],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        if count == 0 {
+            recovered = true;
+            break;
+        }
+    }
+    assert!(recovered, "second cycle must finish the DB-only recovery");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
 // =============================================================================
 // Failed purge (5xx): mapping row stays + state flips to 'pending_delete'.
 // =============================================================================
@@ -304,7 +438,7 @@ async fn purge_5xx_marks_mapping_pending_delete() {
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
 
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-fail", &emp_id)
+    enrollment_service::upsert_device_face_mapping_queued(&state, &device_id, "face-fail", &emp_id)
         .await
         .unwrap();
     drop(conn);
@@ -342,9 +476,106 @@ async fn purge_5xx_marks_mapping_pending_delete() {
         }
     }
     assert!(found_pending, "5xx purge must mark mapping pending_delete");
+    let checkpoint_state: String = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT state FROM device_operation_checkpoints WHERE operation='purge_delete'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(checkpoint_state, "manual");
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "ambiguous purge must not replay"
+    );
 
     shutdown.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
+}
+
+#[tokio::test]
+async fn purge_timeout_is_manual_and_never_replayed() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("PUT"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfoDetail/Delete"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(1))
+                .set_body_string(r#"{"statusCode":1}"#),
+        )
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let emp_id = seed_employee_inactive(&state.db).await;
+    let device_id = seed_device_at(&state.db, &state.config.device_creds_key, &server.uri()).await;
+    let conn = state.db.connect().unwrap();
+    enrollment_service::upsert_device_face_mapping_queued(
+        &state,
+        &device_id,
+        "face-timeout",
+        &emp_id,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel::<PurgeRequest>();
+    let worker =
+        PurgeWorker::with_timeout(state.clone(), shutdown.clone(), Duration::from_millis(100));
+    let handle = tokio::spawn(async move { worker.run(rx).await });
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    for _ in 0..100 {
+        let checkpoint = state
+            .db
+            .connect()
+            .unwrap()
+            .query(
+                "SELECT state FROM device_operation_checkpoints WHERE operation='purge_delete'",
+                (),
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap();
+        if checkpoint.is_some_and(|row| row.get::<String>(0).unwrap() == "manual") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let request_count = server.received_requests().await.unwrap().len();
+    assert_eq!(request_count, 1);
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        request_count
+    );
+    shutdown.cancel();
+    handle.await.unwrap();
 }
 
 // =============================================================================
@@ -390,7 +621,7 @@ async fn purge_marks_pending_when_device_fetch_fails() {
     // get_decrypted (which requires status='active') 404s.
     let conn = state.db.connect().unwrap();
     use cronometrix_api::enrollments::service as enr_svc;
-    enr_svc::upsert_device_face_mapping(&conn, &device_id, "face-pd", &emp_id)
+    enr_svc::upsert_device_face_mapping_queued(&state, &device_id, "face-pd", &emp_id)
         .await
         .unwrap();
     conn.execute(
@@ -459,7 +690,7 @@ async fn purge_worker_dedupes_repeated_requests() {
     let emp_id = seed_employee_inactive(&state.db).await;
     let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
     let conn = state.db.connect().unwrap();
-    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-d", &emp_id)
+    enrollment_service::upsert_device_face_mapping_queued(&state, &device_id, "face-d", &emp_id)
         .await
         .unwrap();
     drop(conn);

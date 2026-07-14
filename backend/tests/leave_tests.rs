@@ -23,6 +23,7 @@ use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::daily_records::service as dr_service;
 use cronometrix_api::leaves;
+use cronometrix_api::recompute::RecomputeRequest;
 use cronometrix_api::state::AppState;
 use http_body_util::BodyExt;
 use libsql::params;
@@ -390,6 +391,484 @@ async fn create_leave_overlap_returns_conflict() {
     assert_eq!(body_json["error"]["code"], "LEAVE_OVERLAP");
 }
 
+#[tokio::test]
+async fn concurrent_overlapping_leave_creates_yield_one_success_and_one_conflict() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-concurrent", "day", false, 480, "09:00", "17:00")
+            .await;
+    let emp = seed_employee(&db, &dept, "E-CONCURRENT").await;
+    let (state, _tmp) = make_state(db);
+
+    // Hold the single writer so both requests are pending together behind the
+    // same serialized boundary. This makes the concurrency case deterministic.
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-leave-writer", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let first_state = state.clone();
+    let first_admin = admin.clone();
+    let first_emp = emp.clone();
+    let first = tokio::spawn(async move {
+        leaves::service::create_leave_queued(
+            &first_state,
+            &first_admin,
+            leaves::models::CreateLeaveRequest {
+                employee_id: first_emp,
+                from_date: "2026-04-20".into(),
+                to_date: "2026-04-22".into(),
+                leave_type: "vacation".into(),
+                justification: "first concurrent request".into(),
+            },
+            None,
+        )
+        .await
+    });
+    let second_state = state.clone();
+    let second = tokio::spawn(async move {
+        leaves::service::create_leave_queued(
+            &second_state,
+            &admin,
+            leaves::models::CreateLeaveRequest {
+                employee_id: emp,
+                from_date: "2026-04-21".into(),
+                to_date: "2026-04-23".into(),
+                leave_type: "manual".into(),
+                justification: "second concurrent request".into(),
+            },
+            None,
+        )
+        .await
+    });
+
+    while state.db_write.stats().accepted < 3 {
+        tokio::task::yield_now().await;
+    }
+    release_tx.send(()).expect("release blocker");
+    blocker.await.unwrap().unwrap();
+
+    let results = [first.await.unwrap(), second.await.unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let conflicts: Vec<_> = results
+        .iter()
+        .filter_map(|result| match result {
+            Err(cronometrix_api::errors::AppError::LeaveConflict { code, .. }) => Some(*code),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(conflicts, vec!["LEAVE_OVERLAP"]);
+}
+
+#[tokio::test]
+async fn closed_queue_after_leave_evidence_write_leaves_no_row_or_file() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-closed", "day", false, 480, "09:00", "17:00")
+            .await;
+    let emp = seed_employee(&db, &dept, "E-CLOSED").await;
+    let (state, _tmp) = make_state(db);
+    let leaves_root = state.paths.leaves_root.clone();
+    state.db_write.close_and_flush().await.unwrap();
+    let app = build_test_app(state.clone());
+
+    let jpeg: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xD9];
+    let (body, ct) = build_leave_multipart(
+        &[
+            ("employee_id", &emp),
+            ("from_date", "2026-05-01"),
+            ("to_date", "2026-05-01"),
+            ("leave_type", "medical"),
+            ("justification", "queue closure compensation"),
+        ],
+        Some(("image/jpeg", jpeg)),
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/leaves")
+        .header(header::CONTENT_TYPE, ct)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let conn = state.db.connect().unwrap();
+    let count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM leaves WHERE employee_id = ?1",
+            params![emp.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 0);
+    let files = std::fs::read_dir(&leaves_root)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(files, 0, "failed queued write must remove leave evidence");
+}
+
+#[tokio::test]
+async fn cancelled_request_after_leave_job_admission_keeps_committed_evidence() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept = create_test_department_with_shift(
+        &db,
+        "D-cancelled-request",
+        "day",
+        false,
+        480,
+        "09:00",
+        "17:00",
+    )
+    .await;
+    let emp = seed_employee(&db, &dept, "E-CANCELLED-REQUEST").await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+    let leaves_root = state.paths.leaves_root.clone();
+    let app = build_test_app(state.clone());
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-cancelled-leave", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let (body, ct) = build_leave_multipart(
+        &[
+            ("employee_id", &emp),
+            ("from_date", "2026-05-03"),
+            ("to_date", "2026-05-03"),
+            ("leave_type", "medical"),
+            ("justification", "request cancellation must not orphan row"),
+        ],
+        Some(("image/jpeg", &[0xFF, 0xD8, 0xFF, 0xE0][..])),
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/leaves")
+        .header(header::CONTENT_TYPE, ct)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let request_task = tokio::spawn(app.oneshot(request));
+    while state.db_write.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    release_tx.send(()).expect("release blocker");
+    blocker.await.unwrap().unwrap();
+    while state.db_write.stats().completed < 2 {
+        tokio::task::yield_now().await;
+    }
+
+    let conn = state.db.connect().unwrap();
+    let evidence_path: String = conn
+        .query(
+            "SELECT evidence_path FROM leaves WHERE employee_id = ?1",
+            params![emp.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("accepted leave transaction committed")
+        .get(0)
+        .unwrap();
+    assert!(
+        leaves_root.join(evidence_path).exists(),
+        "committed leave row must retain its evidence after request cancellation"
+    );
+    let recompute = recompute_rx
+        .try_recv()
+        .expect("committed leave must publish recompute after request cancellation");
+    assert!(matches!(
+        recompute,
+        RecomputeRequest::Range {
+            employee_id,
+            from_date,
+            to_date,
+        } if employee_id == emp
+            && from_date == chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap()
+            && to_date == chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap()
+    ));
+}
+
+#[tokio::test]
+async fn maximum_leave_range_publishes_one_bounded_recompute_unit() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept = create_test_department_with_shift(
+        &db,
+        "D-extreme-range",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+    let employee_id = seed_employee(&db, &dept, "E-EXTREME-RANGE").await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+
+    leaves::service::create_leave_queued(
+        &state,
+        &admin,
+        leaves::models::CreateLeaveRequest {
+            employee_id: employee_id.clone(),
+            from_date: "2024-01-01".into(),
+            to_date: "2024-12-31".into(),
+            leave_type: "manual".into(),
+            justification: "bounded recompute publication".into(),
+        },
+        None,
+    )
+    .await
+    .expect("domain accepts the inclusive 366-day maximum");
+
+    assert!(matches!(
+        recompute_rx.try_recv().expect("one recompute unit"),
+        RecomputeRequest::Range {
+            employee_id: actual_employee,
+            from_date,
+            to_date,
+        } if actual_employee == employee_id
+            && from_date == NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+            && to_date == NaiveDate::from_ymd_opt(2024, 12, 31).unwrap()
+    ));
+    assert!(matches!(
+        recompute_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn leave_range_over_366_days_is_rejected_before_write_admission() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-over-range", "day", false, 480, "08:00", "17:00")
+            .await;
+    let employee_id = seed_employee(&db, &dept, "E-OVER-RANGE").await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+    let accepted_before = state.db_write.stats().accepted;
+
+    let error = leaves::service::create_leave_queued(
+        &state,
+        &admin,
+        leaves::models::CreateLeaveRequest {
+            employee_id: employee_id.clone(),
+            from_date: "2024-01-01".into(),
+            to_date: "2025-01-01".into(),
+            leave_type: "manual".into(),
+            justification: "must be rejected before admission".into(),
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        cronometrix_api::errors::AppError::Validation {
+            code: "VALIDATION_ERROR",
+            message,
+        } if message == "Leave range cannot exceed 366 days"
+    ));
+    assert_eq!(state.db_write.stats().accepted, accepted_before);
+    let conn = state.db.connect().unwrap();
+    let count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM leaves WHERE employee_id = ?1",
+            params![employee_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 0);
+    assert!(matches!(
+        recompute_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn cancelled_delete_after_admission_commits_and_publishes_recompute() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept = create_test_department_with_shift(
+        &db,
+        "D-cancel-delete",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+    let employee_id = seed_employee(&db, &dept, "E-CANCEL-DELETE").await;
+    let leave_id = create_test_leave(
+        &db,
+        &employee_id,
+        "vacation",
+        "2026-07-14",
+        "2026-07-16",
+        &admin,
+    )
+    .await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+    let app = build_test_app(state.clone());
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-cancel-delete", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let request = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/api/v1/leaves/{leave_id}?version=1"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let request_task = tokio::spawn(app.oneshot(request));
+    while state.db_write.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    release_tx.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    state.db_write.flush().await.unwrap();
+
+    let conn = state.db.connect().unwrap();
+    let status: String = conn
+        .query("SELECT status FROM leaves WHERE id = ?1", params![leave_id])
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    assert!(matches!(
+        recompute_rx
+            .try_recv()
+            .expect("committed cancellation must publish recompute"),
+        RecomputeRequest::Range {
+            employee_id: actual_employee,
+            from_date,
+            to_date,
+        } if actual_employee == employee_id
+            && from_date == NaiveDate::from_ymd_opt(2026, 7, 14).unwrap()
+            && to_date == NaiveDate::from_ymd_opt(2026, 7, 16).unwrap()
+    ));
+}
+
+#[tokio::test]
+async fn leave_filesystem_failure_precedes_queue_admission() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-fs", "day", false, 480, "09:00", "17:00").await;
+    let emp = seed_employee(&db, &dept, "E-FS").await;
+    let (mut state, tmp) = make_state(db);
+    let unusable_root = tmp.path().join("leaves-is-a-file");
+    std::fs::write(&unusable_root, b"not a directory").unwrap();
+    let mut paths = (*state.paths).clone();
+    paths.leaves_root = unusable_root;
+    state.paths = Arc::new(paths);
+    let app = build_test_app(state.clone());
+
+    let (body, ct) = build_leave_multipart(
+        &[
+            ("employee_id", &emp),
+            ("from_date", "2026-05-02"),
+            ("to_date", "2026-05-02"),
+            ("leave_type", "medical"),
+            ("justification", "filesystem failure"),
+        ],
+        Some(("image/jpeg", &[0xFF, 0xD8, 0xFF][..])),
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/leaves")
+        .header(header::CONTENT_TYPE, ct)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(state.db_write.stats().accepted, 0);
+}
+
 // -----------------------------------------------------------------------------
 // Optimistic concurrency on cancel: 409 with stale version, 204 with correct
 // -----------------------------------------------------------------------------
@@ -439,7 +918,7 @@ async fn cancel_leave_optimistic_concurrency() {
     let conn = state.db.connect().expect("connect");
     let mut rows = conn
         .query(
-            "SELECT status, deleted_at FROM leaves WHERE id = ?1",
+            "SELECT status, deleted_at, cancelled_by FROM leaves WHERE id = ?1",
             params![leave_id.clone()],
         )
         .await
@@ -447,8 +926,31 @@ async fn cancel_leave_optimistic_concurrency() {
     let row = rows.next().await.unwrap().expect("row");
     let status: String = row.get(0).unwrap();
     let deleted_at: Option<i64> = row.get(1).unwrap();
+    let cancelled_by: Option<String> = row.get(2).unwrap();
     assert_eq!(status, "cancelled");
     assert!(deleted_at.is_some());
+    assert_eq!(cancelled_by.as_deref(), Some(admin.as_str()));
+
+    let audit = conn
+        .query(
+            "SELECT actor_id, json_extract(new_data, '$.cancelled_by'), json_extract(new_data, '$.justification') \
+             FROM audit_log WHERE table_name = 'leaves' AND record_id = ?1 AND operation = 'UPDATE' \
+             ORDER BY created_at DESC LIMIT 1",
+            params![leave_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("cancellation appends audit evidence");
+    assert_eq!(audit.get::<String>(0).unwrap(), admin);
+    assert_eq!(audit.get::<String>(1).unwrap(), admin);
+    assert_eq!(
+        audit.get::<String>(2).unwrap(),
+        "test justification",
+        "legal justification must remain in cancellation audit JSON"
+    );
 }
 
 // -----------------------------------------------------------------------------

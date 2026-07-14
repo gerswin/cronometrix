@@ -105,9 +105,9 @@ pub async fn update_rules(
 
     let rows_affected = state
         .db_write
-        .execute(sql, values)
+        .statement("rules.update", sql, values)
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     if rows_affected == 0 {
         // Version conflict — singleton always exists

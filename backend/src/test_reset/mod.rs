@@ -7,7 +7,7 @@
 //! route-registration guard.
 //!
 //! Threat model: T-09-02 — accidental exposure in production would destroy
-//! audit_log and other compliance-critical tables.
+//! mutable attendance state. Legal audit evidence is intentionally preserved.
 
 use axum::{extract::State, http::StatusCode, Json};
 
@@ -22,10 +22,10 @@ use crate::state::AppState;
 /// - daily_record_anomalies
 /// - daily_record_overrides
 /// - daily_records
-/// - audit_log
 ///
 /// Tables NOT truncated (stable fixture data seeded by seed_e2e):
 /// - users, departments, employees, devices, device_face_mappings, global_rules
+/// - audit_log (append-only legal evidence)
 pub async fn test_reset(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -46,7 +46,6 @@ pub async fn test_reset(
         "DELETE FROM daily_record_anomalies",
         "DELETE FROM daily_record_overrides",
         "DELETE FROM daily_records",
-        "DELETE FROM audit_log",
     ] {
         conn.execute(sql, ())
             .await

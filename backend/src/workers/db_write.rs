@@ -1,12 +1,8 @@
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio_util::sync::CancellationToken;
-
-use crate::db::write_queue::{run_write_worker, WriteCommand};
+use crate::db::write_queue::{run_write_worker, DbWriteError, DbWriteQueueReceiver};
 
 pub async fn run(
     db: std::sync::Arc<libsql::Database>,
-    rx: UnboundedReceiver<WriteCommand>,
-    shutdown: CancellationToken,
-) {
-    run_write_worker(db, rx, shutdown).await;
+    rx: DbWriteQueueReceiver,
+) -> Result<(), DbWriteError> {
+    run_write_worker(db, rx).await
 }

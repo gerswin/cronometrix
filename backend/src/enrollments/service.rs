@@ -4,19 +4,160 @@
 //! Follows the Phase 1/2 service convention: pure I/O functions, no business
 //! logic beyond persistence. Business logic lives in handlers and pusher.
 
+use std::sync::Arc;
+
 use libsql::{params, Connection};
 use uuid::Uuid;
 
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
-use crate::devices::service as devices_service;
+use crate::devices::{crypto, models::DeviceWithPlaintext, service as devices_service};
 use crate::errors::AppError;
-use crate::events::service::write_photo_atomic;
+use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
+use crate::storage::atomic_file::AtomicFileGuard;
 
+use super::dispatcher::{AuthorizedAttempt, AuthorizedDispatchCommand, AuthorizedDispatchTarget};
 use super::models::{
     validate_enrollment_status, EnrollmentDevicePushResponse, EnrollmentListQuery,
-    EnrollmentResponse, EnrollmentSubmitResponse,
+    EnrollmentResponse, EnrollmentSubmitResponse, RetryResponse,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceOperationState {
+    Prepared,
+    DeviceApplied,
+    Manual,
+}
+
+pub struct CheckpointAdmission {
+    pub state: DeviceOperationState,
+    pub fresh: bool,
+}
+
+fn checkpoint_state(value: &str) -> anyhow::Result<DeviceOperationState> {
+    match value {
+        "prepared" => Ok(DeviceOperationState::Prepared),
+        "device_applied" => Ok(DeviceOperationState::DeviceApplied),
+        "manual" => Ok(DeviceOperationState::Manual),
+        _ => anyhow::bail!("invalid device operation checkpoint state"),
+    }
+}
+
+pub fn enrollment_checkpoint_key(push_id: &str) -> String {
+    format!("enrollment:{push_id}")
+}
+
+pub fn backfill_checkpoint_key(device_id: &str, face_id: &str) -> String {
+    format!("backfill:{device_id}:{face_id}")
+}
+
+pub fn purge_checkpoint_key(mapping_id: &str) -> String {
+    format!("purge:{mapping_id}")
+}
+
+pub async fn admit_device_operation(
+    state: &AppState,
+    operation_key: &str,
+    operation: &str,
+) -> Result<CheckpointAdmission, AppError> {
+    let operation_key = operation_key.to_string();
+    let operation = operation.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.admit-device-operation", move |tx| {
+            Box::pin(async move {
+                let inserted = tx
+                    .statement(
+                        "INSERT OR IGNORE INTO device_operation_checkpoints \
+                         (operation_key, operation, state, updated_at) \
+                         VALUES (?1, ?2, 'prepared', unixepoch())",
+                        params![operation_key.clone(), operation],
+                    )
+                    .await?
+                    == 1;
+                let mut rows = tx
+                    .query(
+                        "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1",
+                        params![operation_key],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("checkpoint disappeared during admission"))?;
+                let state: String = row.get(0)?;
+                Ok(CheckpointAdmission {
+                    state: checkpoint_state(&state)?,
+                    fresh: inserted,
+                })
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+pub async fn mark_device_operation(
+    state: &AppState,
+    operation_key: &str,
+    checkpoint: DeviceOperationState,
+) -> Result<(), AppError> {
+    let checkpoint = match checkpoint {
+        DeviceOperationState::Prepared => "prepared",
+        DeviceOperationState::DeviceApplied => "device_applied",
+        DeviceOperationState::Manual => "manual",
+    };
+    state
+        .db_write
+        .background_statement(
+            "enrollments.mark-device-operation",
+            "UPDATE device_operation_checkpoints \
+             SET state=?1, updated_at=unixepoch() WHERE operation_key=?2",
+            vec![
+                libsql::Value::Text(checkpoint.to_string()),
+                libsql::Value::Text(operation_key.to_string()),
+            ],
+        )
+        .await
+        .map_err(AppError::from)?;
+    Ok(())
+}
+
+pub async fn clear_device_operation(state: &AppState, operation_key: &str) -> Result<(), AppError> {
+    state
+        .db_write
+        .background_statement(
+            "enrollments.clear-device-operation",
+            "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+            vec![libsql::Value::Text(operation_key.to_string())],
+        )
+        .await
+        .map_err(AppError::from)?;
+    Ok(())
+}
+
+/// Atomic enrollment result plus the exact decrypted device snapshot whose
+/// rows were created in the same transaction. This type never serializes or
+/// derives Debug, so plaintext credentials cannot escape into API/log output.
+pub struct StartedEnrollment {
+    pub response: EnrollmentSubmitResponse,
+}
+
+impl std::fmt::Debug for StartedEnrollment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StartedEnrollment")
+            .field("response", &self.response)
+            .finish()
+    }
+}
+
+impl std::ops::Deref for StartedEnrollment {
+    type Target = EnrollmentSubmitResponse;
+
+    fn deref(&self) -> &Self::Target {
+        &self.response
+    }
+}
 
 // =============================================================================
 // Filesystem roots
@@ -208,15 +349,16 @@ pub async fn list_enrollments(
 
 /// Persist a full enrollment session atomically and return the 202 response body.
 ///
-/// Steps (all in the same connection — single WAL writer):
+/// Steps (all in one queued transaction owned by the single WAL writer):
 /// 1. INSERT face_enrollments
 /// 2. INSERT enrollments
 /// 3. Ensure employees.face_id is set (COALESCE — stable per D-10)
 /// 4. UPDATE employees.current_face_enrollment_id
 /// 5. INSERT enrollment_device_pushes (one per active device)
-/// 6. Write JPEG to disk via write_photo_atomic
 ///
-/// Note: `spawn_enrollment_pushes` is called by the handler AFTER this returns 202.
+/// The JPEG is durably published under `AtomicFileGuard` before admission and
+/// kept by a worker-owned after-commit callback. Rollback, queue rejection, and
+/// request cancellation therefore cannot leave a row/file mismatch.
 pub async fn start_enrollment(
     state: &AppState,
     actor_id: &str,
@@ -225,290 +367,197 @@ pub async fn start_enrollment(
     source_device_id: Option<&str>,
     face_quality_score: Option<&str>,
     normalized_bytes: &[u8],
-) -> Result<EnrollmentSubmitResponse, AppError> {
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Fetch all active devices once for fan-out planning.
-    let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
-
-    // Generate IDs before insert so we can compose the photo path.
+) -> Result<StartedEnrollment, AppError> {
     let face_enrollment_id = Uuid::new_v4().to_string();
     let enrollment_id = Uuid::new_v4().to_string();
     let new_face_id = Uuid::new_v4().to_string();
-
-    // Compose the photo path: {employee_id}/{enrollment_id}.jpg
     let photo_relpath = format!("{}/{}.jpg", employee_id, enrollment_id);
-
-    // 1. INSERT face_enrollments
-    conn.execute(
-        "INSERT INTO face_enrollments \
-         (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
-        params![
-            face_enrollment_id.clone(),
-            employee_id.to_string(),
-            captured_via.to_string(),
-            source_device_id.map(|s| s.to_string()),
-            photo_relpath.clone(),
-            face_quality_score.map(|s| s.to_string()),
-            actor_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // 2. INSERT enrollments
-    conn.execute(
-        "INSERT INTO enrollments \
-         (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
-         VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
-        params![
-            enrollment_id.clone(),
-            employee_id.to_string(),
-            face_enrollment_id.clone(),
-            actor_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // 3. Set employees.face_id only if not yet assigned (D-10: stable per employee).
-    conn.execute(
-        "UPDATE employees SET face_id = COALESCE(face_id, ?1) WHERE id = ?2",
-        params![new_face_id.clone(), employee_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // 4. Update employees.current_face_enrollment_id to the new enrollment.
-    conn.execute(
-        "UPDATE employees SET current_face_enrollment_id = ?1 WHERE id = ?2",
-        params![face_enrollment_id.clone(), employee_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Retrieve the actual face_id (may differ from new_face_id if COALESCE preserved existing).
-    let mut fid_rows = conn
-        .query(
-            "SELECT face_id FROM employees WHERE id = ?1",
-            params![employee_id.to_string()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let fid_row = fid_rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::NotFound {
-            code: "EMPLOYEE_NOT_FOUND",
-            message: format!("Employee '{}' not found", employee_id),
-        })?;
-    let face_id: String = fid_row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-
-    // 5. INSERT enrollment_device_pushes (one per active device, status=pending).
-    let mut push_responses = Vec::new();
-    for device in &devices {
-        let push_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT OR REPLACE INTO enrollment_device_pushes \
-             (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
-             VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-            params![push_id.clone(), enrollment_id.clone(), device.id.clone(),],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-        push_responses.push(EnrollmentDevicePushResponse {
-            id: push_id,
-            device_id: device.id.clone(),
-            device_name: device.name.clone(),
-            status: "pending".to_string(),
-            error_message: None,
-            started_at: None,
-            completed_at: None,
-        });
-    }
-
-    // 6. Write JPEG to disk atomically (write_photo_atomic handles create_dir_all).
-    write_photo_atomic(
+    let guard = AtomicFileGuard::write(
         &state.paths.enrollments_root,
         &photo_relpath,
         normalized_bytes,
     )
     .map_err(AppError::Internal)?;
+    let actor_id = actor_id.to_string();
+    let employee_id = employee_id.to_string();
+    let captured_via = captured_via.to_string();
+    let source_device_id = source_device_id.map(str::to_string);
+    let face_quality_score = face_quality_score.map(str::to_string);
+    let device_creds_key = state.config.device_creds_key;
+    let dispatcher = state.enrollment_dispatcher.clone();
+    let photo_bytes = Arc::new(normalized_bytes.to_vec());
+    let dispatch_error = Arc::new(std::sync::Mutex::new(None::<String>));
+    let callback_error = dispatch_error.clone();
 
-    Ok(EnrollmentSubmitResponse {
-        enrollment_id,
-        face_id,
-        device_pushes: push_responses,
-    })
-}
-
-pub async fn start_enrollment_queued(
-    state: &AppState,
-    actor_id: &str,
-    employee_id: &str,
-    captured_via: &str,
-    source_device_id: Option<&str>,
-    face_quality_score: Option<&str>,
-    normalized_bytes: &[u8],
-) -> Result<EnrollmentSubmitResponse, AppError> {
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
-
-    let face_enrollment_id = Uuid::new_v4().to_string();
-    let enrollment_id = Uuid::new_v4().to_string();
-    let new_face_id = Uuid::new_v4().to_string();
-    let photo_relpath = format!("{}/{}.jpg", employee_id, enrollment_id);
-
-    state
+    let started = state
         .db_write
-        .execute(
-            "INSERT INTO face_enrollments \
-             (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
-            vec![
-                libsql::Value::Text(face_enrollment_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-                libsql::Value::Text(captured_via.to_string()),
-                source_device_id.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(photo_relpath.clone()),
-                face_quality_score.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(actor_id.to_string()),
-            ],
-        )
-        .await
-        .map_err(AppError::Internal)?;
+        .transact("enrollments.start", move |tx| {
+            Box::pin(async move {
+                tx.statement(
+                    "INSERT INTO face_enrollments \
+                     (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
+                    params![
+                        face_enrollment_id.clone(),
+                        employee_id.clone(),
+                        captured_via,
+                        source_device_id,
+                        photo_relpath,
+                        face_quality_score,
+                        actor_id.clone(),
+                    ],
+                )
+                .await?;
+                tx.statement(
+                    "INSERT INTO enrollments \
+                     (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
+                     VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
+                    params![
+                        enrollment_id.clone(),
+                        employee_id.clone(),
+                        face_enrollment_id.clone(),
+                        actor_id,
+                    ],
+                )
+                .await?;
+                let employee_updated = tx.statement(
+                    "UPDATE employees \
+                     SET face_id=COALESCE(face_id, ?1), current_face_enrollment_id=?2 \
+                     WHERE id=?3",
+                    params![new_face_id, face_enrollment_id, employee_id.clone()],
+                )
+                .await?;
+                if employee_updated != 1 {
+                    anyhow::bail!("employee disappeared during enrollment");
+                }
 
-    state
-        .db_write
-        .execute(
-            "INSERT INTO enrollments \
-             (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
-             VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
-            vec![
-                libsql::Value::Text(enrollment_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-                libsql::Value::Text(face_enrollment_id.clone()),
-                libsql::Value::Text(actor_id.to_string()),
-            ],
-        )
-        .await
-        .map_err(AppError::Internal)?;
+                let mut face_rows = tx
+                    .query(
+                        "SELECT face_id, name FROM employees WHERE id=?1",
+                        params![employee_id.clone()],
+                    )
+                    .await?;
+                let face_row = face_rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("employee disappeared during enrollment"))?;
+                let face_id: String = face_row.get(0)?;
+                let employee_name: String = face_row.get(1)?;
+                drop(face_rows);
 
-    state
-        .db_write
-        .execute(
-            "UPDATE employees SET face_id = COALESCE(face_id, ?1) WHERE id = ?2",
-            vec![
-                libsql::Value::Text(new_face_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-            ],
-        )
-        .await
-        .map_err(AppError::Internal)?;
+                let mut device_rows = tx
+                    .query(
+                        "SELECT id, name, ip, port, scheme, username, encrypted_password, \
+                                direction, allow_insecure_tls, status, version \
+                         FROM devices \
+                         WHERE status='active' AND deleted_at IS NULL \
+                         ORDER BY created_at, id",
+                        (),
+                    )
+                    .await?;
+                let mut devices = Vec::new();
+                while let Some(row) = device_rows.next().await? {
+                    let encrypted: String = row.get(6)?;
+                    let password = crypto::decrypt_password(&encrypted, &device_creds_key)?;
+                    let scheme: String = row.get(4)?;
+                    let ip: String = row.get(2)?;
+                    let port: i64 = row.get(3)?;
+                    devices.push(DeviceWithPlaintext {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        base_url: format!("{scheme}://{ip}:{port}"),
+                        username: row.get(5)?,
+                        password,
+                        direction: row.get(7)?,
+                        allow_insecure_tls: row.get::<i64>(8)? != 0,
+                        status: row.get(9)?,
+                        version: row.get(10)?,
+                    });
+                }
+                drop(device_rows);
 
-    state
-        .db_write
-        .execute(
-            "UPDATE employees SET current_face_enrollment_id = ?1 WHERE id = ?2",
-            vec![
-                libsql::Value::Text(face_enrollment_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-            ],
-        )
-        .await
-        .map_err(AppError::Internal)?;
+                let mut device_pushes = Vec::with_capacity(devices.len());
+                let mut targets = Vec::with_capacity(devices.len());
+                for device in devices {
+                    DeviceConnection::new(
+                        &device.base_url,
+                        &device.username,
+                        &device.password,
+                        device.allow_insecure_tls,
+                    )
+                    .map_err(|error| anyhow::anyhow!("invalid device connection: {error}"))?;
+                    let push_id = Uuid::new_v4().to_string();
+                    tx.statement(
+                        "INSERT INTO enrollment_device_pushes \
+                         (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
+                         VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
+                        params![push_id.clone(), enrollment_id.clone(), device.id.clone()],
+                    )
+                    .await?;
+                    tx.statement(
+                        "INSERT INTO device_operation_checkpoints \
+                         (operation_key, operation, state, updated_at) \
+                         VALUES (?1, 'enrollment_push', 'prepared', unixepoch())",
+                        params![enrollment_checkpoint_key(&push_id)],
+                    )
+                    .await?;
+                    device_pushes.push(EnrollmentDevicePushResponse {
+                        id: push_id,
+                        device_id: device.id.clone(),
+                        device_name: device.name.clone(),
+                        status: "pending".into(),
+                        error_message: None,
+                        started_at: None,
+                        completed_at: None,
+                    });
+                    targets.push(AuthorizedDispatchTarget {
+                        push_id: device_pushes.last().expect("push just inserted").id.clone(),
+                        device,
+                        attempt: AuthorizedAttempt::committed(),
+                    });
+                }
 
-    let mut fid_rows = conn
-        .query(
-            "SELECT face_id FROM employees WHERE id = ?1",
-            params![employee_id.to_string()],
-        )
+                let response = EnrollmentSubmitResponse {
+                    enrollment_id: enrollment_id.clone(),
+                    face_id: face_id.clone(),
+                    device_pushes,
+                };
+                tx.after_commit(move || {
+                    guard.keep();
+                    if let Err(error) = dispatcher.enqueue(AuthorizedDispatchCommand {
+                        enrollment_id,
+                        face_id,
+                        photo_bytes,
+                        employee_id,
+                        employee_name,
+                        targets,
+                    }) {
+                        *callback_error
+                            .lock()
+                            .expect("dispatch receipt mutex poisoned") =
+                            Some(error.to_string());
+                    }
+                });
+                Ok(StartedEnrollment {
+                    response,
+                })
+            })
+        })
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let fid_row = fid_rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::NotFound {
-            code: "EMPLOYEE_NOT_FOUND",
-            message: format!("Employee '{}' not found", employee_id),
-        })?;
-    let face_id: String = fid_row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-
-    let mut push_responses = Vec::new();
-    for device in &devices {
-        let push_id = Uuid::new_v4().to_string();
-        state
-            .db_write
-            .execute(
-                "INSERT OR REPLACE INTO enrollment_device_pushes \
-                 (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
-                 VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-                vec![
-                    libsql::Value::Text(push_id.clone()),
-                    libsql::Value::Text(enrollment_id.clone()),
-                    libsql::Value::Text(device.id.clone()),
-                ],
-            )
-            .await
-            .map_err(AppError::Internal)?;
-
-        push_responses.push(EnrollmentDevicePushResponse {
-            id: push_id,
-            device_id: device.id.clone(),
-            device_name: device.name.clone(),
-            status: "pending".to_string(),
-            error_message: None,
-            started_at: None,
-            completed_at: None,
-        });
+        .map_err(AppError::from)?;
+    if let Some(error) = dispatch_error
+        .lock()
+        .expect("dispatch receipt mutex poisoned")
+        .take()
+    {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "post-commit enrollment dispatch failed: {error}"
+        )));
     }
-
-    write_photo_atomic(
-        &state.paths.enrollments_root,
-        &photo_relpath,
-        normalized_bytes,
-    )
-    .map_err(AppError::Internal)?;
-
-    Ok(EnrollmentSubmitResponse {
-        enrollment_id,
-        face_id,
-        device_pushes: push_responses,
-    })
+    Ok(started)
 }
 
 /// Update a single push row's status and error_message.
-pub async fn update_push_status(
-    conn: &Connection,
-    push_id: &str,
-    status: &str,
-    error_message: Option<&str>,
-) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE enrollment_device_pushes \
-         SET status = ?1, error_message = ?2, completed_at = unixepoch() \
-         WHERE id = ?3",
-        params![
-            status.to_string(),
-            error_message.map(|s| s.to_string()),
-            push_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn update_push_status_queued(
     state: &AppState,
     push_id: &str,
@@ -517,7 +566,8 @@ pub async fn update_push_status_queued(
 ) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.finish-device-push",
             "UPDATE enrollment_device_pushes \
              SET status = ?1, error_message = ?2, completed_at = unixepoch() \
              WHERE id = ?3",
@@ -530,34 +580,323 @@ pub async fn update_push_status_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
+}
+
+/// Commit the terminal push state and its device mapping as one background
+/// transaction. The queue retries admission only; an accepted job is never
+/// replayed, so successful device side effects are not duplicated.
+pub async fn complete_push_success(
+    state: &AppState,
+    push_id: &str,
+    device_id: &str,
+    face_id: &str,
+    employee_id: &str,
+) -> Result<(), AppError> {
+    let push_id = push_id.to_string();
+    let device_id = device_id.to_string();
+    let face_id = face_id.to_string();
+    let employee_id = employee_id.to_string();
+    let mapping_id = Uuid::new_v4().to_string();
+    let checkpoint_key = enrollment_checkpoint_key(&push_id);
+    state
+        .db_write
+        .background_transact("enrollments.complete-device-push", move |tx| {
+            Box::pin(async move {
+                let push_updated = tx
+                    .statement(
+                        "UPDATE enrollment_device_pushes \
+                     SET status='success', error_message=NULL, completed_at=unixepoch() \
+                     WHERE id=?1",
+                        params![push_id],
+                    )
+                    .await?;
+                if push_updated != 1 {
+                    anyhow::bail!("push row not found during successful completion");
+                }
+                tx.statement(
+                    "INSERT INTO device_face_mappings \
+                     (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch()) \
+                     ON CONFLICT(device_id, face_id) DO UPDATE SET \
+                       employee_id=excluded.employee_id, state='active', \
+                       version=device_face_mappings.version+1, updated_at=unixepoch()",
+                    params![mapping_id, device_id, face_id, employee_id],
+                )
+                .await?;
+                tx.statement(
+                    "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+                    params![checkpoint_key],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+/// Startup-only DB recovery for a confirmed device side effect. Push state,
+/// mapping, aggregate enrollment status, and checkpoint deletion commit as one
+/// transaction so a finalization failure rolls everything back and leaves the
+/// `device_applied` checkpoint available for the next fail-closed startup.
+pub async fn complete_recovered_push_success(
+    state: &AppState,
+    enrollment_id: &str,
+    push_id: &str,
+    device_id: &str,
+    face_id: &str,
+    employee_id: &str,
+) -> Result<(), AppError> {
+    let enrollment_id = enrollment_id.to_string();
+    let push_id = push_id.to_string();
+    let device_id = device_id.to_string();
+    let face_id = face_id.to_string();
+    let employee_id = employee_id.to_string();
+    let mapping_id = Uuid::new_v4().to_string();
+    let checkpoint_key = enrollment_checkpoint_key(&push_id);
+    state
+        .db_write
+        .background_transact("enrollments.recover-device-push", move |tx| {
+            Box::pin(async move {
+                let push_updated = tx
+                    .statement(
+                        "UPDATE enrollment_device_pushes \
+                         SET status='success', error_message=NULL, completed_at=unixepoch() \
+                         WHERE id=?1 AND enrollment_id=?2",
+                        params![push_id, enrollment_id.clone()],
+                    )
+                    .await?;
+                if push_updated != 1 {
+                    anyhow::bail!("push row not found during recovered completion");
+                }
+                tx.statement(
+                    "INSERT INTO device_face_mappings \
+                     (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch()) \
+                     ON CONFLICT(device_id, face_id) DO UPDATE SET \
+                       employee_id=excluded.employee_id, state='active', \
+                       version=device_face_mappings.version+1, updated_at=unixepoch()",
+                    params![mapping_id, device_id, face_id, employee_id],
+                )
+                .await?;
+
+                let mut rows = tx
+                    .query(
+                        "SELECT \
+                           SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
+                           SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), \
+                           COUNT(*), \
+                           SUM(CASE WHEN status IN ('pending','in_progress') THEN 1 ELSE 0 END) \
+                         FROM enrollment_device_pushes WHERE enrollment_id=?1",
+                        params![enrollment_id.clone()],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("recovered enrollment aggregate missing"))?;
+                let success = row.get::<Option<i64>>(0)?.unwrap_or(0);
+                let failed = row.get::<Option<i64>>(1)?.unwrap_or(0);
+                let total = row.get::<Option<i64>>(2)?.unwrap_or(0);
+                let nonterminal = row.get::<Option<i64>>(3)?.unwrap_or(0);
+                drop(rows);
+                if nonterminal == 0 {
+                    let final_status = if total == 0 || success == 0 {
+                        "failed"
+                    } else if failed == 0 {
+                        "success"
+                    } else {
+                        "partial"
+                    };
+                    let enrollment_updated = tx
+                        .statement(
+                            "UPDATE enrollments SET status=?1, completed_at=unixepoch(), \
+                             version=version+1 WHERE id=?2",
+                            params![final_status, enrollment_id],
+                        )
+                        .await?;
+                    if enrollment_updated != 1 {
+                        anyhow::bail!("enrollment row not found during recovered finalization");
+                    }
+                }
+                tx.statement(
+                    "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+                    params![checkpoint_key],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+/// Persist a terminal push failure through the background admission policy.
+pub async fn complete_push_failure(
+    state: &AppState,
+    push_id: &str,
+    error_message: &str,
+) -> Result<(), AppError> {
+    let push_id = push_id.to_string();
+    let error_message = error_message.to_string();
+    let checkpoint_key = enrollment_checkpoint_key(&push_id);
+    state
+        .db_write
+        .background_transact("enrollments.fail-device-push", move |tx| {
+            Box::pin(async move {
+                let push_updated = tx
+                    .statement(
+                        "UPDATE enrollment_device_pushes \
+                     SET status='failed', error_message=?1, completed_at=unixepoch() \
+                     WHERE id=?2",
+                        params![error_message, push_id],
+                    )
+                    .await?;
+                if push_updated != 1 {
+                    anyhow::bail!("push row not found during failed completion");
+                }
+                tx.statement(
+                    "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+                    params![checkpoint_key],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+/// Persist a terminal/manual recovery state without deleting the durable
+/// checkpoint. This is used after an ambiguous or confirmed-success device
+/// side effect so a public retry can only perform DB recovery, never replay
+/// the external call.
+pub async fn record_push_recovery_failure(
+    state: &AppState,
+    push_id: &str,
+    error_message: &str,
+    manual: bool,
+) -> Result<(), AppError> {
+    let push_id = push_id.to_string();
+    let error_message = error_message.to_string();
+    let checkpoint_key = enrollment_checkpoint_key(&push_id);
+    state
+        .db_write
+        .background_transact("enrollments.record-push-recovery", move |tx| {
+            Box::pin(async move {
+                if manual {
+                    tx.statement(
+                        "UPDATE device_operation_checkpoints \
+                         SET state='manual', updated_at=unixepoch() WHERE operation_key=?1",
+                        params![checkpoint_key],
+                    )
+                    .await?;
+                }
+                let updated = tx
+                    .statement(
+                        "UPDATE enrollment_device_pushes \
+                         SET status='failed', error_message=?1, completed_at=unixepoch() \
+                         WHERE id=?2",
+                        params![error_message, push_id],
+                    )
+                    .await?;
+                if updated != 1 {
+                    anyhow::bail!("push row not found during recovery persistence");
+                }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+/// Catch-all used by the dispatcher wrapper after a target returns or panics.
+/// It terminalizes only an unfinished push and only converts `prepared` to
+/// `manual`; a confirmed `device_applied` checkpoint is preserved for DB-only
+/// startup recovery.
+pub async fn terminalize_authorized_failure(
+    state: &AppState,
+    push_id: &str,
+    error_message: &str,
+) -> Result<(), AppError> {
+    let push_id = push_id.to_string();
+    let checkpoint_key = enrollment_checkpoint_key(&push_id);
+    let error_message = error_message.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.terminalize-authorized-push", move |tx| {
+            Box::pin(async move {
+                tx.statement(
+                    "UPDATE device_operation_checkpoints SET state='manual', updated_at=unixepoch() \
+                     WHERE operation_key=?1 AND state='prepared'",
+                    params![checkpoint_key],
+                )
+                .await?;
+                tx.statement(
+                    "UPDATE enrollment_device_pushes \
+                     SET status='failed', error_message=?1, completed_at=unixepoch() \
+                     WHERE id=?2 AND status IN ('pending','in_progress')",
+                    params![error_message, push_id],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+/// Terminalize every not-yet-finished device push when the committed
+/// enrollment cannot be admitted to the lifecycle owner. The API still
+/// returns its committed 202 snapshot; recovery is visible in persisted
+/// state instead of being converted into a misleading request failure.
+pub async fn fail_enrollment_dispatch(
+    state: &AppState,
+    enrollment_id: &str,
+    error_message: &str,
+) -> Result<(), AppError> {
+    let enrollment_id = enrollment_id.to_string();
+    let error_message = error_message.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.fail-dispatch-admission", move |tx| {
+            Box::pin(async move {
+                tx.statement(
+                    "UPDATE enrollment_device_pushes \
+                     SET status='failed', error_message=?1, completed_at=unixepoch() \
+                     WHERE enrollment_id=?2 AND status IN ('pending', 'in_progress')",
+                    params![error_message, enrollment_id.clone()],
+                )
+                .await?;
+                tx.statement(
+                    "UPDATE enrollments \
+                     SET status='failed', completed_at=unixepoch(), version=version+1 \
+                     WHERE id=?1 AND status='in_progress'",
+                    params![enrollment_id],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
 }
 
 /// Mark a push row as in_progress (records started_at).
-pub async fn mark_push_in_progress(conn: &Connection, push_id: &str) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE enrollment_device_pushes \
-         SET status = 'in_progress', started_at = unixepoch() \
-         WHERE id = ?1",
-        params![push_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn mark_push_in_progress_queued(state: &AppState, push_id: &str) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.start-device-push",
             "UPDATE enrollment_device_pushes \
              SET status = 'in_progress', started_at = unixepoch() \
              WHERE id = ?1",
             vec![libsql::Value::Text(push_id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -590,116 +929,199 @@ pub async fn get_push_id(
 }
 
 /// Re-set a push row to pending so the retry path can re-fire it.
-pub async fn reset_push_to_pending(
-    conn: &Connection,
-    enrollment_id: &str,
-    device_id: &str,
-) -> Result<String, AppError> {
-    // Upsert: INSERT OR REPLACE preserves the UNIQUE(enrollment_id, device_id) constraint.
-    let push_id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT OR REPLACE INTO enrollment_device_pushes \
-         (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
-         VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-        params![
-            push_id.clone(),
-            enrollment_id.to_string(),
-            device_id.to_string()
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(push_id)
-}
-
 pub async fn reset_push_to_pending_queued(
     state: &AppState,
     enrollment_id: &str,
     device_id: &str,
 ) -> Result<String, AppError> {
-    let push_id = Uuid::new_v4().to_string();
+    let enrollment_id = enrollment_id.to_string();
+    let device_id = device_id.to_string();
     state
         .db_write
-        .execute(
-            "INSERT OR REPLACE INTO enrollment_device_pushes \
-             (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
-             VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-            vec![
-                libsql::Value::Text(push_id.clone()),
-                libsql::Value::Text(enrollment_id.to_string()),
-                libsql::Value::Text(device_id.to_string()),
-            ],
-        )
+        .transact("enrollments.retry-device-push", move |tx| {
+            Box::pin(async move {
+                let mut rows = tx
+                    .query(
+                        "SELECT id, status FROM enrollment_device_pushes \
+                         WHERE enrollment_id=?1 AND device_id=?2",
+                        params![enrollment_id, device_id],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("push row not found for retry"))?;
+                let push_id: String = row.get(0)?;
+                let status: String = row.get(1)?;
+                drop(rows);
+                if status != "failed" {
+                    return Err(anyhow::Error::new(AppError::Conflict {
+                        code: "PUSH_NOT_RETRYABLE",
+                        message: "Only failed device pushes may be retried".into(),
+                    }));
+                }
+                tx.statement(
+                    "UPDATE enrollment_device_pushes \
+                     SET status='pending', error_message=NULL, started_at=NULL, completed_at=NULL \
+                     WHERE id=?1",
+                    params![push_id.clone()],
+                )
+                .await?;
+                Ok(push_id)
+            })
+        })
         .await
-        .map_err(AppError::Internal)?;
-    Ok(push_id)
+        .map_err(AppError::from)
+}
+
+/// Prepare a failed push for retry and transfer the exact command to the
+/// post-commit dispatcher. All fallible filesystem/device setup happens before
+/// the transaction; the handler has no work left that cancellation can lose.
+pub async fn retry_enrollment_push(
+    state: &AppState,
+    enrollment_id: &str,
+    device_id: &str,
+) -> Result<RetryResponse, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|error| AppError::Internal(error.into()))?;
+    let (employee_id, face_id, employee_name) =
+        get_enrollment_push_params(&conn, enrollment_id).await?;
+    let photo_path = get_current_photo_path(&conn, &employee_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound {
+            code: "PHOTO_NOT_FOUND",
+            message: "Employee has no current face enrollment photo".into(),
+        })?;
+    drop(conn);
+
+    let photo_bytes = Arc::new(
+        tokio::fs::read(state.paths.enrollments_root.join(photo_path))
+            .await
+            .map_err(|error| {
+                AppError::Internal(anyhow::anyhow!("read photo for retry: {error}"))
+            })?,
+    );
+    let device = devices_service::get_decrypted(
+        &state
+            .db
+            .connect()
+            .map_err(|error| AppError::Internal(error.into()))?,
+        device_id,
+        &state.config.device_creds_key,
+    )
+    .await?;
+    DeviceConnection::new(
+        &device.base_url,
+        &device.username,
+        &device.password,
+        device.allow_insecure_tls,
+    )
+    .map_err(|error| AppError::Internal(anyhow::anyhow!("invalid device connection: {error}")))?;
+
+    let enrollment_id_owned = enrollment_id.to_string();
+    let device_id_owned = device_id.to_string();
+    let dispatcher = state.enrollment_dispatcher.clone();
+    let dispatch_error = Arc::new(std::sync::Mutex::new(None::<String>));
+    let callback_error = Arc::clone(&dispatch_error);
+    let response = state
+        .db_write
+        .transact("enrollments.retry-device-push", move |tx| {
+            Box::pin(async move {
+                let mut rows = tx
+                    .query(
+                        "SELECT id, status FROM enrollment_device_pushes \
+                         WHERE enrollment_id=?1 AND device_id=?2",
+                        params![enrollment_id_owned.clone(), device_id_owned.clone()],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("push row not found for retry"))?;
+                let push_id: String = row.get(0)?;
+                let status: String = row.get(1)?;
+                drop(rows);
+                if status != "failed" {
+                    return Err(anyhow::Error::new(AppError::Conflict {
+                        code: "PUSH_NOT_RETRYABLE",
+                        message: "Only failed device pushes may be retried".into(),
+                    }));
+                }
+                let checkpoint_key = enrollment_checkpoint_key(&push_id);
+                let mut checkpoint_rows = tx
+                    .query(
+                        "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1",
+                        params![checkpoint_key.clone()],
+                    )
+                    .await?;
+                if checkpoint_rows.next().await?.is_some() {
+                    return Err(anyhow::Error::new(AppError::Conflict {
+                        code: "PUSH_RECONCILIATION_REQUIRED",
+                        message: "Device operation requires manual reconciliation before retry"
+                            .into(),
+                    }));
+                }
+                drop(checkpoint_rows);
+                tx.statement(
+                    "UPDATE enrollment_device_pushes \
+                     SET status='pending', error_message=NULL, started_at=NULL, completed_at=NULL \
+                     WHERE id=?1",
+                    params![push_id.clone()],
+                )
+                .await?;
+                tx.statement(
+                    "INSERT INTO device_operation_checkpoints \
+                     (operation_key, operation, state, updated_at) \
+                     VALUES (?1, 'enrollment_push', 'prepared', unixepoch())",
+                    params![checkpoint_key],
+                )
+                .await?;
+                let response = RetryResponse {
+                    enrollment_id: enrollment_id_owned.clone(),
+                    device_id: device_id_owned,
+                    status: "pending".into(),
+                };
+                tx.after_commit(move || {
+                    if let Err(error) = dispatcher.enqueue(AuthorizedDispatchCommand {
+                        enrollment_id: enrollment_id_owned,
+                        face_id,
+                        photo_bytes,
+                        employee_id,
+                        employee_name,
+                        targets: vec![AuthorizedDispatchTarget {
+                            push_id,
+                            device,
+                            attempt: AuthorizedAttempt::committed(),
+                        }],
+                    }) {
+                        *callback_error
+                            .lock()
+                            .expect("dispatch receipt mutex poisoned") = Some(error.to_string());
+                    }
+                });
+                Ok(response)
+            })
+        })
+        .await
+        .map_err(AppError::from)?;
+    if let Some(error) = dispatch_error
+        .lock()
+        .expect("dispatch receipt mutex poisoned")
+        .take()
+    {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "post-commit enrollment retry dispatch failed: {error}"
+        )));
+    }
+    Ok(response)
 }
 
 /// Finalise enrollment status after all push tasks settle.
 ///
 /// Counts success/failed push rows; sets enrollments.status and completed_at.
-/// Called by pusher::finalize_enrollment_status after the JoinSet drains.
-pub async fn finalize_enrollment_status(
-    conn: &Connection,
-    enrollment_id: &str,
-) -> Result<(), AppError> {
-    let mut rows = conn
-        .query(
-            "SELECT \
-               SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
-               SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END), \
-               COUNT(*) \
-             FROM enrollment_device_pushes \
-             WHERE enrollment_id = ?1",
-            params![enrollment_id.to_string()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    let row = rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!(
-                "no push rows for enrollment {}",
-                enrollment_id
-            ))
-        })?;
-
-    let success: i64 = row
-        .get::<Option<i64>>(0)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .unwrap_or(0);
-    let failed: i64 = row
-        .get::<Option<i64>>(1)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .unwrap_or(0);
-    let total: i64 = row
-        .get::<Option<i64>>(2)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .unwrap_or(0);
-
-    let final_status = if total == 0 || success == 0 {
-        "failed"
-    } else if failed == 0 {
-        "success"
-    } else {
-        "partial"
-    };
-
-    conn.execute(
-        "UPDATE enrollments \
-         SET status = ?1, completed_at = unixepoch(), version = version + 1 \
-         WHERE id = ?2",
-        params![final_status.to_string(), enrollment_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    Ok(())
-}
-
+/// Legacy queue-backed finalizer retained for focused service tests.
 pub async fn finalize_enrollment_status_queued(
     state: &AppState,
     enrollment_id: &str,
@@ -713,7 +1135,8 @@ pub async fn finalize_enrollment_status_queued(
             "SELECT \
                SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
                SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END), \
-               COUNT(*) \
+               COUNT(*), \
+               SUM(CASE WHEN status IN ('pending','in_progress') THEN 1 ELSE 0 END) \
              FROM enrollment_device_pushes \
              WHERE enrollment_id = ?1",
             params![enrollment_id.to_string()],
@@ -742,6 +1165,13 @@ pub async fn finalize_enrollment_status_queued(
         .get::<Option<i64>>(2)
         .map_err(|e| AppError::Internal(e.into()))?
         .unwrap_or(0);
+    let nonterminal: i64 = row
+        .get::<Option<i64>>(3)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .unwrap_or(0);
+    if nonterminal != 0 {
+        return Ok(());
+    }
     let final_status = if total == 0 || success == 0 {
         "failed"
     } else if failed == 0 {
@@ -751,7 +1181,8 @@ pub async fn finalize_enrollment_status_queued(
     };
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.finish",
             "UPDATE enrollments \
              SET status = ?1, completed_at = unixepoch(), version = version + 1 \
              WHERE id = ?2",
@@ -761,34 +1192,66 @@ pub async fn finalize_enrollment_status_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
+}
+
+/// Count terminal push outcomes and finalize the enrollment within the same
+/// queued transaction, so no observer can see a count detached from its state.
+pub async fn finalize_enrollment(state: &AppState, enrollment_id: &str) -> Result<(), AppError> {
+    let enrollment_id = enrollment_id.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.finalize", move |tx| {
+            Box::pin(async move {
+                let mut rows = tx
+                    .query(
+                        "SELECT \
+                           SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
+                           SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), COUNT(*), \
+                           SUM(CASE WHEN status IN ('pending','in_progress') THEN 1 ELSE 0 END) \
+                         FROM enrollment_device_pushes WHERE enrollment_id=?1",
+                        params![enrollment_id.clone()],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("push aggregate returned no row"))?;
+                let success = row.get::<Option<i64>>(0)?.unwrap_or(0);
+                let failed = row.get::<Option<i64>>(1)?.unwrap_or(0);
+                let total = row.get::<i64>(2)?;
+                let nonterminal = row.get::<Option<i64>>(3)?.unwrap_or(0);
+                drop(rows);
+                if nonterminal != 0 {
+                    return Ok(());
+                }
+                let final_status = if total == 0 || success == 0 {
+                    "failed"
+                } else if failed == 0 {
+                    "success"
+                } else {
+                    "partial"
+                };
+                let enrollment_updated = tx
+                    .statement(
+                        "UPDATE enrollments \
+                     SET status=?1, completed_at=unixepoch(), version=version+1 \
+                     WHERE id=?2",
+                        params![final_status, enrollment_id],
+                    )
+                    .await?;
+                if enrollment_updated != 1 {
+                    anyhow::bail!("enrollment not found during finalization");
+                }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
 }
 
 /// Upsert a device_face_mappings row (INSERT OR REPLACE) on push success (D-13).
-pub async fn upsert_device_face_mapping(
-    conn: &Connection,
-    device_id: &str,
-    face_id: &str,
-    employee_id: &str,
-) -> Result<(), AppError> {
-    let id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT OR REPLACE INTO device_face_mappings \
-         (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
-        params![
-            id,
-            device_id.to_string(),
-            face_id.to_string(),
-            employee_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn upsert_device_face_mapping_queued(
     state: &AppState,
     device_id: &str,
@@ -798,7 +1261,8 @@ pub async fn upsert_device_face_mapping_queued(
     let id = Uuid::new_v4().to_string();
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.upsert-face-mapping",
             "INSERT OR REPLACE INTO device_face_mappings \
              (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch())",
@@ -810,8 +1274,46 @@ pub async fn upsert_device_face_mapping_queued(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
+}
+
+pub async fn complete_backfill_mapping(
+    state: &AppState,
+    checkpoint_key: &str,
+    device_id: &str,
+    face_id: &str,
+    employee_id: &str,
+) -> Result<(), AppError> {
+    let checkpoint_key = checkpoint_key.to_string();
+    let device_id = device_id.to_string();
+    let face_id = face_id.to_string();
+    let employee_id = employee_id.to_string();
+    let mapping_id = Uuid::new_v4().to_string();
+    state
+        .db_write
+        .background_transact("enrollments.complete-backfill", move |tx| {
+            Box::pin(async move {
+                tx.statement(
+                    "INSERT INTO device_face_mappings \
+                     (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch()) \
+                     ON CONFLICT(device_id, face_id) DO UPDATE SET \
+                       employee_id=excluded.employee_id, state='active', \
+                       version=device_face_mappings.version+1, updated_at=unixepoch()",
+                    params![mapping_id, device_id, face_id, employee_id],
+                )
+                .await?;
+                tx.statement(
+                    "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+                    params![checkpoint_key],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
 }
 
 /// Get the face_enrollment photo path for a given employee's current enrollment.
@@ -907,59 +1409,64 @@ pub async fn list_mappings_for_employee(
 }
 
 /// Mark a device_face_mapping row as pending_delete (purge failed — will retry).
-pub async fn mark_mapping_pending_delete(
-    conn: &Connection,
-    mapping_id: &str,
-) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE device_face_mappings \
-         SET state = 'pending_delete', version = version + 1, updated_at = unixepoch() \
-         WHERE id = ?1",
-        params![mapping_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn mark_mapping_pending_delete_queued(
     state: &AppState,
     mapping_id: &str,
 ) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.mark-face-mapping-delete",
             "UPDATE device_face_mappings \
              SET state = 'pending_delete', version = version + 1, updated_at = unixepoch() \
              WHERE id = ?1",
             vec![libsql::Value::Text(mapping_id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
 }
 
 /// Delete a device_face_mapping row after successful device purge.
-pub async fn delete_mapping(conn: &Connection, mapping_id: &str) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM device_face_mappings WHERE id = ?1",
-        params![mapping_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(())
-}
-
 pub async fn delete_mapping_queued(state: &AppState, mapping_id: &str) -> Result<(), AppError> {
     state
         .db_write
-        .execute(
+        .background_statement(
+            "enrollments.delete-face-mapping",
             "DELETE FROM device_face_mappings WHERE id = ?1",
             vec![libsql::Value::Text(mapping_id.to_string())],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     Ok(())
+}
+
+pub async fn complete_purge_mapping(
+    state: &AppState,
+    checkpoint_key: &str,
+    mapping_id: &str,
+) -> Result<(), AppError> {
+    let checkpoint_key = checkpoint_key.to_string();
+    let mapping_id = mapping_id.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.complete-purge", move |tx| {
+            Box::pin(async move {
+                tx.statement(
+                    "DELETE FROM device_face_mappings WHERE id=?1",
+                    params![mapping_id],
+                )
+                .await?;
+                tx.statement(
+                    "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+                    params![checkpoint_key],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
 }
 
 /// Fetch the employee's current status. Used by PurgeWorker Pitfall-10 guard.

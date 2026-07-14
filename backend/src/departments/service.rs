@@ -65,45 +65,6 @@ fn row_to_department(row: libsql::Row) -> Result<Department, AppError> {
 }
 
 /// Create a new department. Returns Conflict with DEPARTMENT_NAME_EXISTS if name is not unique.
-pub async fn create(
-    conn: &Connection,
-    req: CreateDepartmentRequest,
-) -> Result<Department, AppError> {
-    validate_lunch(&req.lunch_mode, req.lunch_duration_min)?;
-
-    let id = Uuid::new_v4().to_string();
-
-    let result = conn
-        .execute(
-            "INSERT INTO departments (id, name, base_salary_cents, shift_start_time, shift_end_time, \
-             lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', 1, unixepoch(), unixepoch())",
-            params![
-                id.clone(),
-                req.name.clone(),
-                req.base_salary_cents,
-                req.shift_start_time.clone(),
-                req.shift_end_time.clone(),
-                req.lunch_mode.clone(),
-                req.lunch_duration_min
-            ],
-        )
-        .await;
-
-    if let Err(e) = result {
-        let msg = e.to_string();
-        if msg.contains("UNIQUE constraint failed") && msg.contains("name") {
-            return Err(AppError::Conflict {
-                code: "DEPARTMENT_NAME_EXISTS",
-                message: format!("Department name '{}' is already in use", req.name),
-            });
-        }
-        return Err(AppError::Internal(e.into()));
-    }
-
-    get_by_id(conn, &id).await
-}
-
 pub async fn create_queued(
     state: &AppState,
     req: CreateDepartmentRequest,
@@ -112,7 +73,8 @@ pub async fn create_queued(
     let id = Uuid::new_v4().to_string();
     let result = state
         .db_write
-        .execute(
+        .statement(
+            "departments.create",
             "INSERT INTO departments (id, name, base_salary_cents, shift_start_time, shift_end_time, \
              lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', 1, unixepoch(), unixepoch())",
@@ -138,7 +100,7 @@ pub async fn create_queued(
                 message: format!("Department name '{}' is already in use", req.name),
             });
         }
-        return Err(AppError::Internal(e));
+        return Err(AppError::from(e));
     }
 
     let conn = state
@@ -243,105 +205,6 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> Result<Department, AppErr
 
 /// Update a department using optimistic concurrency (D-04).
 /// Returns Conflict with VERSION_CONFLICT if the version does not match.
-pub async fn update(
-    conn: &Connection,
-    id: &str,
-    req: UpdateDepartmentRequest,
-) -> Result<Department, AppError> {
-    // If lunch_mode is being changed, validate consistency
-    let lunch_mode_to_validate = req.lunch_mode.as_deref();
-    if let Some(mode) = lunch_mode_to_validate {
-        validate_lunch(mode, req.lunch_duration_min)?;
-    }
-
-    // Build dynamic SET clause
-    let mut sets: Vec<String> = Vec::new();
-    let mut values: Vec<libsql::Value> = Vec::new();
-
-    if let Some(name) = req.name {
-        sets.push(format!("name = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(name));
-    }
-
-    if let Some(salary) = req.base_salary_cents {
-        sets.push(format!("base_salary_cents = ?{}", values.len() + 1));
-        values.push(libsql::Value::Integer(salary));
-    }
-
-    if let Some(start) = req.shift_start_time {
-        sets.push(format!("shift_start_time = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(start));
-    }
-
-    if let Some(end) = req.shift_end_time {
-        sets.push(format!("shift_end_time = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(end));
-    }
-
-    if let Some(mode) = req.lunch_mode {
-        sets.push(format!("lunch_mode = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(mode));
-    }
-
-    if let Some(dur) = req.lunch_duration_min {
-        sets.push(format!("lunch_duration_min = ?{}", values.len() + 1));
-        values.push(libsql::Value::Integer(dur));
-    }
-
-    if sets.is_empty() {
-        return get_by_id(conn, id).await;
-    }
-
-    sets.push("updated_at = unixepoch()".to_string());
-    sets.push("version = version + 1".to_string());
-
-    let set_clause = sets.join(", ");
-    let version_param = values.len() + 1;
-    let id_param = values.len() + 2;
-
-    values.push(libsql::Value::Integer(req.version));
-    values.push(libsql::Value::Text(id.to_string()));
-
-    let sql = format!(
-        "UPDATE departments SET {} WHERE id = ?{} AND version = ?{}",
-        set_clause, id_param, version_param
-    );
-
-    let rows_affected = conn
-        .execute(&sql, libsql::params_from_iter(values))
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    if rows_affected == 0 {
-        let exists = conn
-            .query(
-                "SELECT id FROM departments WHERE id = ?1",
-                params![id.to_string()],
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .next()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-
-        if exists.is_none() {
-            return Err(AppError::NotFound {
-                code: "DEPARTMENT_NOT_FOUND",
-                message: format!("Department '{}' not found", id),
-            });
-        }
-
-        return Err(AppError::Conflict {
-            code: "VERSION_CONFLICT",
-            message:
-                "Department was modified by another request. Fetch the latest version and retry."
-                    .to_string(),
-        });
-    }
-
-    get_by_id(conn, id).await
-}
-
 pub async fn update_queued(
     state: &AppState,
     id: &str,
@@ -402,9 +265,9 @@ pub async fn update_queued(
 
     let rows_affected = state
         .db_write
-        .execute(sql, values)
+        .statement("departments.update", sql, values)
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     let conn = state
         .db

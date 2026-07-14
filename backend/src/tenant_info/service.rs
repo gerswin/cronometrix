@@ -41,66 +41,6 @@ pub async fn get_tenant_info(conn: &Connection) -> Result<TenantInfo, AppError> 
 ///
 /// Always pins WHERE id = 1 (RESEARCH Pitfall 8) to ensure we never accidentally
 /// update a non-singleton row in case the CHECK constraint is ever bypassed.
-pub async fn update_tenant_info(
-    conn: &Connection,
-    req: UpdateTenantInfoRequest,
-) -> Result<TenantInfo, AppError> {
-    // Build dynamic SET clause matching rules::handlers::update_rules pattern.
-    let mut sets: Vec<String> = Vec::new();
-    let mut values: Vec<libsql::Value> = Vec::new();
-
-    if let Some(val) = req.client_name {
-        sets.push(format!("client_name = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(val));
-    }
-
-    if let Some(val) = req.client_rif {
-        sets.push(format!("client_rif = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(val));
-    }
-
-    if let Some(val) = req.address {
-        sets.push(format!("address = ?{}", values.len() + 1));
-        values.push(libsql::Value::Text(val));
-    }
-
-    if sets.is_empty() {
-        // Nothing to update — return current state unchanged.
-        return get_tenant_info(conn).await;
-    }
-
-    sets.push("updated_at = unixepoch()".to_string());
-    sets.push("version = version + 1".to_string());
-
-    let set_clause = sets.join(", ");
-    let version_param = values.len() + 1;
-
-    values.push(libsql::Value::Integer(req.version));
-
-    let sql = format!(
-        "UPDATE tenant_info SET {} WHERE id = 1 AND version = ?{}",
-        set_clause, version_param
-    );
-
-    let rows_affected = conn
-        .execute(&sql, libsql::params_from_iter(values))
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    if rows_affected == 0 {
-        // Singleton always exists (seeded by migration 013); the only way to fail
-        // here is a stale version.
-        return Err(AppError::Conflict {
-            code: "VERSION_CONFLICT",
-            message:
-                "Tenant info was modified by another request. Fetch the latest version and retry."
-                    .to_string(),
-        });
-    }
-
-    get_tenant_info(conn).await
-}
-
 pub async fn update_tenant_info_queued(
     state: &crate::state::AppState,
     req: UpdateTenantInfoRequest,
@@ -143,9 +83,9 @@ pub async fn update_tenant_info_queued(
 
     let rows_affected = state
         .db_write
-        .execute(sql, values)
+        .statement("tenant-info.update", sql, values)
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
     if rows_affected == 0 {
         // Singleton always exists (seeded by migration 013); the only way to fail
         // here is a stale version.

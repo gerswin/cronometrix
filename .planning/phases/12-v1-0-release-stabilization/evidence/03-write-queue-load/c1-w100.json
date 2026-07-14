@@ -1,0 +1,51 @@
+{
+  "base_url": "http://127.0.0.1:4001",
+  "concurrency": 1,
+  "db_write_queue_busy": 0,
+  "duration_seconds": 60,
+  "employee_code_prefix": "LT-20260714T203-c1-w100-",
+  "finished_at_epoch": 1784061539.239,
+  "http2xx": 9724,
+  "http500": 0,
+  "http503": 0,
+  "latency_ms": {
+    "all": {
+      "p50": 5.87,
+      "p95": 8.22,
+      "p99": 13.42
+    },
+    "read": {
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "write": {
+      "p50": 5.87,
+      "p95": 8.22,
+      "p99": 13.42
+    }
+  },
+  "other_failures": 0,
+  "profile": "c1-w100",
+  "read_2xx": 0,
+  "reads": 0,
+  "run_id": "20260714T203708Z",
+  "samples": [
+    {
+      "code": 201,
+      "latency_ms": 9.41,
+      "op": "write",
+      "worker": 1
+    },
+    {
+      "code": 201,
+      "latency_ms": 4.46,
+      "op": "write",
+      "worker": 1
+    }
+  ],
+  "started_at_epoch": 1784061479.282,
+  "write_2xx": 9724,
+  "write_ratio": 100,
+  "writes": 9724
+}

@@ -46,7 +46,8 @@ pub async fn watchdog_task(state: AppState, cancel: CancellationToken) {
 pub async fn run_once(state: &AppState) -> anyhow::Result<u64> {
     let rows = state
         .db_write
-        .execute(
+        .background_statement(
+            "supervisor.watchdog-offline",
             "UPDATE devices \
              SET connection_state = 'offline', updated_at = unixepoch() \
              WHERE status = 'active' \

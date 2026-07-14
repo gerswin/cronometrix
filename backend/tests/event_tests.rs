@@ -24,9 +24,10 @@ use cronometrix_api::config::Config;
 use cronometrix_api::events;
 use cronometrix_api::events::models::NewAttendanceEvent;
 use cronometrix_api::events::service::{
-    build_sse_payload, persist_attendance_event, publish_sse_event,
+    build_sse_payload, persist_attendance_event_queued, publish_sse_event,
 };
 use cronometrix_api::state::AppState;
+use cronometrix_api::storage::atomic_file::AtomicFileGuard;
 use http_body_util::BodyExt;
 use libsql::params;
 use serde_json::{json, Value};
@@ -89,6 +90,105 @@ fn admin_token() -> String {
     common::test_access_token(&uuid::Uuid::new_v4().to_string(), "admin")
 }
 
+#[test]
+fn atomic_file_guard_rejects_unsafe_paths_before_touching_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let absent_root = tmp.path().join("not-created");
+
+    assert!(AtomicFileGuard::write(&absent_root, "../escape.jpg", b"bad").is_err());
+    assert!(AtomicFileGuard::write(&absent_root, "/absolute.jpg", b"bad").is_err());
+    assert!(
+        !absent_root.exists(),
+        "validation must run before disk access"
+    );
+    assert!(!tmp.path().join("escape.jpg").exists());
+}
+
+#[test]
+fn atomic_file_guard_drop_compensates_and_keep_persists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    let final_path = root.join("2026-07-14/event.jpg");
+
+    {
+        let _guard = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"first").unwrap();
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"first");
+    }
+    assert!(
+        !final_path.exists(),
+        "dropping an unkept guard removes final file"
+    );
+
+    AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"kept")
+        .unwrap()
+        .keep();
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"kept");
+}
+
+#[test]
+fn atomic_file_guard_never_clobbers_preexisting_destination_or_leaves_temp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    std::fs::create_dir_all(root.join("2026-07-14")).unwrap();
+    let final_path = root.join("2026-07-14/event.jpg");
+    std::fs::write(&final_path, b"original").unwrap();
+
+    let error = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"replacement")
+        .expect_err("preexisting destination must reject");
+    assert!(
+        error.to_string().contains("exist"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"original");
+    let names: Vec<_> = std::fs::read_dir(final_path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("event.jpg")]);
+}
+
+#[test]
+fn atomic_file_guard_drop_preserves_replacement_owned_by_someone_else() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    let final_path = root.join("2026-07-14/event.jpg");
+    let guard = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"guard-owned").unwrap();
+
+    let replacement = root.join("2026-07-14/replacement.jpg");
+    std::fs::write(&replacement, b"foreign").unwrap();
+    std::fs::rename(&replacement, &final_path).unwrap();
+    drop(guard);
+
+    assert_eq!(
+        std::fs::read(&final_path).unwrap(),
+        b"foreign",
+        "compensation must not delete a replacement it does not own"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn atomic_file_guard_drop_preserves_foreign_symlink_and_target() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    let final_path = root.join("2026-07-14/event.jpg");
+    let guard = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"guard-owned").unwrap();
+    let target = tmp.path().join("foreign-target.jpg");
+    std::fs::write(&target, b"foreign-target").unwrap();
+    std::fs::remove_file(&final_path).unwrap();
+    symlink(&target, &final_path).unwrap();
+
+    drop(guard);
+
+    assert!(std::fs::symlink_metadata(&final_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), b"foreign-target");
+}
+
 // =============================================================================
 // Test data seeding helpers
 // =============================================================================
@@ -135,8 +235,7 @@ async fn seed_employee(conn: &libsql::Connection, id: &str, code: &str) {
 /// the per-test tempdir-rooted JPEG directory (Plan 08-02 D-20) — the caller
 /// passes `state.paths.events_root` to keep the JPEG inside the test's TempDir.
 async fn seed_event(
-    conn: &libsql::Connection,
-    events_root: &std::path::Path,
+    state: &AppState,
     id: &str,
     employee_id: Option<&str>,
     device_id: &str,
@@ -155,7 +254,7 @@ async fn seed_event(
         raw_xml: "<EventNotificationAlert/>".to_string(),
         photo_bytes,
     };
-    persist_attendance_event(conn, events_root, ev)
+    persist_attendance_event_queued(state, &state.paths.events_root, ev)
         .await
         .expect("persist");
 }
@@ -173,6 +272,147 @@ fn sse_event(id: &str, employee_id: Option<&str>, with_photo: bool) -> NewAttend
         raw_xml: "<EventNotificationAlert/>".to_string(),
         photo_bytes: with_photo.then(|| vec![0xff, 0xd8, 0xff]),
     }
+}
+
+#[tokio::test]
+async fn duplicate_queued_event_leaves_no_second_photo() {
+    let db = common::test_db().await;
+    let (_app, state, _tmp) = build_test_app(db).await;
+    let conn = state.db.connect().unwrap();
+    seed_device(&conn, "d-dedup", "10.9.8.7", 8443).await;
+    seed_employee(&conn, "e-dedup", "EMP-DEDUP").await;
+    drop(conn);
+
+    let first = NewAttendanceEvent {
+        id: "event-first".into(),
+        employee_id: Some("e-dedup".into()),
+        device_id: "d-dedup".into(),
+        direction: "entry".into(),
+        captured_at: 1_700_000_000,
+        is_unknown: false,
+        face_id: Some("face-1".into()),
+        employee_no_string: Some("EMP-DEDUP".into()),
+        raw_xml: "<first/>".into(),
+        photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x01]),
+    };
+    let duplicate = NewAttendanceEvent {
+        id: "event-duplicate".into(),
+        employee_id: Some("e-dedup".into()),
+        device_id: "d-dedup".into(),
+        direction: "entry".into(),
+        captured_at: 1_700_000_000,
+        is_unknown: false,
+        face_id: Some("face-1".into()),
+        employee_no_string: Some("EMP-DEDUP".into()),
+        raw_xml: "<duplicate/>".into(),
+        photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x02]),
+    };
+
+    let first_outcome = persist_attendance_event_queued(&state, &state.paths.events_root, first)
+        .await
+        .unwrap();
+    assert!(matches!(
+        first_outcome,
+        events::models::PersistOutcome::Inserted { .. }
+    ));
+    let duplicate_outcome =
+        persist_attendance_event_queued(&state, &state.paths.events_root, duplicate)
+            .await
+            .unwrap();
+    assert!(matches!(
+        duplicate_outcome,
+        events::models::PersistOutcome::Deduplicated
+    ));
+
+    let date_dir = state.paths.events_root.join("2023-11-14");
+    assert!(date_dir.join("event-first.jpg").exists());
+    assert!(!date_dir.join("event-duplicate.jpg").exists());
+    assert_eq!(std::fs::read_dir(date_dir).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn cancelled_event_future_after_job_admission_keeps_committed_photo() {
+    let db = common::test_db().await;
+    let (_app, mut state, _tmp) = build_test_app(db).await;
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+    let conn = state.db.connect().unwrap();
+    seed_device(&conn, "d-cancelled", "10.9.8.8", 8443).await;
+    seed_employee(&conn, "e-cancelled", "EMP-CANCELLED").await;
+    drop(conn);
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-cancelled-event", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let event = NewAttendanceEvent {
+        id: "event-cancelled".into(),
+        employee_id: Some("e-cancelled".into()),
+        device_id: "d-cancelled".into(),
+        direction: "entry".into(),
+        captured_at: 1_700_000_000,
+        is_unknown: false,
+        face_id: Some("face-cancelled".into()),
+        employee_no_string: Some("EMP-CANCELLED".into()),
+        raw_xml: "<cancelled/>".into(),
+        photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x03]),
+    };
+    let event_state = state.clone();
+    let event_task = tokio::spawn(async move {
+        persist_attendance_event_queued(&event_state, &event_state.paths.events_root, event).await
+    });
+    while state.db_write.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    event_task.abort();
+    assert!(event_task.await.unwrap_err().is_cancelled());
+    release_tx.send(()).expect("release blocker");
+    blocker.await.unwrap().unwrap();
+    while state.db_write.stats().completed < 2 {
+        tokio::task::yield_now().await;
+    }
+
+    let conn = state.db.connect().unwrap();
+    let photo_path: String = conn
+        .query(
+            "SELECT photo_path FROM attendance_events WHERE id = 'event-cancelled'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("accepted event transaction committed")
+        .get(0)
+        .unwrap();
+    assert!(
+        state.paths.events_root.join(photo_path).exists(),
+        "committed event row must retain its photo after future cancellation"
+    );
+    let recompute = recompute_rx
+        .try_recv()
+        .expect("committed event must publish recompute after future cancellation");
+    assert!(matches!(
+        recompute,
+        cronometrix_api::recompute::RecomputeRequest::Day {
+            employee_id,
+            anchor_date,
+        } if employee_id == "e-cancelled"
+            && anchor_date == chrono::NaiveDate::from_ymd_opt(2023, 11, 14).unwrap()
+    ));
 }
 
 #[tokio::test]
@@ -231,8 +471,8 @@ async fn sse_enrichment_failure_broadcasts_fallback_without_undoing_persisted_ev
     seed_device(&conn, "d-sse", "10.9.0.2", 8443).await;
     seed_employee(&conn, "e-sse", "EMP-SSE").await;
     let event = sse_event("evt-fallback", Some("e-sse"), false);
-    let outcome = persist_attendance_event(
-        &conn,
+    let outcome = persist_attendance_event_queued(
+        &state,
         &state.paths.events_root,
         sse_event("evt-fallback", Some("e-sse"), false),
     )
@@ -304,16 +544,16 @@ async fn list_events_empty_returns_empty_array() {
 async fn list_events_pagination_clamps_limit() {
     let db = common::test_db().await;
     let (app, state, _tmp) = build_test_app(db).await;
-    let events_root = state.paths.events_root.clone();
+    let _events_root = state.paths.events_root.clone();
 
     {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.0.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         // seed 3 events in distinct buckets
-        seed_event(&conn, &events_root, "evt-1", Some("e1"), "d1", 1000, None).await;
-        seed_event(&conn, &events_root, "evt-2", Some("e1"), "d1", 2000, None).await;
-        seed_event(&conn, &events_root, "evt-3", Some("e1"), "d1", 3000, None).await;
+        seed_event(&state, "evt-1", Some("e1"), "d1", 1000, None).await;
+        seed_event(&state, "evt-2", Some("e1"), "d1", 2000, None).await;
+        seed_event(&state, "evt-3", Some("e1"), "d1", 3000, None).await;
     }
 
     let token = viewer_token();
@@ -335,16 +575,16 @@ async fn list_events_pagination_clamps_limit() {
 async fn list_events_filters_by_employee_id() {
     let db = common::test_db().await;
     let (app, state, _tmp) = build_test_app(db).await;
-    let events_root = state.paths.events_root.clone();
+    let _events_root = state.paths.events_root.clone();
 
     {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.1.1", 8443).await;
         seed_employee(&conn, "eA", "EMPA").await;
         seed_employee(&conn, "eB", "EMPB").await;
-        seed_event(&conn, &events_root, "evt-1", Some("eA"), "d1", 1000, None).await;
-        seed_event(&conn, &events_root, "evt-2", Some("eA"), "d1", 2000, None).await;
-        seed_event(&conn, &events_root, "evt-3", Some("eB"), "d1", 3000, None).await;
+        seed_event(&state, "evt-1", Some("eA"), "d1", 1000, None).await;
+        seed_event(&state, "evt-2", Some("eA"), "d1", 2000, None).await;
+        seed_event(&state, "evt-3", Some("eB"), "d1", 3000, None).await;
     }
 
     let token = viewer_token();
@@ -368,15 +608,15 @@ async fn list_events_filters_by_employee_id() {
 async fn list_events_filters_by_device_id() {
     let db = common::test_db().await;
     let (app, state, _tmp) = build_test_app(db).await;
-    let events_root = state.paths.events_root.clone();
+    let _events_root = state.paths.events_root.clone();
 
     {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "dA", "10.1.2.1", 8443).await;
         seed_device(&conn, "dB", "10.1.2.2", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(&conn, &events_root, "evt-1", Some("e1"), "dA", 1000, None).await;
-        seed_event(&conn, &events_root, "evt-2", Some("e1"), "dB", 2000, None).await;
+        seed_event(&state, "evt-1", Some("e1"), "dA", 1000, None).await;
+        seed_event(&state, "evt-2", Some("e1"), "dB", 2000, None).await;
     }
 
     let token = viewer_token();
@@ -398,16 +638,16 @@ async fn list_events_filters_by_device_id() {
 async fn list_events_filters_by_time_range() {
     let db = common::test_db().await;
     let (app, state, _tmp) = build_test_app(db).await;
-    let events_root = state.paths.events_root.clone();
+    let _events_root = state.paths.events_root.clone();
 
     {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.3.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         // Buckets: 1000 -> bkt 33 ; 2000 -> bkt 66 ; 3000 -> bkt 100
-        seed_event(&conn, &events_root, "evt-1", Some("e1"), "d1", 1000, None).await;
-        seed_event(&conn, &events_root, "evt-2", Some("e1"), "d1", 2000, None).await;
-        seed_event(&conn, &events_root, "evt-3", Some("e1"), "d1", 3000, None).await;
+        seed_event(&state, "evt-1", Some("e1"), "d1", 1000, None).await;
+        seed_event(&state, "evt-2", Some("e1"), "d1", 2000, None).await;
+        seed_event(&state, "evt-3", Some("e1"), "d1", 3000, None).await;
     }
 
     let token = viewer_token();
@@ -431,13 +671,13 @@ async fn list_events_filters_by_time_range() {
 async fn list_events_viewer_can_read() {
     let db = common::test_db().await;
     let (app, state, _tmp) = build_test_app(db).await;
-    let events_root = state.paths.events_root.clone();
+    let _events_root = state.paths.events_root.clone();
 
     {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.4.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(&conn, &events_root, "evt-1", Some("e1"), "d1", 1000, None).await;
+        seed_event(&state, "evt-1", Some("e1"), "d1", 1000, None).await;
     }
 
     let token = viewer_token();
@@ -508,8 +748,7 @@ async fn get_event_photo_returns_jpeg_bytes() {
         seed_device(&conn, "d1", "10.1.5.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         seed_event(
-            &conn,
-            &events_root,
+            &state,
             "evt-photo-1",
             Some("e1"),
             "d1",
@@ -548,22 +787,13 @@ async fn get_event_photo_returns_jpeg_bytes() {
 async fn get_event_photo_404_if_no_photo_path() {
     let db = common::test_db().await;
     let (app, state, _tmp) = build_test_app(db).await;
-    let events_root = state.paths.events_root.clone();
+    let _events_root = state.paths.events_root.clone();
 
     {
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1", "10.1.6.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
-        seed_event(
-            &conn,
-            &events_root,
-            "evt-no-photo",
-            Some("e1"),
-            "d1",
-            1000,
-            None,
-        )
-        .await;
+        seed_event(&state, "evt-no-photo", Some("e1"), "d1", 1000, None).await;
     }
 
     let token = viewer_token();
@@ -592,8 +822,7 @@ async fn get_event_photo_404_if_file_missing() {
         seed_device(&conn, "d1", "10.1.7.1", 8443).await;
         seed_employee(&conn, "e1", "EMP001").await;
         seed_event(
-            &conn,
-            &events_root,
+            &state,
             "evt-missing-file",
             Some("e1"),
             "d1",

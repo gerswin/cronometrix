@@ -149,8 +149,11 @@ async fn test_joinset_fans_out_to_all_active_devices_concurrently() {
         face_id.clone(),
         photo_bytes,
         emp_id.clone(),
+        "Push Test Emp".to_string(),
         devices,
-    );
+    )
+    .await
+    .unwrap();
 
     // Give the async driver time to complete (it's fire-and-forget).
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -222,8 +225,11 @@ async fn test_partial_failure_sets_enrollment_status_partial() {
         face_id,
         photo_bytes,
         _emp_id,
+        "Push Test Emp".to_string(),
         devices,
-    );
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -271,8 +277,11 @@ async fn test_zero_devices_succeed_sets_failed() {
         face_id,
         photo_bytes,
         _emp_id,
+        "Push Test Emp".to_string(),
         devices,
-    );
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -313,8 +322,11 @@ async fn test_all_devices_succeed_sets_success() {
         face_id,
         photo_bytes,
         _emp_id,
+        "Push Test Emp".to_string(),
         devices,
-    );
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 

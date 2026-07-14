@@ -2,7 +2,7 @@
  * Audit log page E2E spec — Plan 09-11 (D-04 audit-screen UAT)
  *
  * Covers:
- *   T-01: renders Auditoría header + filters + (initially empty) table
+ *   T-01: renders Auditoría header + filters + table
  *   T-02: list shows immutable entries after a mutation elsewhere
  *   T-03: filter by actor — select admin actor_id → only admin-actor rows
  *   T-04: filter by date range narrows results
@@ -31,7 +31,7 @@
  */
 
 import { test, expect, newRoleContext } from './fixtures/auth'
-import { resetMutableTables, getAudit, API_BASE } from './fixtures/api'
+import { auditWindowStart, resetMutableTables, getAudit, API_BASE } from './fixtures/api'
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -58,24 +58,34 @@ test.describe('Audit log page (D-04 UAT)', () => {
 
   // ── T-02: Mutation elsewhere seeds an audit_log entry ─────────────────────
   test('list shows immutable entries after a mutation elsewhere', async ({ page, request }) => {
+    const fromTs = auditWindowStart()
     // POST /employees triggers the employees INSERT audit trigger
     const r = await request.post(`${API_BASE}/employees`, {
       data: {
         name: 'Audit Test User',
-        employee_code: 'AUD001',
+        employee_code: `AUD${Date.now()}`,
         department_id: 'dept-prod',
       },
     })
 
-    // If the backend accepted the create (200/201), an audit row must appear
-    if (r.ok()) {
-      await page.goto('/audit')
-      // Explicit-wait: poll until at least one audit-row-* is visible.
-      // Uses locator count assertion as the deterministic gate (explicit-wait, not sleep).
-      const rows = page.locator('[data-testid^="audit-row-"]')
-      await expect(rows.first()).toBeVisible({ timeout: 10_000 })
-      await expect(rows).not.toHaveCount(0)
-    }
+    expect(r.ok()).toBe(true)
+    const employee = await r.json()
+    let auditId = ''
+    await expect.poll(async () => {
+      const evidence = await getAudit(request, {
+        table_name: 'employees',
+        record_id: employee.id,
+        operation: 'INSERT',
+        from_ts: fromTs,
+        limit: 5,
+      })
+      if (!evidence.ok()) return false
+      const body = await evidence.json()
+      auditId = body.data?.[0]?.id ?? ''
+      return Boolean(auditId)
+    }).toBe(true)
+    await page.goto('/audit')
+    await expect(page.getByTestId(`audit-row-${auditId}`)).toBeVisible({ timeout: 10_000 })
   })
 
   // ── T-03: Actor filter — select admin actor_id → only admin-actor rows ─────
@@ -83,12 +93,30 @@ test.describe('Audit log page (D-04 UAT)', () => {
     page,
     request,
   }) => {
+    const fromTs = auditWindowStart()
     // Keep a trigger-created row with actor_id = null. It must be excluded by
     // the actor filter below.
     const triggerMutation = await request.post(`${API_BASE}/employees`, {
-      data: { name: 'Admin Made', employee_code: 'ADM001', department_id: 'dept-prod' },
+      data: {
+        name: 'Admin Made',
+        employee_code: `ADM${Date.now()}`,
+        department_id: 'dept-prod',
+      },
     })
     expect(triggerMutation.ok()).toBe(true)
+    const triggerEmployee = await triggerMutation.json()
+
+    const reportAuditBefore = await getAudit(request, {
+      table_name: 'reports',
+      operation: 'REPORT_EXPORT',
+      actor_id: 'e2e-admin-id',
+      limit: 200,
+    })
+    expect(reportAuditBefore.ok()).toBe(true)
+    const reportAuditBeforeBody = await reportAuditBefore.json()
+    const reportAuditBaseline = new Set<string>(
+      (reportAuditBeforeBody.data ?? []).map((entry: { id: string }) => entry.id)
+    )
 
     // Report exports are audited in app code, so the actor comes from the
     // authenticated admin JWT instead of being lost in a SQL trigger.
@@ -107,28 +135,41 @@ test.describe('Audit log page (D-04 UAT)', () => {
     expect(reportExport.ok()).toBe(true)
 
     let nullActorRowId = ''
+    let reportAuditRowId = ''
     await expect.poll(
       async () => {
-        const before = await getAudit(request, { limit: 50 })
-        if (!before.ok()) return false
-        const beforeBody = await before.json()
-        const entries: Array<{
+        const employeeEvidence = await getAudit(request, {
+          table_name: 'employees',
+          record_id: triggerEmployee.id,
+          operation: 'INSERT',
+          from_ts: fromTs,
+          limit: 5,
+        })
+        const reportEvidence = await getAudit(request, {
+          table_name: 'reports',
+          operation: 'REPORT_EXPORT',
+          actor_id: 'e2e-admin-id',
+          limit: 200,
+        })
+        if (!employeeEvidence.ok() || !reportEvidence.ok()) return false
+        const employeeBody = await employeeEvidence.json()
+        const reportBody = await reportEvidence.json()
+        const employeeEntries: Array<{
           id: string
-          table_name: string
-          operation: string
+          record_id: string
           actor_id: string | null
-        }> = beforeBody.data ?? []
-        const nullActorRow = entries.find(
-          (entry) => entry.table_name === 'employees' && entry.actor_id === null
-        )
-        const adminActorRow = entries.find(
+        }> = employeeBody.data ?? []
+        const nullActorRow = employeeEntries.find(
           (entry) =>
-            entry.table_name === 'reports' &&
-            entry.operation === 'REPORT_EXPORT' &&
-            entry.actor_id === 'e2e-admin-id'
+            entry.record_id === triggerEmployee.id &&
+            entry.actor_id === null
+        )
+        const newReportRow = (reportBody.data ?? []).find(
+          (entry: { id: string }) => !reportAuditBaseline.has(entry.id)
         )
         nullActorRowId = nullActorRow?.id ?? ''
-        return Boolean(nullActorRow && adminActorRow)
+        reportAuditRowId = newReportRow?.id ?? ''
+        return Boolean(nullActorRowId && reportAuditRowId)
       },
       {
         message: 'Expected both a null-actor trigger row and an admin report export row',
@@ -169,6 +210,7 @@ test.describe('Audit log page (D-04 UAT)', () => {
     // is excluded. Every rendered actor cell must match the selected actor.
     const rows = page.locator('[data-testid^="audit-row-"]')
     await expect(rows.first()).toBeVisible()
+    await expect(page.getByTestId(`audit-row-${reportAuditRowId}`)).toBeVisible()
     await expect(page.getByTestId(`audit-row-${nullActorRowId}`)).toHaveCount(0)
     const rowCount = await rows.count()
     expect(rowCount).toBeGreaterThan(0)
@@ -179,14 +221,32 @@ test.describe('Audit log page (D-04 UAT)', () => {
 
   // ── T-04: Date range filter narrows results ────────────────────────────────
   test('filter by date range narrows results', async ({ page, request }) => {
+    const fromTs = auditWindowStart()
     // Pre-insert a deterministic audit entry
-    await request.post(`${API_BASE}/employees`, {
+    const mutation = await request.post(`${API_BASE}/employees`, {
       data: {
         name: 'Date Filter Test',
-        employee_code: 'DTE001',
+        employee_code: `DTE${Date.now()}`,
         department_id: 'dept-prod',
       },
     })
+    expect(mutation.ok()).toBe(true)
+    const employee = await mutation.json()
+    let auditId = ''
+    let auditCreatedAt = 0
+    await expect.poll(async () => {
+      const evidence = await getAudit(request, {
+        table_name: 'employees',
+        record_id: employee.id,
+        operation: 'INSERT',
+        from_ts: fromTs,
+      })
+      if (!evidence.ok()) return false
+      const body = await evidence.json()
+      auditId = body.data?.[0]?.id ?? ''
+      auditCreatedAt = body.data?.[0]?.created_at ?? 0
+      return Boolean(auditId && auditCreatedAt)
+    }).toBe(true)
 
     await page.goto('/audit')
 
@@ -194,30 +254,20 @@ test.describe('Audit log page (D-04 UAT)', () => {
     // Explicit-wait on visibility via toBeVisible timeout.
     await expect(page.getByTestId('audit-table')).toBeVisible({ timeout: 10_000 })
 
-    // Set from = today, to = today (YYYY-MM-DD format for <input type="date">)
-    const today = new Date().toISOString().slice(0, 10)
+    // Select the business-local day that contains the exact audit row.
+    const dateParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Caracas',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date(auditCreatedAt * 1000))
+    const part = (type: Intl.DateTimeFormatPartTypes) =>
+      dateParts.find(value => value.type === type)?.value ?? ''
+    const today = `${part('year')}-${part('month')}-${part('day')}`
     await page.getByTestId('audit-filter-from').fill(today)
     await page.getByTestId('audit-filter-to').fill(today)
 
-    // Explicit-wait for table to refetch — poll until visible AND
-    // either has rows OR shows empty-state (expect.poll, not sleep).
-    await expect.poll(
-      async () => {
-        const visible = await page.getByTestId('audit-table').isVisible()
-        const rowCount = await page.locator('[data-testid^="audit-row-"]').count()
-        const emptyVisible = await page
-          .getByTestId('audit-empty')
-          .isVisible()
-          .catch(() => false)
-        return visible && (rowCount > 0 || emptyVisible)
-      },
-      { timeout: 5_000, message: 'audit table did not settle after date filter' }
-    ).toBe(true)
-
-    const rows = page.locator('[data-testid^="audit-row-"]')
-    if ((await rows.count()) > 0) {
-      await expect(rows.first()).toBeVisible()
-    }
+    await expect(page.getByTestId(`audit-row-${auditId}`)).toBeVisible({ timeout: 5_000 })
   })
 
   // ── T-05: Viewer is denied access (RBAC gate) ─────────────────────────────

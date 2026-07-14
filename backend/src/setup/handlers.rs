@@ -90,7 +90,8 @@ pub async fn setup_init(
 
     state
         .db_write
-        .execute(
+        .statement(
+            "setup.create-admin",
             "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
             vec![
@@ -101,7 +102,7 @@ pub async fn setup_init(
             ],
         )
         .await
-        .map_err(AppError::Internal)?;
+        .map_err(AppError::from)?;
 
     Ok((
         StatusCode::CREATED,

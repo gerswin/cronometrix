@@ -1,10 +1,10 @@
 //! Reports service — SQL aggregation across daily_records + overrides + leaves
 //! + anomalies, plus secondary leaves aggregation (W-5), money math (LOTTT
-//!   Art. 117/118/120), and app-code audit insert (D-21).
+//!   Art. 117/118/120), and completed-export audit recording (D-21).
 //!
-//! Read-only path on daily_records. Audit insert is the only write — it lands
-//! AFTER aggregation succeeds (Pitfall 7: failed reports must not leak audit
-//! rows that imply a successful export).
+//! `compute_report` is read-only. `record_export` is the only write and routes
+//! through the serialized writer after the requested artifact is complete
+//! (Pitfall 7: failed reports must not leak audit rows that imply success).
 //!
 //! W-5 fix (leave-day counting): the primary daily_records JOIN only sees days
 //! where the engine attached a leave overlay (`dr.leave_id NOT NULL`). A
@@ -23,7 +23,6 @@
 //! happened on each day; reading dept policy would miss shift overrides.
 
 use chrono::{Datelike, Duration, NaiveDate};
-use libsql::Connection;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use uuid::Uuid;
@@ -61,9 +60,7 @@ struct AccRow {
 
 pub async fn compute_report(
     state: &AppState,
-    actor_id: &str,
     params: &ReportParamsRequest,
-    format: &str,
 ) -> Result<ReportPayload, AppError> {
     // 1. Parse period_type → PeriodPreset → (from, to).
     //    For non-custom presets, from_date is treated as the anchor/ref date.
@@ -551,10 +548,6 @@ pub async fn compute_report(
         })
         .collect();
 
-    // 7. Audit insert AFTER aggregation succeeds (Pitfall 7 — failed reports
-    //    must not write audit rows that imply success).
-    write_export_audit(&conn, actor_id, params, format).await?;
-
     Ok(ReportPayload {
         header,
         rows,
@@ -593,8 +586,8 @@ fn accumulate(into: &mut Aggregates, from: &Aggregates) {
 /// App-code audit insert per D-21. Captures who exported (actor_id from JWT —
 /// T-05-14: never trust request body for identity), what filters were used,
 /// and the export format (json/excel — Plan 05-03 reuses this helper).
-async fn write_export_audit(
-    conn: &Connection,
+pub async fn record_export(
+    state: &AppState,
     actor_id: &str,
     params: &ReportParamsRequest,
     format: &str,
@@ -615,12 +608,19 @@ async fn write_export_audit(
     })
     .to_string();
 
-    conn.execute(
-        "INSERT INTO audit_log (id, table_name, record_id, operation, old_data, new_data, actor_id, created_at) \
-         VALUES (?1, 'reports', ?2, 'REPORT_EXPORT', NULL, ?3, ?4, unixepoch())",
-        libsql::params![id, synthetic_record_id, payload, actor_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    state
+        .db_write
+        .statement(
+            "reports.record-export",
+            "INSERT INTO audit_log (id, table_name, record_id, operation, old_data, new_data, actor_id, created_at) \
+             VALUES (?1, 'reports', ?2, 'REPORT_EXPORT', NULL, ?3, ?4, unixepoch())",
+            vec![
+                libsql::Value::Text(id),
+                libsql::Value::Text(synthetic_record_id),
+                libsql::Value::Text(payload),
+                libsql::Value::Text(actor_id.to_string()),
+            ],
+        )
+        .await?;
     Ok(())
 }

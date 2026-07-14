@@ -29,7 +29,8 @@ use cronometrix_api::config::Config;
 use cronometrix_api::devices::crypto;
 use cronometrix_api::devices::models::DeviceWithPlaintext;
 use cronometrix_api::enrollments::pusher::{
-    push_one_device, push_one_device_for_backfill, spawn_enrollment_pushes,
+    push_one_device, push_one_device_for_backfill, push_one_device_for_backfill_with_timeout,
+    push_one_device_with_timeout, spawn_enrollment_pushes,
 };
 use cronometrix_api::enrollments::service;
 use libsql::params;
@@ -147,6 +148,245 @@ fn make_plain_device(id: &str, base_url: &str) -> DeviceWithPlaintext {
     }
 }
 
+async fn mount_successful_face_push(server: &MockServer) {
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(server)
+        .await;
+}
+
+async fn clear_initial_checkpoint(state: &cronometrix_api::state::AppState, push_id: &str) {
+    state
+        .db
+        .connect()
+        .unwrap()
+        .execute(
+            "DELETE FROM device_operation_checkpoints WHERE operation_key=?1",
+            params![service::enrollment_checkpoint_key(push_id)],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn enrollment_recovery_does_not_repeat_confirmed_device_side_effect() {
+    let server = MockServer::start().await;
+    mount_successful_face_push(&server).await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "device",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+    clear_initial_checkpoint(&state, &started.device_pushes[0].id).await;
+    let device = make_plain_device(&device_id, &server.uri());
+    let photo = Arc::new(MINI_JPEG.to_vec());
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_mapping_insert BEFORE INSERT ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced mapping failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    push_one_device(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &employee_id,
+        "Test Employee",
+        &device,
+    )
+    .await
+    .expect_err("first DB completion is deliberately rejected");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    conn.execute_batch("DROP TRIGGER fail_mapping_insert;")
+        .await
+        .unwrap();
+    let retry_push_id =
+        service::reset_push_to_pending_queued(&state, &started.enrollment_id, &device_id)
+            .await
+            .unwrap();
+    assert_eq!(retry_push_id, started.device_pushes[0].id);
+
+    push_one_device(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &employee_id,
+        "Test Employee",
+        &device,
+    )
+    .await
+    .unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn backfill_recovery_does_not_repeat_confirmed_device_side_effect() {
+    let server = MockServer::start().await;
+    mount_successful_face_push(&server).await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, employee_id, _user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let device = make_plain_device(&device_id, &server.uri());
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_backfill_mapping BEFORE INSERT ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced backfill mapping failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    push_one_device_for_backfill(
+        &state,
+        "face-1",
+        MINI_JPEG,
+        &employee_id,
+        "Employee",
+        &device,
+    )
+    .await
+    .expect_err("first DB completion is deliberately rejected");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    conn.execute_batch("DROP TRIGGER fail_backfill_mapping;")
+        .await
+        .unwrap();
+    push_one_device_for_backfill(
+        &state,
+        "face-1",
+        MINI_JPEG,
+        &employee_id,
+        "Employee",
+        &device,
+    )
+    .await
+    .unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn tracker_shutdown_awaits_an_inflight_device_push_and_terminal_write() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(150))
+                .set_body_string(r#"{"statusCode":1}"#),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, employee_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let _device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let dispatcher = state
+        .enrollment_dispatcher
+        .start(state.clone())
+        .await
+        .unwrap();
+    let started = service::start_enrollment(
+        &state,
+        &user_id,
+        &employee_id,
+        "device",
+        None,
+        None,
+        MINI_JPEG,
+    )
+    .await
+    .unwrap();
+    let enrollment_id = started.enrollment_id.clone();
+    for _ in 0..100 {
+        if !server.received_requests().await.unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    state.enrollment_dispatcher.close().unwrap();
+    dispatcher.await.unwrap().unwrap();
+
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let row = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT status FROM enrollments WHERE id=?1",
+            params![enrollment_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "success");
+}
+
+#[tokio::test]
+async fn dispatcher_rejects_a_second_start_and_close_is_idempotent() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let dispatcher = cronometrix_api::enrollments::dispatcher::EnrollmentDispatcher::default();
+
+    let handle = dispatcher.start(state.clone()).await.unwrap();
+    let second_start = dispatcher.start(state).await.unwrap_err();
+    assert!(second_start.to_string().contains("already started"));
+
+    dispatcher.close().unwrap();
+    dispatcher.close().unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn tracker_drain_reports_panicked_tasks_after_awaiting_them() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    state
+        .enrollment_tasks
+        .spawn(async { panic!("intentional tracked-task panic") })
+        .await
+        .unwrap();
+
+    let error = state
+        .enrollment_tasks
+        .stop_and_join()
+        .await
+        .expect_err("panic must be reported after drain");
+    assert!(error.to_string().contains("task join failure"));
+}
+
 // =============================================================================
 // push_one_device — happy path
 // =============================================================================
@@ -176,6 +416,7 @@ async fn push_one_device_happy_path_success() {
         service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    clear_initial_checkpoint(&state, &resp.device_pushes[0].id).await;
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -217,6 +458,67 @@ async fn push_one_device_happy_path_success() {
         .any(|(_, did, fid)| did == &device_id && fid == &resp.face_id));
 }
 
+#[tokio::test]
+async fn mapping_persistence_failure_marks_push_failed_without_retrying_device() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let enrollment =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    clear_initial_checkpoint(&state, &enrollment.device_pushes[0].id).await;
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_pusher_mapping BEFORE INSERT ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced pusher mapping failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    let result = push_one_device(
+        &state,
+        &enrollment.enrollment_id,
+        &enrollment.face_id,
+        &Arc::new(MINI_JPEG.to_vec()),
+        &emp_id,
+        "Test Employee",
+        &make_plain_device(&device_id, &server.uri()),
+    )
+    .await;
+    assert!(result.is_err());
+
+    let row = conn
+        .query(
+            "SELECT status, error_message FROM enrollment_device_pushes \
+             WHERE enrollment_id=?1 AND device_id=?2",
+            params![enrollment.enrollment_id.clone(), device_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert!(row.get::<Option<String>>(1).unwrap().is_some());
+}
+
 // =============================================================================
 // push_one_device — 5xx error path → push row "failed" + scrubbed error
 // =============================================================================
@@ -240,6 +542,7 @@ async fn push_one_device_5xx_marks_push_failed() {
         service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    clear_initial_checkpoint(&state, &resp.device_pushes[0].id).await;
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -283,6 +586,185 @@ async fn push_one_device_5xx_marks_push_failed() {
         !msg.contains("device-pw"),
         "stored error_message must be scrubbed: {msg}"
     );
+    drop(rows);
+    drop(conn);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    let checkpoint = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1",
+            params![service::enrollment_checkpoint_key(
+                &resp.device_pushes[0].id
+            )],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap();
+    assert!(checkpoint.is_none());
+    let retry_push_id =
+        service::reset_push_to_pending_queued(&state, &resp.enrollment_id, &device_id)
+            .await
+            .expect("an explicit HTTP rejection is safe to retry");
+    assert_eq!(retry_push_id, resp.device_pushes[0].id);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn explicit_face_upload_auth_rejection_is_retryable() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("authentication rejected"))
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    clear_initial_checkpoint(&state, &started.device_pushes[0].id).await;
+    let device = make_plain_device(&device_id, &server.uri());
+    let photo = Arc::new(MINI_JPEG.to_vec());
+
+    push_one_device(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+    )
+    .await
+    .expect_err("face upload failure follows an accepted user upsert");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let checkpoint = state
+        .db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT state FROM device_operation_checkpoints WHERE operation_key=?1",
+            params![service::enrollment_checkpoint_key(
+                &started.device_pushes[0].id
+            )],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap();
+    assert!(
+        checkpoint.is_none(),
+        "a confirmed HTTP rejection must clear the ambiguous-operation checkpoint"
+    );
+
+    let retry_push_id =
+        service::reset_push_to_pending_queued(&state, &started.enrollment_id, &device_id)
+            .await
+            .expect("the explicit upload rejection is safe to retry");
+    assert_eq!(retry_push_id, started.device_pushes[0].id);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn device_timeouts_are_manual_and_never_replayed_for_enrollment_and_backfill() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(1))
+                .set_body_string(r#"{"statusCode":1}"#),
+        )
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let started =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    clear_initial_checkpoint(&state, &started.device_pushes[0].id).await;
+    let device = make_plain_device(&device_id, &server.uri());
+    let photo = Arc::new(MINI_JPEG.to_vec());
+    push_one_device_with_timeout(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("device call must time out");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let enrollment_requests = server.received_requests().await.unwrap().len();
+    assert_eq!(enrollment_requests, 1);
+    push_one_device_with_timeout(
+        &state,
+        &started.enrollment_id,
+        &started.face_id,
+        &photo,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("manual timeout checkpoint must prohibit replay");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        enrollment_requests
+    );
+
+    let backfill_face = "timeout-backfill-face";
+    push_one_device_for_backfill_with_timeout(
+        &state,
+        backfill_face,
+        MINI_JPEG,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("backfill device call must time out");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let after_backfill = server.received_requests().await.unwrap().len();
+    assert_eq!(after_backfill, enrollment_requests + 1);
+    push_one_device_for_backfill_with_timeout(
+        &state,
+        backfill_face,
+        MINI_JPEG,
+        &emp_id,
+        "Test Employee",
+        &device,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect_err("manual backfill timeout checkpoint must prohibit replay");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        after_backfill
+    );
 }
 
 // =============================================================================
@@ -290,7 +772,7 @@ async fn push_one_device_5xx_marks_push_failed() {
 // =============================================================================
 
 #[tokio::test]
-async fn push_one_device_no_push_row_returns_ok_silently() {
+async fn push_one_device_no_push_row_returns_terminal_error_without_device_call() {
     let server = MockServer::start().await;
 
     let db = common::test_db().await;
@@ -302,8 +784,7 @@ async fn push_one_device_no_push_row_returns_ok_silently() {
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
 
-    // No enrollment + push row was created → push_one_device hits the
-    // "no push row found — skipping" log path and returns Ok.
+    // A missing persistence row must not be treated as a successful dispatch.
     let res = push_one_device(
         &state,
         "nonexistent-enr",
@@ -314,7 +795,8 @@ async fn push_one_device_no_push_row_returns_ok_silently() {
         &device,
     )
     .await;
-    assert!(res.is_ok());
+    assert!(res.is_err());
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 // =============================================================================
@@ -427,13 +909,16 @@ async fn spawn_enrollment_pushes_zero_devices_finalises_failed() {
         resp.face_id.clone(),
         photo,
         emp_id.clone(),
+        "Test Employee".to_string(),
         vec![],
-    );
+    )
+    .await
+    .unwrap();
 
     // Yield first so the spawned task can claim a slot before we enter the poll loop.
     tokio::task::yield_now().await;
 
-    // Driver runs detached; give it up to ~5s to invoke finalize.
+    // Driver runs under the task tracker; give it up to ~5s to invoke finalize.
     for _ in 0..200 {
         let conn = state.db.connect().unwrap();
         let mut rows = conn
@@ -479,6 +964,7 @@ async fn spawn_enrollment_pushes_with_devices_finalises_success() {
         service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
             .await
             .unwrap();
+    clear_initial_checkpoint(&state, &resp.device_pushes[0].id).await;
 
     let device = make_plain_device(&device_id, &server.uri());
     let photo = Arc::new(MINI_JPEG.to_vec());
@@ -500,11 +986,14 @@ async fn spawn_enrollment_pushes_with_devices_finalises_success() {
             face_for_drive,
             photo,
             emp_for_drive,
+            "Test Employee".to_string(),
             vec![device],
-        );
+        )
+        .await
+        .unwrap();
     });
     // The spawn_enrollment_pushes call returns immediately (it spawns a
-    // detached task internally). Wait for the detached task to finalise by
+    // tracked task internally). Wait for the owned task to finalise by
     // polling, with very gentle backoff and explicit drops.
     driver.await.unwrap();
 
