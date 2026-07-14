@@ -15,9 +15,9 @@ and the final release candidate still belongs to Plan 12-05.
 
 - Plan: `12-03`
 - Plan base SHA: `c3fe7935a8ccccc0b15826bcb82d413d22e83188`
-- Tested implementation SHA: `36d6bc354f5bd31e7f6cc91237228c823ba4578c`
-- Implementation commits: `70c952b` (`test(db): prove serialized writes under concurrent load`), `e5b45ae` (`fix(db): wait out transient writer locks`), and `36d6bc3` (`fix(enrollments): retry confirmed device rejections`)
-- Official load run: `20260714T193007Z`
+- Tested implementation SHA: `251208e1847f58bb7a544692e6b3cd005b2bbcd1`
+- Closing implementation/evidence commits: `70c952b` (`test(db): prove serialized writes under concurrent load`), `e5b45ae` (`fix(db): wait out transient writer locks`), `36d6bc3` (`fix(enrollments): retry confirmed device rejections`), `653b1f8` (`fix(enrollments): classify auth rejection as retryable`), and `251208e` (`test(db): refresh load proof after enrollment retry fix`)
+- Official load run: `20260714T201536Z`
 - Official load platform: Linux/arm64 in an isolated Docker container
 - Local verification platform: macOS arm64
 
@@ -118,12 +118,12 @@ container, image tag, and database.
 
 | Profile | Concurrency | Mix | 2xx | Accepted writes | Persisted | 500 | 503/BUSY | p50 / p95 / p99 ms |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `c1-w100` | 1 | 100% write | 12,219 | 12,219 | 12,219 | 0 | 0 | 4.36 / 6.72 / 13.95 |
-| `c32-r100` | 32 | 100% read | 16,532 | 0 | 0 | 0 | 0 | 113.81 / 169.26 / 201.99 |
-| `c32-w100` | 32 | 100% write | 10,274 | 10,274 | 10,274 | 0 | 0 | 187.72 / 214.11 / 234.52 |
-| `c32-w70` | 32 | 70% write | 11,244 | 7,854 | 7,854 | 0 | 0 | 191.64 / 253.13 / 289.63 |
+| `c1-w100` | 1 | 100% write | 11,588 | 11,588 | 11,588 | 0 | 0 | 4.75 / 7.34 / 12.56 |
+| `c32-r100` | 32 | 100% read | 17,059 | 0 | 0 | 0 | 0 | 110.91 / 164.14 / 193.42 |
+| `c32-w100` | 32 | 100% write | 10,132 | 10,132 | 10,132 | 0 | 0 | 187.84 / 225.58 / 269.64 |
+| `c32-w70` | 32 | 70% write | 11,682 | 8,190 | 8,190 | 0 | 0 | 194.49 / 255.37 / 325.31 |
 
-Combined result: 50,269 successful requests, 30,347 accepted writes, 30,347
+Combined result: 50,461 successful requests, 29,910 accepted writes, 29,910
 persisted rows, zero HTTP 500, zero HTTP 503, zero queue-busy responses, zero
 other failures, zero `database is locked` log occurrences, and clean SIGTERM
 exit 0. Evidence is 56 KiB and contains no password, token, authorization
@@ -144,14 +144,14 @@ the project-wide hard gate and exited 2:
 
 | Scope | Result | Threshold | Status |
 |---|---:|---:|---|
-| Backend lines | 11,028 / 12,802 = 86.14% | 90% | FAIL — inherited release debt |
-| Backend branches | 805 / 1,090 = 73.85% | 85% | FAIL — inherited release debt |
-| 12-03 owned files | 31 backend / 0 frontend | 70% lines / 60% branches per file | PASS |
+| Backend lines | 11,025 / 12,813 = 86.05% | 90% | FAIL — inherited release debt |
+| Backend branches | 806 / 1,092 = 73.81% | 85% | FAIL — inherited release debt |
+| 12-03 owned files | 32 backend / 0 frontend | 70% lines / 60% branches per file | PASS |
 
 Exact scoped checker output:
 
 ```text
-PASS owned-coverage plan=12-03 backend=31 frontend=0
+PASS owned-coverage plan=12-03 backend=32 frontend=0
 ```
 
 The ownership manifest contains every backend production file changed from the
@@ -182,18 +182,17 @@ reclassified as a pass by the scoped checker.
 | Enrollment retry Playwright regression | 0, 5/5 setup + scenario passed |
 | Linux/arm64 `cargo test -j1 --all-targets --all-features` | 0, all 59 result blocks passed |
 | `make coverage-backend` | 2, 909/909 passed; global floor failed |
-| 12-03 owned coverage checker | 0, 31/31 backend files passed |
+| 12-03 owned coverage checker | 0, 32/32 backend files passed |
 | Official Linux/arm64 60-second load profiles | 0, four profiles passed |
 | Official post-shutdown SQLite reconciliation | 0, every accepted write matched |
 | Audit immutability | 0, update/delete rejected and evidence retained |
 | `git diff --check` / staged diff check after LF normalization | 0 |
 
-The tested implementation SHA was created after the remediated official load,
-the writer-connection fix, and the CI-discovered enrollment retry correction.
-The load runtime is unchanged by the latter. The initial implementation commit
-also changed CSV writers from CRLF to LF; the writer fix commit contains the
-connection-local PRAGMAs, its regression, and evidence produced from that exact
-runtime source.
+The tested implementation SHA was created after the remediated official load
+on the writer-connection and CI-discovered enrollment retry corrections. The
+initial implementation commit also changed CSV writers from CRLF to LF; the
+writer fix commit contains the connection-local PRAGMAs and its regression,
+and `251208e` records evidence produced from the exact final runtime source.
 
 ## Diagnostics and remaining risks
 
@@ -239,11 +238,12 @@ finding is closed for 12-03 rather than deferred or normalized away.
 
 The first live PR E2E run exposed a 409 on the canonical enrollment retry. The
 checkpoint code had classified every ISAPI error as an ambiguous device
-outcome, including an explicit HTTP 503 response. That contradicted the
+outcome, including explicit HTTP 503 and 401 responses. That contradicted the
 idempotent Hikvision retry contract and left a `manual` checkpoint after a
 confirmed rejection.
 
-ISAPI non-success responses now carry a typed `DeviceResponseError`. Enrollment
+ISAPI non-success responses, including malformed or absent digest challenges,
+now carry a typed `DeviceResponseError`. Enrollment
 dispatch clears the checkpoint and records a terminal failed push only for
 that confirmed HTTP class; transport failures and timeouts remain fail-closed
 for manual reconciliation. The focused Rust suites and the previously failing
