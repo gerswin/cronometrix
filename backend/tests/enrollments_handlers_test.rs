@@ -1274,7 +1274,7 @@ async fn get_capture_returns_status_capturing() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn get_capture_does_not_hold_capture_map_lock_during_slow_file_read() {
+async fn get_capture_rejects_fifo_without_holding_capture_map_lock() {
     let db = common::test_db().await;
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
     let (_emp_id, _admin_id, token) = seed_full(&state.db).await;
@@ -1321,11 +1321,11 @@ async fn get_capture_does_not_hold_capture_map_lock_during_slow_file_read() {
     .await
     .expect("slow filesystem read must not hold the capture map lock");
     drop(lock);
-    let _ = tokio::fs::write(&fifo, b"jpeg").await;
-    assert_eq!(
-        response.await.unwrap().status(),
-        StatusCode::INTERNAL_SERVER_ERROR
-    );
+    let response = tokio::time::timeout(std::time::Duration::from_millis(200), response)
+        .await
+        .expect("FIFO rejection must not block waiting for a writer")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]

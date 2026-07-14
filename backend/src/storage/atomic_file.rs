@@ -38,7 +38,7 @@ impl AtomicFileGuard {
             .with_context(|| format!("create atomic file parent {}", parent.display()))?;
 
         let (temp_path, mut temp_file) = create_unique_temp(parent)?;
-        let identity = file_identity(&temp_file.metadata()?)?;
+        let mut identity = file_identity(&temp_file.metadata()?)?;
         let mut published = false;
         let write_result = (|| -> anyhow::Result<()> {
             temp_file
@@ -47,7 +47,7 @@ impl AtomicFileGuard {
             temp_file
                 .sync_all()
                 .with_context(|| format!("sync atomic temp {}", temp_path.display()))?;
-            drop(temp_file);
+            identity = file_identity(&temp_file.metadata()?)?;
 
             if let Err(error) = publish_noreplace(&temp_path, &final_path) {
                 if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -62,6 +62,11 @@ impl AtomicFileGuard {
                 });
             }
             published = true;
+            // rename(2) updates ctime on Unix. Refresh the identity after the
+            // atomic publication from the still-open descriptor. Reading from
+            // the pathname here could adopt a concurrent foreign replacement.
+            identity = file_identity(&temp_file.metadata()?)?;
+            drop(temp_file);
             sync_directory(parent)?;
             remove_if_owned(&temp_path, identity)?;
             sync_directory(parent)?;
@@ -181,6 +186,8 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
     const O_NOFOLLOW: i32 = 0x0000_0100;
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    const O_NONBLOCK: i32 = 0x0000_0004;
     // O_NOFOLLOW is architecture-specific on Linux/Android. ARM and PowerPC
     // use octal 0100000 (0x8000), while the common x86 value is octal
     // 0400000 (0x20000). Android/riscv64 uses its distinct UAPI value.
@@ -218,6 +225,8 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
         not(any(target_arch = "aarch64", target_arch = "arm", target_arch = "riscv64"))
     ))]
     const O_NOFOLLOW: i32 = 0x0002_0000;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const O_NONBLOCK: i32 = 0x0000_0800;
     #[cfg(not(any(
         target_os = "macos",
         target_os = "ios",
@@ -226,10 +235,18 @@ fn open_nofollow(path: &Path) -> std::io::Result<File> {
         target_os = "android"
     )))]
     const O_NOFOLLOW: i32 = 0;
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "android"
+    )))]
+    const O_NONBLOCK: i32 = 0;
 
     OpenOptions::new()
         .read(true)
-        .custom_flags(O_NOFOLLOW)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
         .open(path)
 }
 
@@ -269,6 +286,8 @@ fn sync_directory(path: &Path) -> anyhow::Result<()> {
 pub struct FileIdentity {
     device: u64,
     inode: u64,
+    ctime_seconds: i64,
+    ctime_nanoseconds: i64,
 }
 
 #[cfg(unix)]
@@ -278,11 +297,32 @@ fn file_identity(metadata: &fs::Metadata) -> anyhow::Result<FileIdentity> {
     Ok(FileIdentity {
         device: metadata.dev(),
         inode: metadata.ino(),
+        ctime_seconds: metadata.ctime(),
+        ctime_nanoseconds: metadata.ctime_nsec(),
     })
 }
 
 #[cfg(unix)]
 fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
+    // Validate the public entry before moving it. Keeping this descriptor open
+    // pins the inode, preventing an ABA replacement from reusing it while the
+    // pathname is claimed into quarantine.
+    let opened = match open_nofollow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("open owned atomic file {}", path.display()))
+        }
+    };
+    let opened_metadata = opened.metadata()?;
+    if !opened_metadata.file_type().is_file() {
+        bail!("owned atomic path is not a regular file");
+    }
+    let opened_identity = file_identity(&opened_metadata)?;
+    if opened_identity != identity {
+        bail!("atomic cleanup identity mismatch; foreign entry preserved");
+    }
+
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("atomic file has no parent: {}", path.display()))?;
@@ -302,8 +342,12 @@ fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
         }
     }
 
-    let claimed_identity = file_identity(&fs::symlink_metadata(&quarantine)?)?;
-    if claimed_identity == identity {
+    let claimed_metadata = fs::symlink_metadata(&quarantine)?;
+    let claimed_identity = file_identity(&claimed_metadata)?;
+    let claimed_is_opened_file = claimed_metadata.file_type().is_file()
+        && claimed_identity.device == opened_identity.device
+        && claimed_identity.inode == opened_identity.inode;
+    if claimed_is_opened_file {
         fs::remove_file(&quarantine)
             .with_context(|| format!("remove owned atomic quarantine {}", quarantine.display()))?;
     } else {
@@ -516,5 +560,28 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_delete_rejects_fifo_without_blocking() {
+        use std::os::unix::fs::FileTypeExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("capture.jpg");
+        std::fs::write(&path, b"owned").unwrap();
+        let identity = file_identity(&std::fs::metadata(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo must be available on Unix test runners");
+        assert!(status.success());
+
+        assert!(remove_owned_file(tmp.path(), &path, identity).is_err());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_fifo());
     }
 }

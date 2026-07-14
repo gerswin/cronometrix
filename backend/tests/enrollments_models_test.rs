@@ -91,6 +91,54 @@ fn face_quality_rejects_non_finite_and_contradictory_evidence() {
 }
 
 #[test]
+fn face_quality_validation_exercises_each_numeric_and_boolean_edge() {
+    for mutate in [
+        |e: &mut FaceQualityEvidence| e.width = f64::INFINITY,
+        |e: &mut FaceQualityEvidence| e.height = f64::NEG_INFINITY,
+        |e: &mut FaceQualityEvidence| e.luminance = -1.0,
+        |e: &mut FaceQualityEvidence| e.width = -1.0,
+        |e: &mut FaceQualityEvidence| e.height = 20_001.0,
+        |e: &mut FaceQualityEvidence| e.luminance = 20.0,
+        |e: &mut FaceQualityEvidence| e.height = 100.0,
+    ] {
+        let mut evidence = acceptable_face_quality();
+        mutate(&mut evidence);
+        assert!(matches!(
+            evidence.validate(),
+            Err(FaceQualityValidationError::Invalid(_))
+        ));
+    }
+
+    for mutate in [
+        |e: &mut FaceQualityEvidence| e.luminance_ok = false,
+        |e: &mut FaceQualityEvidence| e.size_ok = false,
+    ] {
+        let mut evidence = acceptable_face_quality();
+        mutate(&mut evidence);
+        assert_eq!(
+            evidence.validate(),
+            Err(FaceQualityValidationError::Unacceptable)
+        );
+    }
+
+    let mut dark_but_self_consistent = acceptable_face_quality();
+    dark_but_self_consistent.luminance_ok = false;
+    dark_but_self_consistent.luminance = 20.0;
+    assert_eq!(
+        dark_but_self_consistent.validate(),
+        Err(FaceQualityValidationError::Unacceptable)
+    );
+
+    let mut small_but_self_consistent = acceptable_face_quality();
+    small_but_self_consistent.size_ok = false;
+    small_but_self_consistent.width = 100.0;
+    assert_eq!(
+        small_but_self_consistent.validate(),
+        Err(FaceQualityValidationError::Unacceptable)
+    );
+}
+
+#[test]
 fn face_quality_rejects_frontend_unacceptable_decision() {
     let mut evidence = acceptable_face_quality();
     evidence.face_detected = false;

@@ -17,9 +17,11 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::Timelike;
 use cronometrix_api::config::Config;
 use cronometrix_api::recompute::nightly::nightly_reconcile_task;
 use libsql::params;
@@ -27,6 +29,30 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use common::{test_device_creds_key, TEST_JWT_SECRET};
+
+#[derive(Clone, Default)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+struct GuardedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for GuardedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+    type Writer = GuardedWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        GuardedWriter(self.0.clone())
+    }
+}
 
 fn make_config() -> Arc<Config> {
     Arc::new(Config {
@@ -70,6 +96,60 @@ async fn nightly_task_exits_on_shutdown() {
     let r = tokio::time::timeout(Duration::from_secs(5), handle).await;
     assert!(r.is_ok(), "nightly task must exit promptly on shutdown");
     assert!(r.unwrap().is_ok(), "task must not panic");
+}
+
+#[tokio::test(start_paused = true, flavor = "current_thread")]
+async fn nightly_task_schedules_same_day_when_local_time_is_before_2am() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    // Pick a fixed-offset IANA zone whose current local hour is 00. This
+    // deterministically exercises the "today at 02:00 is still ahead" branch
+    // without changing the process clock or depending on the test runner TZ.
+    let utc_hour = chrono::Utc::now().hour() as i32;
+    let offset_hours = (-utc_hour + 12).rem_euclid(24) - 12;
+    let zone_name = match offset_hours.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("Etc/GMT-{}", offset_hours),
+        std::cmp::Ordering::Less => format!("Etc/GMT+{}", -offset_hours),
+        std::cmp::Ordering::Equal => "UTC".to_string(),
+    };
+    let tz: chrono_tz::Tz = zone_name.parse().expect("fixed-offset timezone");
+    assert!(
+        chrono::Utc::now().with_timezone(&tz).hour() <= 1,
+        "chosen timezone must remain before 02:00 across an hour rollover"
+    );
+
+    let writer = SharedWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .without_time()
+        .with_writer(writer.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let shutdown = CancellationToken::new();
+    let child_shutdown = shutdown.clone();
+    let handle = tokio::spawn(async move {
+        nightly_reconcile_task(state, tz, child_shutdown).await;
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(3 * 60 * 60)).await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+
+    let logs = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("nightly reconcile complete"),
+        "same-day 02:00 timer must fire and complete reconcile within three hours; logs: {logs}"
+    );
+
+    shutdown.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(result.is_ok(), "nightly task must exit promptly");
+    assert!(result.unwrap().is_ok(), "nightly task must not panic");
 }
 
 // =============================================================================
