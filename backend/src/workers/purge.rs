@@ -202,6 +202,19 @@ impl PurgeWorker {
                         enrollment_service::delete_mapping_queued(&self.state, &mapping_id).await
                     {
                         tracing::error!(mapping_id = %mapping_id, err = %e, "PurgeWorker: failed to delete mapping row");
+                        if let Err(mark_error) =
+                            enrollment_service::mark_mapping_pending_delete_queued(
+                                &self.state,
+                                &mapping_id,
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                mapping_id = %mapping_id,
+                                err = %mark_error,
+                                "PurgeWorker: failed to preserve pending_delete recovery state"
+                            );
+                        }
                     } else {
                         tracing::info!(
                             employee_id = %employee_id,

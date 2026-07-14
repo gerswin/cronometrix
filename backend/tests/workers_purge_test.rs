@@ -284,6 +284,65 @@ async fn purge_success_deletes_mapping_row() {
     let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
 }
 
+#[tokio::test]
+async fn purge_mapping_delete_failure_keeps_pending_delete_recovery_state() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("PUT"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfoDetail/Delete"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let emp_id = seed_employee_inactive(&state.db).await;
+    let device_id = seed_device_at(&state.db, &state.config.device_creds_key, &server.uri()).await;
+    let conn = state.db.connect().unwrap();
+    enrollment_service::upsert_device_face_mapping(&conn, &device_id, "face-delete-db", &emp_id)
+        .await
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_mapping_delete BEFORE DELETE ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced mapping delete failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel::<PurgeRequest>();
+    let worker = PurgeWorker::new(state.clone(), shutdown.clone());
+    let handle = tokio::spawn(async move { worker.run(rx).await });
+    tx.send(PurgeRequest {
+        employee_id: emp_id.clone(),
+    })
+    .unwrap();
+
+    let mut pending = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let row = conn
+            .query(
+                "SELECT state FROM device_face_mappings WHERE employee_id=?1",
+                params![emp_id.clone()],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        if row.get::<String>(0).unwrap() == "pending_delete" {
+            pending = true;
+            break;
+        }
+    }
+    assert!(
+        pending,
+        "DB delete failure must retain an explicit retry state"
+    );
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
 // =============================================================================
 // Failed purge (5xx): mapping row stays + state flips to 'pending_delete'.
 // =============================================================================

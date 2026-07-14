@@ -8,10 +8,9 @@ use libsql::{params, Connection};
 use uuid::Uuid;
 
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
-use crate::devices::service as devices_service;
 use crate::errors::AppError;
-use crate::events::service::write_photo_atomic;
 use crate::state::AppState;
+use crate::storage::atomic_file::AtomicFileGuard;
 
 use super::models::{
     validate_enrollment_status, EnrollmentDevicePushResponse, EnrollmentListQuery,
@@ -208,15 +207,16 @@ pub async fn list_enrollments(
 
 /// Persist a full enrollment session atomically and return the 202 response body.
 ///
-/// Steps (all in the same connection — single WAL writer):
+/// Steps (all in one queued transaction owned by the single WAL writer):
 /// 1. INSERT face_enrollments
 /// 2. INSERT enrollments
 /// 3. Ensure employees.face_id is set (COALESCE — stable per D-10)
 /// 4. UPDATE employees.current_face_enrollment_id
 /// 5. INSERT enrollment_device_pushes (one per active device)
-/// 6. Write JPEG to disk via write_photo_atomic
 ///
-/// Note: `spawn_enrollment_pushes` is called by the handler AFTER this returns 202.
+/// The JPEG is durably published under `AtomicFileGuard` before admission and
+/// kept by a worker-owned after-commit callback. Rollback, queue rejection, and
+/// request cancellation therefore cannot leave a row/file mismatch.
 pub async fn start_enrollment(
     state: &AppState,
     actor_id: &str,
@@ -226,270 +226,120 @@ pub async fn start_enrollment(
     face_quality_score: Option<&str>,
     normalized_bytes: &[u8],
 ) -> Result<EnrollmentSubmitResponse, AppError> {
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Fetch all active devices once for fan-out planning.
-    let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
-
-    // Generate IDs before insert so we can compose the photo path.
     let face_enrollment_id = Uuid::new_v4().to_string();
     let enrollment_id = Uuid::new_v4().to_string();
     let new_face_id = Uuid::new_v4().to_string();
-
-    // Compose the photo path: {employee_id}/{enrollment_id}.jpg
     let photo_relpath = format!("{}/{}.jpg", employee_id, enrollment_id);
-
-    // 1. INSERT face_enrollments
-    conn.execute(
-        "INSERT INTO face_enrollments \
-         (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
-        params![
-            face_enrollment_id.clone(),
-            employee_id.to_string(),
-            captured_via.to_string(),
-            source_device_id.map(|s| s.to_string()),
-            photo_relpath.clone(),
-            face_quality_score.map(|s| s.to_string()),
-            actor_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // 2. INSERT enrollments
-    conn.execute(
-        "INSERT INTO enrollments \
-         (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
-         VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
-        params![
-            enrollment_id.clone(),
-            employee_id.to_string(),
-            face_enrollment_id.clone(),
-            actor_id.to_string(),
-        ],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // 3. Set employees.face_id only if not yet assigned (D-10: stable per employee).
-    conn.execute(
-        "UPDATE employees SET face_id = COALESCE(face_id, ?1) WHERE id = ?2",
-        params![new_face_id.clone(), employee_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // 4. Update employees.current_face_enrollment_id to the new enrollment.
-    conn.execute(
-        "UPDATE employees SET current_face_enrollment_id = ?1 WHERE id = ?2",
-        params![face_enrollment_id.clone(), employee_id.to_string()],
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Retrieve the actual face_id (may differ from new_face_id if COALESCE preserved existing).
-    let mut fid_rows = conn
-        .query(
-            "SELECT face_id FROM employees WHERE id = ?1",
-            params![employee_id.to_string()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let fid_row = fid_rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::NotFound {
-            code: "EMPLOYEE_NOT_FOUND",
-            message: format!("Employee '{}' not found", employee_id),
-        })?;
-    let face_id: String = fid_row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-
-    // 5. INSERT enrollment_device_pushes (one per active device, status=pending).
-    let mut push_responses = Vec::new();
-    for device in &devices {
-        let push_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT OR REPLACE INTO enrollment_device_pushes \
-             (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
-             VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-            params![push_id.clone(), enrollment_id.clone(), device.id.clone(),],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-        push_responses.push(EnrollmentDevicePushResponse {
-            id: push_id,
-            device_id: device.id.clone(),
-            device_name: device.name.clone(),
-            status: "pending".to_string(),
-            error_message: None,
-            started_at: None,
-            completed_at: None,
-        });
-    }
-
-    // 6. Write JPEG to disk atomically (write_photo_atomic handles create_dir_all).
-    write_photo_atomic(
+    let guard = AtomicFileGuard::write(
         &state.paths.enrollments_root,
         &photo_relpath,
         normalized_bytes,
     )
     .map_err(AppError::Internal)?;
-
-    Ok(EnrollmentSubmitResponse {
-        enrollment_id,
-        face_id,
-        device_pushes: push_responses,
-    })
-}
-
-pub async fn start_enrollment_queued(
-    state: &AppState,
-    actor_id: &str,
-    employee_id: &str,
-    captured_via: &str,
-    source_device_id: Option<&str>,
-    face_quality_score: Option<&str>,
-    normalized_bytes: &[u8],
-) -> Result<EnrollmentSubmitResponse, AppError> {
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let devices = devices_service::list_active(&conn, &state.config.device_creds_key).await?;
-
-    let face_enrollment_id = Uuid::new_v4().to_string();
-    let enrollment_id = Uuid::new_v4().to_string();
-    let new_face_id = Uuid::new_v4().to_string();
-    let photo_relpath = format!("{}/{}.jpg", employee_id, enrollment_id);
+    let actor_id = actor_id.to_string();
+    let employee_id = employee_id.to_string();
+    let captured_via = captured_via.to_string();
+    let source_device_id = source_device_id.map(str::to_string);
+    let face_quality_score = face_quality_score.map(str::to_string);
 
     state
         .db_write
-        .statement(
-            "enrollments.create-face",
-            "INSERT INTO face_enrollments \
-             (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
-            vec![
-                libsql::Value::Text(face_enrollment_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-                libsql::Value::Text(captured_via.to_string()),
-                source_device_id.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(photo_relpath.clone()),
-                face_quality_score.map(|s| libsql::Value::Text(s.to_string())).unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(actor_id.to_string()),
-            ],
-        )
+        .transact("enrollments.start", move |tx| {
+            Box::pin(async move {
+                tx.statement(
+                    "INSERT INTO face_enrollments \
+                     (id, employee_id, captured_via, source_device_id, photo_path, face_quality_score, created_by, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
+                    params![
+                        face_enrollment_id.clone(),
+                        employee_id.clone(),
+                        captured_via,
+                        source_device_id,
+                        photo_relpath,
+                        face_quality_score,
+                        actor_id.clone(),
+                    ],
+                )
+                .await?;
+                tx.statement(
+                    "INSERT INTO enrollments \
+                     (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
+                     VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
+                    params![
+                        enrollment_id.clone(),
+                        employee_id.clone(),
+                        face_enrollment_id.clone(),
+                        actor_id,
+                    ],
+                )
+                .await?;
+                let employee_updated = tx.statement(
+                    "UPDATE employees \
+                     SET face_id=COALESCE(face_id, ?1), current_face_enrollment_id=?2 \
+                     WHERE id=?3",
+                    params![new_face_id, face_enrollment_id, employee_id.clone()],
+                )
+                .await?;
+                if employee_updated != 1 {
+                    anyhow::bail!("employee disappeared during enrollment");
+                }
+
+                let mut face_rows = tx
+                    .query(
+                        "SELECT face_id FROM employees WHERE id=?1",
+                        params![employee_id.clone()],
+                    )
+                    .await?;
+                let face_row = face_rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("employee disappeared during enrollment"))?;
+                let face_id: String = face_row.get(0)?;
+                drop(face_rows);
+
+                let mut device_rows = tx
+                    .query(
+                        "SELECT id, name FROM devices WHERE status='active' ORDER BY id",
+                        (),
+                    )
+                    .await?;
+                let mut devices = Vec::new();
+                while let Some(row) = device_rows.next().await? {
+                    devices.push((row.get::<String>(0)?, row.get::<String>(1)?));
+                }
+                drop(device_rows);
+
+                let mut device_pushes = Vec::with_capacity(devices.len());
+                for (device_id, device_name) in devices {
+                    let push_id = Uuid::new_v4().to_string();
+                    tx.statement(
+                        "INSERT INTO enrollment_device_pushes \
+                         (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
+                         VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
+                        params![push_id.clone(), enrollment_id.clone(), device_id.clone()],
+                    )
+                    .await?;
+                    device_pushes.push(EnrollmentDevicePushResponse {
+                        id: push_id,
+                        device_id,
+                        device_name,
+                        status: "pending".into(),
+                        error_message: None,
+                        started_at: None,
+                        completed_at: None,
+                    });
+                }
+
+                tx.after_commit(move || guard.keep());
+                Ok(EnrollmentSubmitResponse {
+                    enrollment_id,
+                    face_id,
+                    device_pushes,
+                })
+            })
+        })
         .await
-        .map_err(AppError::from)?;
-
-    state
-        .db_write
-        .statement(
-            "enrollments.create",
-            "INSERT INTO enrollments \
-             (id, employee_id, face_enrollment_id, status, started_by, started_at, version) \
-             VALUES (?1, ?2, ?3, 'in_progress', ?4, unixepoch(), 1)",
-            vec![
-                libsql::Value::Text(enrollment_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-                libsql::Value::Text(face_enrollment_id.clone()),
-                libsql::Value::Text(actor_id.to_string()),
-            ],
-        )
-        .await
-        .map_err(AppError::from)?;
-
-    state
-        .db_write
-        .statement(
-            "enrollments.ensure-employee-face",
-            "UPDATE employees SET face_id = COALESCE(face_id, ?1) WHERE id = ?2",
-            vec![
-                libsql::Value::Text(new_face_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-            ],
-        )
-        .await
-        .map_err(AppError::from)?;
-
-    state
-        .db_write
-        .statement(
-            "enrollments.set-current-face",
-            "UPDATE employees SET current_face_enrollment_id = ?1 WHERE id = ?2",
-            vec![
-                libsql::Value::Text(face_enrollment_id.clone()),
-                libsql::Value::Text(employee_id.to_string()),
-            ],
-        )
-        .await
-        .map_err(AppError::from)?;
-
-    let mut fid_rows = conn
-        .query(
-            "SELECT face_id FROM employees WHERE id = ?1",
-            params![employee_id.to_string()],
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let fid_row = fid_rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or_else(|| AppError::NotFound {
-            code: "EMPLOYEE_NOT_FOUND",
-            message: format!("Employee '{}' not found", employee_id),
-        })?;
-    let face_id: String = fid_row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-
-    let mut push_responses = Vec::new();
-    for device in &devices {
-        let push_id = Uuid::new_v4().to_string();
-        state
-            .db_write
-            .statement(
-                "enrollments.create-device-push",
-                "INSERT OR REPLACE INTO enrollment_device_pushes \
-                 (id, enrollment_id, device_id, status, error_message, started_at, completed_at) \
-                 VALUES (?1, ?2, ?3, 'pending', NULL, NULL, NULL)",
-                vec![
-                    libsql::Value::Text(push_id.clone()),
-                    libsql::Value::Text(enrollment_id.clone()),
-                    libsql::Value::Text(device.id.clone()),
-                ],
-            )
-            .await
-            .map_err(AppError::from)?;
-
-        push_responses.push(EnrollmentDevicePushResponse {
-            id: push_id,
-            device_id: device.id.clone(),
-            device_name: device.name.clone(),
-            status: "pending".to_string(),
-            error_message: None,
-            started_at: None,
-            completed_at: None,
-        });
-    }
-
-    write_photo_atomic(
-        &state.paths.enrollments_root,
-        &photo_relpath,
-        normalized_bytes,
-    )
-    .map_err(AppError::Internal)?;
-
-    Ok(EnrollmentSubmitResponse {
-        enrollment_id,
-        face_id,
-        device_pushes: push_responses,
-    })
+        .map_err(AppError::from)
 }
 
 /// Update a single push row's status and error_message.
@@ -538,6 +388,83 @@ pub async fn update_push_status_queued(
         .await
         .map_err(AppError::from)?;
     Ok(())
+}
+
+/// Commit the terminal push state and its device mapping as one background
+/// transaction. The queue retries admission only; an accepted job is never
+/// replayed, so successful device side effects are not duplicated.
+pub async fn complete_push_success(
+    state: &AppState,
+    push_id: &str,
+    device_id: &str,
+    face_id: &str,
+    employee_id: &str,
+) -> Result<(), AppError> {
+    let push_id = push_id.to_string();
+    let device_id = device_id.to_string();
+    let face_id = face_id.to_string();
+    let employee_id = employee_id.to_string();
+    let mapping_id = Uuid::new_v4().to_string();
+    state
+        .db_write
+        .background_transact("enrollments.complete-device-push", move |tx| {
+            Box::pin(async move {
+                let push_updated = tx
+                    .statement(
+                        "UPDATE enrollment_device_pushes \
+                     SET status='success', error_message=NULL, completed_at=unixepoch() \
+                     WHERE id=?1",
+                        params![push_id],
+                    )
+                    .await?;
+                if push_updated != 1 {
+                    anyhow::bail!("push row not found during successful completion");
+                }
+                tx.statement(
+                    "INSERT INTO device_face_mappings \
+                     (id, device_id, face_id, employee_id, state, version, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'active', 1, unixepoch(), unixepoch()) \
+                     ON CONFLICT(device_id, face_id) DO UPDATE SET \
+                       employee_id=excluded.employee_id, state='active', \
+                       version=device_face_mappings.version+1, updated_at=unixepoch()",
+                    params![mapping_id, device_id, face_id, employee_id],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
+}
+
+/// Persist a terminal push failure through the background admission policy.
+pub async fn complete_push_failure(
+    state: &AppState,
+    push_id: &str,
+    error_message: &str,
+) -> Result<(), AppError> {
+    let push_id = push_id.to_string();
+    let error_message = error_message.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.fail-device-push", move |tx| {
+            Box::pin(async move {
+                let push_updated = tx
+                    .statement(
+                        "UPDATE enrollment_device_pushes \
+                     SET status='failed', error_message=?1, completed_at=unixepoch() \
+                     WHERE id=?2",
+                        params![error_message, push_id],
+                    )
+                    .await?;
+                if push_updated != 1 {
+                    anyhow::bail!("push row not found during failed completion");
+                }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
 }
 
 /// Mark a push row as in_progress (records started_at).
@@ -772,6 +699,56 @@ pub async fn finalize_enrollment_status_queued(
         .await
         .map_err(AppError::from)?;
     Ok(())
+}
+
+/// Count terminal push outcomes and finalize the enrollment within the same
+/// queued transaction, so no observer can see a count detached from its state.
+pub async fn finalize_enrollment(state: &AppState, enrollment_id: &str) -> Result<(), AppError> {
+    let enrollment_id = enrollment_id.to_string();
+    state
+        .db_write
+        .background_transact("enrollments.finalize", move |tx| {
+            Box::pin(async move {
+                let mut rows = tx
+                    .query(
+                        "SELECT \
+                           SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), \
+                           SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), COUNT(*) \
+                         FROM enrollment_device_pushes WHERE enrollment_id=?1",
+                        params![enrollment_id.clone()],
+                    )
+                    .await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("push aggregate returned no row"))?;
+                let success = row.get::<Option<i64>>(0)?.unwrap_or(0);
+                let failed = row.get::<Option<i64>>(1)?.unwrap_or(0);
+                let total = row.get::<i64>(2)?;
+                drop(rows);
+                let final_status = if total == 0 || success == 0 {
+                    "failed"
+                } else if failed == 0 {
+                    "success"
+                } else {
+                    "partial"
+                };
+                let enrollment_updated = tx
+                    .statement(
+                        "UPDATE enrollments \
+                     SET status=?1, completed_at=unixepoch(), version=version+1 \
+                     WHERE id=?2",
+                        params![final_status, enrollment_id],
+                    )
+                    .await?;
+                if enrollment_updated != 1 {
+                    anyhow::bail!("enrollment not found during finalization");
+                }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(AppError::from)
 }
 
 /// Upsert a device_face_mappings row (INSERT OR REPLACE) on push success (D-13).

@@ -9,8 +9,10 @@
 //!   GET    /enrollments/captures/:capture_id          → get_capture (200)
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{Multipart, Path, Query, State},
@@ -18,8 +20,10 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
@@ -28,6 +32,7 @@ use crate::devices::service as devices_service;
 use crate::errors::AppError;
 use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
+use crate::storage::atomic_file::AtomicFileGuard;
 
 use super::image_pipeline::normalize_face_jpeg;
 use super::models::{
@@ -55,15 +60,70 @@ pub struct CaptureState {
     pub source_device_id: String,
     pub photo_path: Option<String>, // set when status == "captured"
     pub error_message: Option<String>,
+    /// Monotonic admission time; immune to wall-clock jumps.
+    pub created_at: Instant,
+    /// Monotonic instant when the state became captured/error/timeout.
+    pub terminal_at: Option<Instant>,
 }
 
-/// Type alias for the shared captures map.
-/// Stored on AppState via Arc<RwLock<...>> — see state.rs Task 5 extension.
-pub type CapturesMap = Arc<RwLock<HashMap<String, CaptureState>>>;
+/// Lifecycle owner for capture state and every task that may publish a JPEG.
+#[derive(Clone)]
+pub struct CapturesMap {
+    entries: Arc<RwLock<HashMap<String, CaptureState>>>,
+    tasks: Arc<Mutex<JoinSet<()>>>,
+    accepting: Arc<AtomicBool>,
+    shutdown: CancellationToken,
+}
+
+impl CapturesMap {
+    pub async fn read(&self) -> RwLockReadGuard<'_, HashMap<String, CaptureState>> {
+        self.entries.read().await
+    }
+
+    pub async fn write(&self) -> RwLockWriteGuard<'_, HashMap<String, CaptureState>> {
+        self.entries.write().await
+    }
+
+    pub async fn spawn<F>(&self, future: F) -> anyhow::Result<()>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.tasks.lock().await;
+        if !self.accepting.load(Ordering::Acquire) {
+            anyhow::bail!("capture lifecycle is shutting down");
+        }
+        while tasks.try_join_next().is_some() {}
+        tasks.spawn(future);
+        Ok(())
+    }
+
+    pub fn cancellation(&self) -> CancellationToken {
+        self.shutdown.clone()
+    }
+
+    pub async fn stop_and_join(&self) {
+        self.accepting.store(false, Ordering::Release);
+        self.shutdown.cancel();
+        let mut tasks = self.tasks.lock().await;
+        tasks.abort_all();
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                if !error.is_cancelled() {
+                    tracing::warn!(%error, "capture task failed during shutdown");
+                }
+            }
+        }
+    }
+}
 
 /// Create a fresh CapturesMap. Called during AppState construction in main.rs.
 pub fn new_captures_map() -> CapturesMap {
-    Arc::new(RwLock::new(HashMap::new()))
+    CapturesMap {
+        entries: Arc::new(RwLock::new(HashMap::new())),
+        tasks: Arc::new(Mutex::new(JoinSet::new())),
+        accepting: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
+    }
 }
 
 // =============================================================================
@@ -218,7 +278,7 @@ pub async fn create_enrollment(
         })?;
 
     // Persist enrollment + push rows + write photo to disk.
-    let submit_response = service::start_enrollment_queued(
+    let submit_response = service::start_enrollment(
         &state,
         &claims.sub,
         &employee_id,
@@ -368,8 +428,7 @@ pub async fn retry_push(
                 );
             }
             // Finalise enrollment status after single retry settles.
-            if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await
-            {
+            if let Err(e) = service::finalize_enrollment(&state, &enrollment_id).await {
                 tracing::error!(enrollment_id = %enrollment_id, err = %e, "retry finalize failed");
             }
         }
@@ -396,24 +455,9 @@ pub async fn capture_from_device(
     AuthUser(_claims): AuthUser,
     Json(body): Json<CaptureFromDeviceRequest>,
 ) -> Result<(StatusCode, Json<CaptureFromDeviceResponse>), AppError> {
-    let capture_id = Uuid::new_v4().to_string();
     let source_device_id = body.device_id.clone();
-
-    // Insert initial state into the shared map.
-    {
-        let mut map = state.captures.write().await;
-        map.insert(
-            capture_id.clone(),
-            CaptureState {
-                status: "capturing".to_string(),
-                source_device_id: source_device_id.clone(),
-                photo_path: None,
-                error_message: None,
-            },
-        );
-    }
-
-    // Build device connection.
+    // Every fallible setup step precedes map admission. A rejected device or
+    // invalid URL therefore cannot strand either state or a temporary JPEG.
     let conn = state
         .db
         .connect()
@@ -431,26 +475,44 @@ pub async fn capture_from_device(
     )
     .map_err(AppError::Internal)?;
 
+    let capture_id = Uuid::new_v4().to_string();
+    let admitted_at = Instant::now();
+    state.captures.write().await.insert(
+        capture_id.clone(),
+        CaptureState {
+            status: "capturing".to_string(),
+            source_device_id: source_device_id.clone(),
+            photo_path: None,
+            error_message: None,
+            created_at: admitted_at,
+            terminal_at: None,
+        },
+    );
+
     let captures = state.captures.clone();
     let cid = capture_id.clone();
     let source_device_id_for_task = source_device_id.clone();
+    let captures_root = state.paths.captures_tmp_root.clone();
+    let capture_shutdown = captures.cancellation();
+    let password = device.password.clone();
 
-    // Spawn capture task with 30s timeout.
-    tokio::spawn(async move {
-        let result = timeout(
-            Duration::from_secs(CAPTURE_TIMEOUT_SECS),
-            isapi.capture_face_image(),
-        )
-        .await;
+    // The registry owns the task after request admission. Request cancellation
+    // cannot drop the JPEG guard or detach work from graceful shutdown.
+    let task = async move {
+        let result = tokio::select! {
+            _ = capture_shutdown.cancelled() => return,
+            result = timeout(
+                Duration::from_secs(CAPTURE_TIMEOUT_SECS),
+                isapi.capture_face_image(),
+            ) => result,
+        };
 
         match result {
             Ok(Ok(jpeg_bytes)) => {
-                // Write to /tmp/enrollments-captures/{capture_id}.jpg
-                let tmp_root = state.paths.captures_tmp_root.clone();
-                let _ = tokio::fs::create_dir_all(&tmp_root).await;
-                let path = tmp_root.join(format!("{}.jpg", cid));
-                match tokio::fs::write(&path, &jpeg_bytes).await {
-                    Ok(_) => {
+                let relative = format!("{cid}.jpg");
+                match AtomicFileGuard::write(&captures_root, &relative, &jpeg_bytes) {
+                    Ok(guard) => {
+                        let path = captures_root.join(relative);
                         let mut map = captures.write().await;
                         map.insert(
                             cid.clone(),
@@ -459,8 +521,11 @@ pub async fn capture_from_device(
                                 source_device_id: source_device_id_for_task.clone(),
                                 photo_path: Some(path.to_string_lossy().into_owned()),
                                 error_message: None,
+                                created_at: admitted_at,
+                                terminal_at: Some(Instant::now()),
                             },
                         );
+                        guard.keep();
                     }
                     Err(e) => {
                         let mut map = captures.write().await;
@@ -471,6 +536,8 @@ pub async fn capture_from_device(
                                 source_device_id: source_device_id_for_task.clone(),
                                 photo_path: None,
                                 error_message: Some(format!("failed to write capture: {e}")),
+                                created_at: admitted_at,
+                                terminal_at: Some(Instant::now()),
                             },
                         );
                     }
@@ -484,7 +551,9 @@ pub async fn capture_from_device(
                         status: "error".to_string(),
                         source_device_id: source_device_id_for_task.clone(),
                         photo_path: None,
-                        error_message: Some(e.to_string()),
+                        error_message: Some(e.to_string().replace(&password, "[redacted]")),
+                        created_at: admitted_at,
+                        terminal_at: Some(Instant::now()),
                     },
                 );
             }
@@ -497,11 +566,17 @@ pub async fn capture_from_device(
                         source_device_id: source_device_id_for_task,
                         photo_path: None,
                         error_message: Some("Device did not respond within 30 seconds".to_string()),
+                        created_at: admitted_at,
+                        terminal_at: Some(Instant::now()),
                     },
                 );
             }
         }
-    });
+    };
+    if let Err(error) = state.captures.spawn(task).await {
+        state.captures.write().await.remove(&capture_id);
+        return Err(AppError::Internal(error));
+    }
 
     Ok((
         StatusCode::ACCEPTED,
@@ -532,15 +607,10 @@ pub async fn get_capture(
     Path(capture_id): Path<String>,
 ) -> Result<Json<CaptureResponse>, AppError> {
     let map = state.captures.read().await;
-    let capture_state = map
-        .get(&capture_id)
-        .cloned()
-        .ok_or_else(|| AppError::NotFound {
-            code: "CAPTURE_NOT_FOUND",
-            message: format!("Capture session '{}' not found or expired", capture_id),
-        })?;
-    drop(map);
-
+    let capture_state = map.get(&capture_id).ok_or_else(|| AppError::NotFound {
+        code: "CAPTURE_NOT_FOUND",
+        message: format!("Capture session '{}' not found or expired", capture_id),
+    })?;
     // Inline photo_b64 when status == "captured" (T-7-13 mitigated: admin-only endpoint).
     let photo_b64 = if capture_state.status == "captured" {
         if let Some(ref path) = capture_state.photo_path {
@@ -555,11 +625,14 @@ pub async fn get_capture(
         None
     };
 
-    Ok(Json(CaptureResponse {
+    let response = CaptureResponse {
         capture_id,
-        status: capture_state.status,
-        source_device_id: capture_state.source_device_id,
+        status: capture_state.status.clone(),
+        source_device_id: capture_state.source_device_id.clone(),
         photo_b64,
-        error_message: capture_state.error_message,
-    }))
+        error_message: capture_state.error_message.clone(),
+    };
+    drop(map);
+
+    Ok(Json(response))
 }

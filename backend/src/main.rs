@@ -32,7 +32,9 @@ use cronometrix_api::state::{AppState, AttendanceEventSSEPayload};
 use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
 use cronometrix_api::users;
-use cronometrix_api::workers::{backfill::BackfillWorker, db_write, purge::PurgeWorker};
+use cronometrix_api::workers::{
+    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -72,6 +74,9 @@ async fn main() -> anyhow::Result<()> {
     // Recompute remains alive after producer cancellation so accepted database
     // callbacks can publish their final work before its own drain begins.
     let recompute_shutdown = CancellationToken::new();
+    // Capture cleanup remains alive until every tracked capture task is joined
+    // and its final compensation pass has completed.
+    let capture_cleanup_shutdown = CancellationToken::new();
 
     // Phase 6: license gate. load_and_validate_license is fail-closed —
     // if file missing, signature invalid, or fingerprint mismatched, the
@@ -166,6 +171,11 @@ async fn main() -> anyhow::Result<()> {
         let db = state.db.clone();
         async move { db_write::run(db, db_write_rx).await }
     });
+
+    let capture_cleanup_handle = tokio::spawn(capture_cleanup::run(
+        state.clone(),
+        capture_cleanup_shutdown.clone(),
+    ));
 
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
     let purge_worker = PurgeWorker::new(state.clone(), shutdown.clone());
@@ -459,6 +469,13 @@ async fn main() -> anyhow::Result<()> {
     purge_handle.await?;
     backfill_handle.await?;
 
+    // The HTTP server is no longer accepting requests. Stop and await all
+    // capture tasks, remove their state/JPEGs, then stop the periodic owner.
+    // SIGKILL bypasses this block; the next startup orphan sweep recovers it.
+    let capture_shutdown_result = capture_cleanup::shutdown_captures(&state).await;
+    capture_cleanup_shutdown.cancel();
+    let capture_cleanup_result = capture_cleanup_handle.await?;
+
     recompute::worker::shutdown_after_producers(
         state.db_write.clone(),
         recompute_shutdown,
@@ -466,6 +483,8 @@ async fn main() -> anyhow::Result<()> {
         db_write_handle,
     )
     .await?;
+    capture_shutdown_result?;
+    capture_cleanup_result?;
     tracing::info!("shutdown complete");
 
     Ok(())

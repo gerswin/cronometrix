@@ -46,8 +46,7 @@ pub fn spawn_enrollment_pushes(
                     return;
                 }
             };
-            if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await
-            {
+            if let Err(e) = service::finalize_enrollment(&state, &enrollment_id).await {
                 tracing::error!(enrollment_id = %enrollment_id, err = %e, "push driver: finalize failed");
             }
             return;
@@ -121,7 +120,7 @@ pub fn spawn_enrollment_pushes(
                 return;
             }
         };
-        if let Err(e) = service::finalize_enrollment_status_queued(&state, &enrollment_id).await {
+        if let Err(e) = service::finalize_enrollment(&state, &enrollment_id).await {
             tracing::error!(enrollment_id = %enrollment_id, err = %e, "push driver: finalize failed");
         }
     });
@@ -168,9 +167,9 @@ pub async fn push_one_device(
     };
 
     // Mark in_progress.
-    if let Err(e) = service::mark_push_in_progress_queued(state, &push_id).await {
-        tracing::warn!(err = %e, "failed to mark push in_progress");
-    }
+    service::mark_push_in_progress_queued(state, &push_id)
+        .await
+        .map_err(|error| anyhow::anyhow!("admit device push state: {error}"))?;
 
     // Build ISAPI client.
     let isapi = DeviceConnection::new(
@@ -194,33 +193,34 @@ pub async fn push_one_device(
     match result {
         Ok(Ok(_)) => {
             // Success path: update push row + upsert device_face_mapping.
-            if let Err(e) =
-                service::update_push_status_queued(state, &push_id, "success", None).await
-            {
-                tracing::warn!(err = %e, "failed to update push row to success");
-            }
-            if let Err(e) =
-                service::upsert_device_face_mapping_queued(state, &device.id, face_id, employee_id)
+            if let Err(error) =
+                service::complete_push_success(state, &push_id, &device.id, face_id, employee_id)
                     .await
             {
-                tracing::warn!(err = %e, "failed to upsert device_face_mapping");
+                let recovery = "Device push succeeded but mapping persistence failed";
+                if let Err(recovery_error) =
+                    service::complete_push_failure(state, &push_id, recovery).await
+                {
+                    tracing::error!(
+                        push_id,
+                        err = %recovery_error,
+                        "failed to persist device-push recovery state"
+                    );
+                }
+                return Err(anyhow::anyhow!("commit successful device push: {error}"));
             }
             Ok(())
         }
         Ok(Err(e)) => {
             let scrubbed = scrub_password(e.to_string(), &device.password);
-            if let Err(ue) =
-                service::update_push_status_queued(state, &push_id, "failed", Some(&scrubbed)).await
-            {
+            if let Err(ue) = service::complete_push_failure(state, &push_id, &scrubbed).await {
                 tracing::warn!(err = %ue, "failed to update push row to failed");
             }
             Err(anyhow::anyhow!("ISAPI push failed: {scrubbed}"))
         }
         Err(_timeout) => {
             let msg = "Device did not respond within 30 seconds";
-            if let Err(ue) =
-                service::update_push_status_queued(state, &push_id, "failed", Some(msg)).await
-            {
+            if let Err(ue) = service::complete_push_failure(state, &push_id, msg).await {
                 tracing::warn!(err = %ue, "failed to update push row to timeout");
             }
             Err(anyhow::anyhow!("{msg}"))

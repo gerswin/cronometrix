@@ -10,10 +10,12 @@ mod common;
 use std::sync::Arc;
 
 use cronometrix_api::config::Config;
+use cronometrix_api::db::write_queue::{run_write_worker, DbWriteQueue, DbWriteQueueConfig};
 use cronometrix_api::enrollments::models::EnrollmentListQuery;
 use cronometrix_api::enrollments::service;
 use cronometrix_api::errors::AppError;
 use libsql::params;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use common::{test_device_creds_key, TEST_JWT_SECRET};
@@ -198,6 +200,142 @@ async fn start_enrollment_preserves_face_id_on_re_enrollment() {
     // D-10: face_id must be stable across re-enrollment.
     assert_eq!(r1.face_id, r2.face_id);
     assert_ne!(r1.enrollment_id, r2.enrollment_id);
+}
+
+#[tokio::test]
+async fn start_enrollment_rolls_back_every_row_and_photo_when_push_insert_fails() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device(&state.db, &config.device_creds_key).await;
+
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_enrollment_push_insert \
+         BEFORE INSERT ON enrollment_device_pushes \
+         BEGIN SELECT RAISE(ABORT, 'forced push insert failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    let error =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .expect_err("trigger must abort the queued enrollment transaction");
+    assert!(error.to_string().contains("forced push insert failure"));
+
+    for table in [
+        "face_enrollments",
+        "enrollments",
+        "enrollment_device_pushes",
+    ] {
+        let sql = format!("SELECT COUNT(*) FROM {table}");
+        let count: i64 = conn
+            .query(&sql, ())
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(count, 0, "{table} must roll back");
+    }
+    let employee: (Option<String>, Option<String>) = {
+        let row = conn
+            .query(
+                "SELECT face_id, current_face_enrollment_id FROM employees WHERE id=?1",
+                params![emp_id.clone()],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        (row.get(0).unwrap(), row.get(1).unwrap())
+    };
+    assert_eq!(employee, (None, None));
+    let employee_photo_dir = state.paths.enrollments_root.join(&emp_id);
+    if employee_photo_dir.exists() {
+        assert_eq!(
+            std::fs::read_dir(employee_photo_dir).unwrap().count(),
+            0,
+            "AtomicFileGuard must compensate the JPEG after rollback"
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepted_enrollment_survives_request_cancellation_with_photo_owned() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+
+    let (queue, receiver) = DbWriteQueue::channel(DbWriteQueueConfig {
+        capacity: 4,
+        ..Default::default()
+    });
+    state.db_write = queue.clone();
+    let worker = tokio::spawn(run_write_worker(state.db.clone(), receiver));
+    let blocker_started = Arc::new(Notify::new());
+    let release_blocker = Arc::new(Notify::new());
+    let blocker = tokio::spawn({
+        let queue = queue.clone();
+        let blocker_started = blocker_started.clone();
+        let release_blocker = release_blocker.clone();
+        async move {
+            queue
+                .job("test.block-writer", move |_conn| {
+                    Box::pin(async move {
+                        blocker_started.notify_one();
+                        release_blocker.notified().await;
+                        Ok(())
+                    })
+                })
+                .await
+        }
+    });
+    blocker_started.notified().await;
+
+    let request = tokio::spawn({
+        let state = state.clone();
+        let emp_id = emp_id.clone();
+        async move {
+            service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+                .await
+        }
+    });
+    while queue.stats().accepted < 2 {
+        tokio::task::yield_now().await;
+    }
+    request.abort();
+    release_blocker.notify_one();
+    blocker.await.unwrap().unwrap();
+    queue.flush().await.unwrap();
+
+    let conn = state.db.connect().unwrap();
+    let row = conn
+        .query(
+            "SELECT fe.photo_path FROM enrollments e \
+             JOIN face_enrollments fe ON fe.id=e.face_enrollment_id \
+             WHERE e.employee_id=?1",
+            params![emp_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .expect("accepted enrollment committed after caller cancellation");
+    let photo_path: String = row.get(0).unwrap();
+    assert!(state.paths.enrollments_root.join(photo_path).exists());
+
+    queue.close_and_flush().await.unwrap();
+    worker.await.unwrap().unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +675,62 @@ async fn push_status_lifecycle() {
 }
 
 #[tokio::test]
+async fn complete_push_success_rolls_back_status_when_mapping_insert_fails() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device(&state.db, &config.device_creds_key).await;
+    let enrollment =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let push_id = enrollment.device_pushes[0].id.clone();
+    service::mark_push_in_progress_queued(&state, &push_id)
+        .await
+        .unwrap();
+
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_device_mapping_insert \
+         BEFORE INSERT ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced mapping failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    service::complete_push_success(&state, &push_id, &device_id, &enrollment.face_id, &emp_id)
+        .await
+        .expect_err("mapping trigger must roll back the push success update");
+
+    let status: String = conn
+        .query(
+            "SELECT status FROM enrollment_device_pushes WHERE id=?1",
+            params![push_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(status, "in_progress");
+    let mappings: i64 = conn
+        .query("SELECT COUNT(*) FROM device_face_mappings", ())
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(mappings, 0);
+}
+
+#[tokio::test]
 async fn reset_push_to_pending_idempotent() {
     let db = common::test_db().await;
     let config = make_config();
@@ -749,6 +943,49 @@ async fn finalize_status_failed_when_no_pushes() {
         .unwrap();
     let st: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
     assert_eq!(st, "failed");
+}
+
+#[tokio::test]
+async fn finalize_enrollment_rolls_back_when_terminal_update_fails() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    seed_device(&state.db, &config.device_creds_key).await;
+    let enrollment =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    service::complete_push_failure(&state, &enrollment.device_pushes[0].id, "offline")
+        .await
+        .unwrap();
+
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_enrollment_finalize \
+         BEFORE UPDATE OF status ON enrollments \
+         BEGIN SELECT RAISE(ABORT, 'forced finalize failure'); END;",
+    )
+    .await
+    .unwrap();
+    service::finalize_enrollment(&state, &enrollment.enrollment_id)
+        .await
+        .expect_err("finalization trigger must abort the canonical transaction");
+
+    let row = conn
+        .query(
+            "SELECT status, completed_at, version FROM enrollments WHERE id=?1",
+            params![enrollment.enrollment_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "in_progress");
+    assert_eq!(row.get::<Option<i64>>(1).unwrap(), None);
+    assert_eq!(row.get::<i64>(2).unwrap(), 1);
 }
 
 // ---------------------------------------------------------------------------

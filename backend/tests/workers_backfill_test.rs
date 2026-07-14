@@ -267,6 +267,65 @@ async fn backfill_success_upserts_mapping_for_each_enrolled_employee() {
     let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
 }
 
+#[tokio::test]
+async fn backfill_mapping_failure_does_not_retry_accepted_device_side_effects() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let emp_id = seed_active_enrolled_employee(&state).await;
+    let device_id = seed_device_at(&state.db, &state.config.device_creds_key, &server.uri()).await;
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_backfill_mapping BEFORE INSERT ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced backfill mapping failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel::<BackfillRequest>();
+    let worker = BackfillWorker::new(state.clone(), shutdown.clone());
+    let handle = tokio::spawn(async move { worker.run(rx).await });
+    tx.send(BackfillRequest {
+        device_id: device_id.clone(),
+    })
+    .unwrap();
+
+    for _ in 0..100 {
+        if server
+            .received_requests()
+            .await
+            .is_some_and(|requests| requests.len() >= 2)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    server.verify().await;
+    let mappings = enrollment_service::list_mappings_for_employee(&conn, &emp_id)
+        .await
+        .unwrap();
+    assert!(
+        mappings.is_empty(),
+        "failed mapping remains recoverable by backfill replay"
+    );
+
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
 // =============================================================================
 // Failed backfill (5xx): mapping is NOT written; worker keeps running.
 // =============================================================================

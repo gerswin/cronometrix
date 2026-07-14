@@ -13,7 +13,7 @@
 mod common;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -945,10 +945,11 @@ async fn obsolete_capture_and_device_retry_routes_return_404() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn capture_from_device_404_for_unknown_device() {
+async fn capture_start_failure_leaves_no_state_or_jpeg() {
     let db = common::test_db().await;
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
     let (emp_id, _admin_id, token) = seed_full(&state.db).await;
+    let state_for_assertion = state.clone();
     let app = build_app(state);
 
     let req = Request::builder()
@@ -964,6 +965,11 @@ async fn capture_from_device_404_for_unknown_device() {
     // get_decrypted returns a service error → 404 (NotFound) or 500 — the
     // load-bearing assertion is "not 200 ACCEPTED".
     assert_ne!(r.status(), StatusCode::ACCEPTED);
+    assert!(state_for_assertion.captures.read().await.is_empty());
+    assert!(
+        !state_for_assertion.paths.captures_tmp_root.exists(),
+        "fallible device setup must happen before capture state or JPEG creation"
+    );
 }
 
 #[tokio::test]
@@ -1124,6 +1130,8 @@ async fn get_capture_returns_status_capturing() {
                 source_device_id: "dev-source".into(),
                 photo_path: None,
                 error_message: None,
+                created_at: Instant::now(),
+                terminal_at: None,
             },
         );
     }
@@ -1163,6 +1171,8 @@ async fn get_capture_returns_photo_b64_when_captured() {
                 source_device_id: "dev-source".into(),
                 photo_path: Some(path.to_string_lossy().into_owned()),
                 error_message: None,
+                created_at: Instant::now(),
+                terminal_at: Some(Instant::now()),
             },
         );
     }
@@ -1199,6 +1209,8 @@ async fn get_capture_status_error_omits_photo_b64() {
                 source_device_id: "dev-source".into(),
                 photo_path: None,
                 error_message: Some("some upstream error".into()),
+                created_at: Instant::now(),
+                terminal_at: Some(Instant::now()),
             },
         );
     }
@@ -1241,6 +1253,8 @@ fn capture_state_clone_and_debug() {
         source_device_id: "dev-source".into(),
         photo_path: Some("/tmp/x.jpg".into()),
         error_message: None,
+        created_at: Instant::now(),
+        terminal_at: None,
     };
     let cloned = cs.clone();
     let dbg = format!("{:?}", cloned);

@@ -217,6 +217,66 @@ async fn push_one_device_happy_path_success() {
         .any(|(_, did, fid)| did == &device_id && fid == &resp.face_id));
 }
 
+#[tokio::test]
+async fn mapping_persistence_failure_marks_push_failed_without_retrying_device() {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/AccessControl/UserInfo/Record"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/ISAPI/Intelligent/FDLib/FaceDataRecord"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config.clone());
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+    let device_id = seed_device_at(&state.db, &config.device_creds_key, &server.uri()).await;
+    let enrollment =
+        service::start_enrollment(&state, &user_id, &emp_id, "device", None, None, MINI_JPEG)
+            .await
+            .unwrap();
+    let conn = state.db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_pusher_mapping BEFORE INSERT ON device_face_mappings \
+         BEGIN SELECT RAISE(ABORT, 'forced pusher mapping failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    let result = push_one_device(
+        &state,
+        &enrollment.enrollment_id,
+        &enrollment.face_id,
+        &Arc::new(MINI_JPEG.to_vec()),
+        &emp_id,
+        "Test Employee",
+        &make_plain_device(&device_id, &server.uri()),
+    )
+    .await;
+    assert!(result.is_err());
+
+    let row = conn
+        .query(
+            "SELECT status, error_message FROM enrollment_device_pushes \
+             WHERE enrollment_id=?1 AND device_id=?2",
+            params![enrollment.enrollment_id, device_id],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "failed");
+    assert!(row.get::<Option<String>>(1).unwrap().is_some());
+}
+
 // =============================================================================
 // push_one_device — 5xx error path → push row "failed" + scrubbed error
 // =============================================================================
