@@ -13,7 +13,7 @@ use cronometrix_api::enrollments::models::{
     validate_captured_via, validate_enrollment_status, validate_push_status,
     CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse, CreateEnrollmentRequest,
     EnrollmentDevicePushResponse, EnrollmentListQuery, EnrollmentResponse,
-    EnrollmentSubmitResponse, RetryResponse,
+    EnrollmentSubmitResponse, FaceQualityEvidence, FaceQualityValidationError, RetryResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -51,6 +51,53 @@ fn validate_captured_via_rejects_uppercase_variants() {
     // The match is case-sensitive — "Device" must reject.
     assert!(validate_captured_via("Device").is_err());
     assert!(validate_captured_via("WEBCAM").is_err());
+}
+
+fn acceptable_face_quality() -> FaceQualityEvidence {
+    FaceQualityEvidence {
+        face_detected: true,
+        luminance_ok: true,
+        size_ok: true,
+        luminance: 120.0,
+        width: 200.0,
+        height: 200.0,
+    }
+}
+
+#[test]
+fn face_quality_parses_camel_case_json_and_accepts_current_frontend_contract() {
+    let parsed = FaceQualityEvidence::parse_json(
+        r#"{"faceDetected":true,"luminanceOk":true,"sizeOk":true,"luminance":120,"width":200,"height":200}"#,
+    )
+    .unwrap();
+    assert!(parsed.validate().is_ok());
+}
+
+#[test]
+fn face_quality_rejects_non_finite_and_contradictory_evidence() {
+    let mut evidence = acceptable_face_quality();
+    evidence.luminance = f64::NAN;
+    assert!(matches!(
+        evidence.validate(),
+        Err(FaceQualityValidationError::Invalid(_))
+    ));
+
+    let mut evidence = acceptable_face_quality();
+    evidence.width = 100.0;
+    assert!(matches!(
+        evidence.validate(),
+        Err(FaceQualityValidationError::Invalid(_))
+    ));
+}
+
+#[test]
+fn face_quality_rejects_frontend_unacceptable_decision() {
+    let mut evidence = acceptable_face_quality();
+    evidence.face_detected = false;
+    assert_eq!(
+        evidence.validate(),
+        Err(FaceQualityValidationError::Unacceptable)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +424,7 @@ fn dtos_have_debug_impls() {
             employee_id: "emp-1".into(),
             captured_via: "upload".into(),
             source_device_id: None,
-            face_quality_score: None,
+            face_quality_score: acceptable_face_quality(),
             photo_bytes: vec![0xFF, 0xD8, 0xFF],
         }
     );

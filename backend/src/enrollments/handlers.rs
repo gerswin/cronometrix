@@ -32,7 +32,8 @@ use crate::state::AppState;
 use super::image_pipeline::normalize_face_jpeg;
 use super::models::{
     CaptureFromDeviceRequest, CaptureFromDeviceResponse, CaptureResponse, EnrollmentListQuery,
-    EnrollmentResponse, EnrollmentSubmitResponse, RetryResponse,
+    EnrollmentResponse, EnrollmentSubmitResponse, FaceQualityEvidence, FaceQualityValidationError,
+    RetryResponse,
 };
 use super::pusher::{push_one_device, spawn_enrollment_pushes};
 use super::service;
@@ -72,7 +73,7 @@ pub fn new_captures_map() -> CapturesMap {
 /// Multipart enrollment handler (D-06, D-10, D-11).
 ///
 /// Drains multipart fields: employee_id, captured_via, source_device_id (opt),
-/// face_quality_score (opt), photo (JPEG bytes ≤2 MB).
+/// face_quality_score (required typed JSON), photo (JPEG bytes ≤2 MB).
 /// Validates JPEG magic bytes, runs server-side downscale in spawn_blocking,
 /// persists face_enrollments + enrollments + N push rows, fires JoinSet fan-out.
 /// Returns 202 immediately with enrollment_id and per-device push status.
@@ -85,7 +86,7 @@ pub async fn create_enrollment(
     let mut employee_id: Option<String> = None;
     let mut captured_via: Option<String> = None;
     let mut source_device_id: Option<String> = None;
-    let mut face_quality_score: Option<String> = None;
+    let mut face_quality_score: Option<FaceQualityEvidence> = None;
     let mut photo_bytes: Option<Vec<u8>> = None;
 
     while let Some(field) = multipart
@@ -124,9 +125,18 @@ pub async fn create_enrollment(
                     code: "VALIDATION_ERROR",
                     message: e.to_string(),
                 })?;
-                if !val.is_empty() {
-                    face_quality_score = Some(val);
-                }
+                face_quality_score =
+                    Some(FaceQualityEvidence::parse_json(&val).map_err(|error| {
+                        AppError::Validation {
+                            code: "FACE_QUALITY_INVALID",
+                            message: match error {
+                                FaceQualityValidationError::Invalid(message) => message.to_string(),
+                                FaceQualityValidationError::Unacceptable => {
+                                    "face quality evidence is unacceptable".to_string()
+                                }
+                            },
+                        }
+                    })?);
             }
             "photo" => {
                 // Size guard: reject >2MB before reading fully
@@ -180,6 +190,23 @@ pub async fn create_enrollment(
         message: e.to_string(),
     })?;
 
+    let face_quality_score = face_quality_score.ok_or_else(|| AppError::Validation {
+        code: "FACE_QUALITY_REQUIRED",
+        message: "face_quality_score is required".into(),
+    })?;
+    face_quality_score.validate().map_err(|error| match error {
+        FaceQualityValidationError::Invalid(message) => AppError::Validation {
+            code: "FACE_QUALITY_INVALID",
+            message: message.to_string(),
+        },
+        FaceQualityValidationError::Unacceptable => AppError::Validation {
+            code: "FACE_QUALITY_UNACCEPTABLE",
+            message: "face quality evidence is unacceptable".into(),
+        },
+    })?;
+    let face_quality_json = serde_json::to_string(&face_quality_score)
+        .map_err(|error| AppError::Internal(error.into()))?;
+
     // Normalise JPEG in a blocking thread (CPU-bound decode/resize).
     let bytes_for_blocking = photo_bytes.clone();
     let normalized = tokio::task::spawn_blocking(move || normalize_face_jpeg(&bytes_for_blocking))
@@ -197,7 +224,7 @@ pub async fn create_enrollment(
         &employee_id,
         &captured_via,
         source_device_id.as_deref(),
-        face_quality_score.as_deref(),
+        Some(&face_quality_json),
         &normalized,
     )
     .await?;

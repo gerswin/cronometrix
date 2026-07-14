@@ -39,6 +39,14 @@ const MINI_JPEG: &[u8] = &[
     0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
     0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
 ];
+const ACCEPTABLE_FACE_QUALITY: &[u8] = br#"{
+  "faceDetected": true,
+  "luminanceOk": true,
+  "sizeOk": true,
+  "luminance": 120,
+  "width": 200,
+  "height": 200
+}"#;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -528,6 +536,96 @@ fn real_tiny_jpeg() -> Vec<u8> {
     buf.into_inner()
 }
 
+async fn assert_face_quality_rejected(quality: Option<&[u8]>, expected_code: &str) {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let (emp_id, _admin_id, token) = seed_full(&state.db).await;
+    let database = state.db.clone();
+    let enrollments_root = state.paths.enrollments_root.clone();
+    let app = build_app(state);
+    let jpeg = real_tiny_jpeg();
+    let mut fields = vec![
+        ("employee_id", emp_id.as_bytes(), None),
+        ("captured_via", b"upload".as_slice(), None),
+    ];
+    if let Some(value) = quality {
+        fields.push(("face_quality_score", value, None));
+    }
+    fields.push(("photo", jpeg.as_slice(), Some("image/jpeg")));
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/enrollments")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={}", BOUNDARY),
+        )
+        .body(Body::from(multipart_body(&fields)))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_to_json(response.into_body()).await;
+    assert_eq!(json["error"]["code"], expected_code);
+
+    let conn = database.connect().unwrap();
+    let mut rows = conn
+        .query("SELECT COUNT(*) FROM face_enrollments", ())
+        .await
+        .unwrap();
+    let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(
+        count, 0,
+        "invalid quality must not mutate enrollment tables"
+    );
+    drop(rows);
+    drop(conn);
+    if tokio::fs::try_exists(&enrollments_root).await.unwrap() {
+        let mut entries = tokio::fs::read_dir(&enrollments_root).await.unwrap();
+        assert!(
+            entries.next_entry().await.unwrap().is_none(),
+            "invalid quality must not persist an enrollment photo"
+        );
+    }
+}
+
+#[tokio::test]
+async fn create_enrollment_requires_face_quality_evidence() {
+    assert_face_quality_rejected(None, "FACE_QUALITY_REQUIRED").await;
+}
+
+#[tokio::test]
+async fn create_enrollment_rejects_malformed_face_quality_json() {
+    assert_face_quality_rejected(Some(b"not-json"), "FACE_QUALITY_INVALID").await;
+}
+
+#[tokio::test]
+async fn create_enrollment_rejects_non_finite_face_quality_numbers() {
+    let quality = br#"{
+      "faceDetected":true,"luminanceOk":true,"sizeOk":true,
+      "luminance":1e999,"width":200,"height":200
+    }"#;
+    assert_face_quality_rejected(Some(quality), "FACE_QUALITY_INVALID").await;
+}
+
+#[tokio::test]
+async fn create_enrollment_rejects_out_of_range_face_quality_numbers() {
+    let quality = br#"{
+      "faceDetected":true,"luminanceOk":true,"sizeOk":true,
+      "luminance":300,"width":200,"height":200
+    }"#;
+    assert_face_quality_rejected(Some(quality), "FACE_QUALITY_INVALID").await;
+}
+
+#[tokio::test]
+async fn create_enrollment_rejects_unacceptable_face_quality_decision() {
+    let quality = br#"{
+      "faceDetected":false,"luminanceOk":true,"sizeOk":true,
+      "luminance":120,"width":200,"height":200
+    }"#;
+    assert_face_quality_rejected(Some(quality), "FACE_QUALITY_UNACCEPTABLE").await;
+}
+
 #[tokio::test]
 async fn create_enrollment_happy_path_returns_202() {
     let db = common::test_db().await;
@@ -539,6 +637,7 @@ async fn create_enrollment_happy_path_returns_202() {
     let body = multipart_body(&[
         ("employee_id", emp_id.as_bytes(), None),
         ("captured_via", b"upload", None),
+        ("face_quality_score", ACCEPTABLE_FACE_QUALITY, None),
         ("photo", &jpeg, Some("image/jpeg")),
     ]);
     let req = Request::builder()
@@ -569,6 +668,7 @@ async fn create_enrollment_rejects_unparseable_jpeg() {
     let body = multipart_body(&[
         ("employee_id", emp_id.as_bytes(), None),
         ("captured_via", b"upload", None),
+        ("face_quality_score", ACCEPTABLE_FACE_QUALITY, None),
         // MINI_JPEG passes magic but is not actually decodable.
         ("photo", MINI_JPEG, Some("image/jpeg")),
     ]);
@@ -600,7 +700,7 @@ async fn create_enrollment_with_optional_fields_succeeds() {
         ("employee_id", emp_id.as_bytes(), None),
         ("captured_via", b"upload", None),
         ("source_device_id", b"", None), // Empty value should be ignored.
-        ("face_quality_score", b"0.95", None),
+        ("face_quality_score", ACCEPTABLE_FACE_QUALITY, None),
         ("unknown_field", b"discarded", None), // Discarded by the catch-all arm.
         ("photo", &jpeg, Some("image/jpeg")),
     ]);
