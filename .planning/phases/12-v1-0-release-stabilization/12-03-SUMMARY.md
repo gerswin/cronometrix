@@ -8,15 +8,15 @@ The bounded database writer, atomic evidence-backed mutations, immutable audit
 history, queue-only production boundary, and the required Linux/arm64 load
 profiles are proven for this checkpoint. This is not an unqualified v1.0
 release verdict: the unchanged project-wide backend coverage thresholds remain
-below 90% lines / 85% branches and the final release candidate still belongs
-to Plan 12-05.
+below 90% lines / 85% branches, the frontend remains below its global gates,
+and the final release candidate still belongs to Plan 12-05.
 
 ## Identity
 
 - Plan: `12-03`
 - Plan base SHA: `c3fe7935a8ccccc0b15826bcb82d413d22e83188`
-- Tested implementation SHA: `e5b45ae1ce050b1bb3b8eaad24e4d023d9c7f5fc`
-- Implementation commits: `70c952b` (`test(db): prove serialized writes under concurrent load`) and `e5b45ae` (`fix(db): wait out transient writer locks`)
+- Tested implementation SHA: `36d6bc354f5bd31e7f6cc91237228c823ba4578c`
+- Implementation commits: `70c952b` (`test(db): prove serialized writes under concurrent load`), `e5b45ae` (`fix(db): wait out transient writer locks`), and `36d6bc3` (`fix(enrollments): retry confirmed device rejections`)
 - Official load run: `20260714T193007Z`
 - Official load platform: Linux/arm64 in an isolated Docker container
 - Local verification platform: macOS arm64
@@ -72,8 +72,11 @@ queue/transaction ownership boundary:
 - enrollment, backfill, purge, capture cleanup, and device-operation recovery
   checkpoints, including ambiguous external-device side effects;
 - authentication refresh rotation, CRUD mutations, supervisor state writes,
-  E2E reset writes, and the remaining background mutations migrated by this
-  plan.
+  and the remaining background mutations migrated by this plan.
+
+The capability-gated E2E reset remains an explicit checker allowlist entry and
+uses direct test-infrastructure writes; it is not represented as a production
+queue/transaction domain. It preserves `audit_log`.
 
 Filesystem roots are injected through `state.paths`. Evidence publication is
 same-directory, no-clobber, durable, and compensating. Cleanup verifies inode
@@ -141,8 +144,8 @@ the project-wide hard gate and exited 2:
 
 | Scope | Result | Threshold | Status |
 |---|---:|---:|---|
-| Backend lines | 11,021 / 12,797 = 86.12% | 90% | FAIL — inherited release debt |
-| Backend branches | 801 / 1,086 = 73.76% | 85% | FAIL — inherited release debt |
+| Backend lines | 11,028 / 12,802 = 86.14% | 90% | FAIL — inherited release debt |
+| Backend branches | 805 / 1,090 = 73.85% | 85% | FAIL — inherited release debt |
 | 12-03 owned files | 31 backend / 0 frontend | 70% lines / 60% branches per file | PASS |
 
 Exact scoped checker output:
@@ -175,6 +178,8 @@ reclassified as a pass by the scoped checker.
 | Isolated department regression repetitions | 0, 10/10 passed |
 | Full local suite retry | 0, all test binaries passed |
 | Write-queue integration suite | 0, 19/19 passed |
+| Enrollment pusher + ISAPI client suites | 0, 19/19 + 14/14 passed |
+| Enrollment retry Playwright regression | 0, 5/5 setup + scenario passed |
 | Linux/arm64 `cargo test -j1 --all-targets --all-features` | 0, all 59 result blocks passed |
 | `make coverage-backend` | 2, 909/909 passed; global floor failed |
 | 12-03 owned coverage checker | 0, 31/31 backend files passed |
@@ -183,11 +188,12 @@ reclassified as a pass by the scoped checker.
 | Audit immutability | 0, update/delete rejected and evidence retained |
 | `git diff --check` / staged diff check after LF normalization | 0 |
 
-The tested implementation SHA was created only after the remediated official
-evidence and gates above. The initial implementation commit also changed CSV
-writers from CRLF to LF. The final fix commit contains the writer-connection
-remediation, its regression, and evidence produced from that exact runtime
-source.
+The tested implementation SHA was created after the remediated official load,
+the writer-connection fix, and the CI-discovered enrollment retry correction.
+The load runtime is unchanged by the latter. The initial implementation commit
+also changed CSV writers from CRLF to LF; the writer fix commit contains the
+connection-local PRAGMAs, its regression, and evidence produced from that exact
+runtime source.
 
 ## Diagnostics and remaining risks
 
@@ -229,10 +235,26 @@ smokes passed (3/3), each with zero locks and clean shutdown. The complete
 60-second official matrix was then rerun and also recorded zero locks. This
 finding is closed for 12-03 rather than deferred or normalized away.
 
+### Confirmed device rejection retry
+
+The first live PR E2E run exposed a 409 on the canonical enrollment retry. The
+checkpoint code had classified every ISAPI error as an ambiguous device
+outcome, including an explicit HTTP 503 response. That contradicted the
+idempotent Hikvision retry contract and left a `manual` checkpoint after a
+confirmed rejection.
+
+ISAPI non-success responses now carry a typed `DeviceResponseError`. Enrollment
+dispatch clears the checkpoint and records a terminal failed push only for
+that confirmed HTTP class; transport failures and timeouts remain fail-closed
+for manual reconciliation. The focused Rust suites and the previously failing
+Playwright enrollment scenario pass with this distinction.
+
 ### Release-close items
 
-- Plan 12-05 must lift unchanged backend project coverage to 90% lines / 85%
-  branches and run the final authoritative Linux candidate.
+- Plan 12-05 must lift backend project coverage to 90% lines / 85% branches,
+  lift frontend coverage from 79.58% statements / 73.82% branches / 75.68%
+  functions / 81.12% lines to its 90% / 85% / 90% / 90% gates, and run the
+  final authoritative Linux candidate.
 - The deferred live CI validation still requires positive Actions/artifact
   verification, a deliberate negative coverage PR, and required branch
   protection checks.
