@@ -242,9 +242,26 @@ async fn bootstrap_spawns_one_task_per_active_device() {
 }
 
 #[tokio::test]
-async fn stop_for_an_untracked_device_is_idempotent() {
+async fn duplicate_start_does_not_spawn_a_second_device_task() {
     let db = common::test_db().await;
     let config = make_config();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test device listener");
+    let port = listener.local_addr().unwrap().port() as i64;
+    {
+        let conn = db.connect().unwrap();
+        let encrypted = crypto::encrypt_password("secret", &config.device_creds_key).unwrap();
+        conn.execute(
+            "INSERT INTO devices (id, name, ip, port, scheme, username, encrypted_password, \
+             direction, allow_insecure_tls, connection_state, status, version, created_at, updated_at) \
+             VALUES ('duplicate-device', 'Duplicate Device', '127.0.0.1', ?1, 'http', 'admin', ?2, \
+             'entry', 0, 'offline', 'active', 1, unixepoch(), unixepoch())",
+            params![port, encrypted],
+        )
+        .await
+        .unwrap();
+    }
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
     let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     state.lifecycle_tx = Some(lifecycle_tx.clone());
@@ -254,10 +271,24 @@ async fn stop_for_an_untracked_device_is_idempotent() {
         supervisor.run(lifecycle_rx).await;
     });
 
+    // Bootstrap opens exactly one long-lived alertStream connection. Keep it
+    // pending so a second accepted TCP connection would prove a duplicate
+    // device task was spawned.
+    let (_first_connection, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .expect("bootstrap must connect")
+        .expect("accept bootstrap connection");
+
     lifecycle_tx
-        .send(DeviceLifecycleEvent::Stop("missing-device".to_string()))
+        .send(DeviceLifecycleEvent::Start("duplicate-device".to_string()))
         .expect("supervisor channel open");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), listener.accept())
+            .await
+            .is_err(),
+        "duplicate Start must not create a second TCP connection"
+    );
+
     shutdown.cancel();
 
     let result = tokio::time::timeout(Duration::from_secs(5), handle).await;

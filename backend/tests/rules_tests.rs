@@ -219,7 +219,10 @@ async fn rules_reject_invalid_and_stale_updates_and_allow_noop() {
             json!({ "late_arrival_tolerance_min": 61, "version": 1 }).to_string(),
         ))
         .unwrap();
-    assert_eq!(app.clone().oneshot(invalid).await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        app.clone().oneshot(invalid).await.unwrap().status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     let noop = Request::builder()
         .method(Method::PATCH)
@@ -241,7 +244,10 @@ async fn rules_reject_invalid_and_stale_updates_and_allow_noop() {
             json!({ "bonus_minutes": 5, "version": 0 }).to_string(),
         ))
         .unwrap();
-    assert_eq!(app.oneshot(stale).await.unwrap().status(), StatusCode::CONFLICT);
+    assert_eq!(
+        app.oneshot(stale).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
 }
 
 #[tokio::test]

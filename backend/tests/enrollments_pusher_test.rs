@@ -23,7 +23,8 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 
 use cronometrix_api::config::Config;
 use cronometrix_api::devices::crypto;
@@ -44,6 +45,30 @@ const MINI_JPEG: &[u8] = &[
     0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
     0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
 ];
+
+#[derive(Clone, Default)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+struct GuardedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for GuardedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+    type Writer = GuardedWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        GuardedWriter(self.0.clone())
+    }
+}
 
 fn make_config() -> Arc<Config> {
     Arc::new(Config {
@@ -957,11 +982,19 @@ async fn cancelled_driver_marks_the_push_failed_without_calling_the_device() {
         .contains("stopped before device call"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn driver_records_push_and_finalize_errors_for_missing_database_rows() {
     let db = common::test_db().await;
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
     let missing_device = make_plain_device("missing-device", "http://127.0.0.1:1");
+    let writer = SharedWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .without_time()
+        .with_writer(writer.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
 
     spawn_enrollment_pushes(
         state.clone(),
@@ -974,7 +1007,29 @@ async fn driver_records_push_and_finalize_errors_for_missing_database_rows() {
     )
     .await
     .unwrap();
+    let logs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let logs = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+            if logs.contains("push task returned error")
+                && logs.contains("push driver: finalize failed")
+            {
+                break logs;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("driver must report both failures before shutdown");
     state.enrollment_tasks.stop_and_join().await.unwrap();
+
+    assert!(
+        logs.contains("push task returned error"),
+        "missing push row must be reported by the driver; logs: {logs}"
+    );
+    assert!(
+        logs.contains("push driver: finalize failed"),
+        "missing enrollment row must make finalization report an error; logs: {logs}"
+    );
 }
 
 #[tokio::test]
