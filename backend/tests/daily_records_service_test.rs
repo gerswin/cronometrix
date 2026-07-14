@@ -444,6 +444,67 @@ async fn recompute_for_day_silently_skips_unknown_employee() {
 }
 
 #[tokio::test]
+async fn recompute_anomaly_insert_failure_rolls_back_daily_record_and_anomalies() {
+    let db = common::test_db().await;
+    ensure_global_rules(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "DRollback", "day", false, 480, "09:00", "17:00")
+            .await;
+    let employee = seed_employee(&db, &dept, "E-ROLLBACK", "active").await;
+    let record = seed_dr_row(&db, &dept, &employee, "2026-04-20").await;
+    let conn = db.connect().unwrap();
+    conn.execute(
+        "UPDATE daily_records SET work_minutes = 777 WHERE id = ?1",
+        params![record.clone()],
+    )
+    .await
+    .unwrap();
+    conn.execute(
+        "INSERT INTO daily_record_anomalies (id, daily_record_id, code, detail, created_at) \
+         VALUES (?1, ?2, 'MISSING_EXIT', NULL, unixepoch())",
+        params![Uuid::new_v4().to_string(), record.clone()],
+    )
+    .await
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER abort_daily_anomaly_insert \
+         BEFORE INSERT ON daily_record_anomalies \
+         BEGIN SELECT RAISE(ABORT, 'forced anomaly insert failure'); END;",
+    )
+    .await
+    .unwrap();
+
+    let (state, _tmp) = make_state(db);
+    let result = dr_service::recompute_for_day(
+        &state,
+        &employee,
+        NaiveDate::from_ymd_opt(2026, 4, 20).unwrap(),
+    )
+    .await;
+    assert!(result.is_err(), "forced anomaly insert must fail recompute");
+
+    let conn = state.db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT work_minutes FROM daily_records WHERE id = ?1",
+            params![record.clone()],
+        )
+        .await
+        .unwrap();
+    let work_minutes: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(
+        work_minutes, 777,
+        "daily-record upsert must roll back with anomaly replacement"
+    );
+    drop(rows);
+    assert_eq!(
+        anomaly_codes_for(&state.db, &record).await,
+        vec!["MISSING_EXIT"],
+        "delete and failed insert must roll back as one transaction"
+    );
+}
+
+#[tokio::test]
 async fn recompute_for_day_with_active_leave_overlay_zeros_work_minutes() {
     let db = common::test_db().await;
     ensure_global_rules(&db).await;

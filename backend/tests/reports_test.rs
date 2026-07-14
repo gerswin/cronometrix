@@ -146,6 +146,22 @@ async fn count_export_audit(db: &libsql::Database, actor_id: Option<&str>) -> i6
     row.get::<i64>(0).unwrap()
 }
 
+async fn latest_export_audit(db: &libsql::Database) -> (String, Value) {
+    let conn = db.connect().expect("connect");
+    let mut rows = conn
+        .query(
+            "SELECT actor_id, new_data FROM audit_log \
+             WHERE operation = 'REPORT_EXPORT' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().expect("REPORT_EXPORT audit row");
+    let actor: String = row.get(0).unwrap();
+    let payload: String = row.get(1).unwrap();
+    (actor, serde_json::from_str(&payload).unwrap())
+}
+
 // -----------------------------------------------------------------------------
 // Tests — period presets
 // -----------------------------------------------------------------------------
@@ -889,6 +905,15 @@ async fn audit_entry_on_export() {
     assert_eq!(status, StatusCode::OK);
     let after = count_export_audit(&state_db, Some(&admin)).await;
     assert_eq!(after - before, 1, "exactly one REPORT_EXPORT row written");
+    let (actor, audit) = latest_export_audit(&state_db).await;
+    assert_eq!(
+        actor, admin,
+        "audit actor must come from the authenticated JWT"
+    );
+    assert_eq!(audit["format"], "json");
+    assert_eq!(audit["period_type"], "monthly");
+    assert_eq!(audit["from_date"], "2026-04-01");
+    assert_eq!(audit["to_date"], "2026-04-30");
 }
 
 #[tokio::test]
@@ -915,6 +940,41 @@ async fn no_audit_on_failure() {
     assert!(status.is_client_error(), "should reject, got {}", status);
     let after = count_export_audit(&state_db, None).await;
     assert_eq!(after, before, "no audit row on failure");
+}
+
+#[tokio::test]
+async fn unavailable_write_queue_returns_503_without_json_export_or_audit() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+    let (state, _tmp) = make_state(db);
+    let state_db = state.db.clone();
+    state
+        .db_write
+        .close_and_flush()
+        .await
+        .expect("close write queue");
+    let app = build_test_app(state);
+
+    let before = count_export_audit(&state_db, None).await;
+    let (status, body) = post_report(
+        &app,
+        &token,
+        json!({
+            "period_type": "monthly",
+            "from_date": "2026-04-01",
+            "to_date": "2026-04-30",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"]["code"], "DB_WRITE_QUEUE_UNAVAILABLE");
+    assert!(
+        body.get("rows").is_none(),
+        "must not deliver report payload"
+    );
+    assert_eq!(count_export_audit(&state_db, None).await, before);
 }
 
 // -----------------------------------------------------------------------------

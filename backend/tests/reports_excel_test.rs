@@ -155,6 +155,23 @@ async fn count_export_audit_with_format(db: &libsql::Database, format_str: &str)
     row.get::<i64>(0).unwrap()
 }
 
+async fn latest_export_audit(db: &libsql::Database, format_str: &str) -> (String, Value) {
+    let conn = db.connect().expect("connect");
+    let mut rows = conn
+        .query(
+            "SELECT actor_id, new_data FROM audit_log WHERE operation = 'REPORT_EXPORT' \
+             AND json_extract(new_data, '$.format') = ?1 \
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            libsql::params![format_str.to_string()],
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().expect("REPORT_EXPORT audit row");
+    let actor: String = row.get(0).unwrap();
+    let payload: String = row.get(1).unwrap();
+    (actor, serde_json::from_str(&payload).unwrap())
+}
+
 // -----------------------------------------------------------------------------
 // 1. Response headers
 // -----------------------------------------------------------------------------
@@ -613,6 +630,118 @@ async fn audit_entry_on_excel_export() {
         after - before,
         1,
         "expected exactly one REPORT_EXPORT row with format='excel'"
+    );
+    let (actor, audit) = latest_export_audit(&state_db, "excel").await;
+    assert_eq!(
+        actor, admin,
+        "audit actor must come from the authenticated JWT"
+    );
+    assert_eq!(audit["format"], "excel");
+    assert_eq!(audit["period_type"], "monthly");
+    assert_eq!(audit["from_date"], "2026-04-01");
+    assert_eq!(audit["to_date"], "2026-04-30");
+}
+
+#[tokio::test]
+async fn workbook_build_failure_does_not_audit_or_deliver_xlsx() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+    let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
+    let employee = seed_employee(&db, "E-LONG", "Temporary", &dept, "Dev").await;
+    seed_daily_record(
+        &db,
+        &employee,
+        &dept,
+        "2026-04-15",
+        "day",
+        480,
+        0,
+        0,
+        0,
+        None,
+    )
+    .await;
+    db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET name = ?1 WHERE id = ?2",
+            libsql::params!["X".repeat(32_768), employee],
+        )
+        .await
+        .unwrap();
+
+    let (state, _tmp) = make_state(db);
+    let state_db = state.db.clone();
+    let app = build_test_app(state);
+    let before = count_export_audit_with_format(&state_db, "excel").await;
+    let (status, headers, body) = post_excel(
+        &app,
+        &token,
+        json!({
+            "period_type": "monthly",
+            "from_date": "2026-04-01",
+            "to_date": "2026-04-30",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_ne!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    );
+    assert!(
+        serde_json::from_slice::<Value>(&body).is_ok(),
+        "failure body must be the structured JSON error, not workbook bytes"
+    );
+    assert_eq!(
+        count_export_audit_with_format(&state_db, "excel").await,
+        before,
+        "failed workbook build must not claim an export"
+    );
+}
+
+#[tokio::test]
+async fn unavailable_write_queue_returns_503_without_excel_or_audit() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+    let (state, _tmp) = make_state(db);
+    let state_db = state.db.clone();
+    state
+        .db_write
+        .close_and_flush()
+        .await
+        .expect("close write queue");
+    let app = build_test_app(state);
+    let before = count_export_audit_with_format(&state_db, "excel").await;
+
+    let (status, headers, body) = post_excel(
+        &app,
+        &token,
+        json!({
+            "period_type": "monthly",
+            "from_date": "2026-04-01",
+            "to_date": "2026-04-30",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_ne!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    );
+    let error: Value = serde_json::from_slice(&body).expect("structured error body");
+    assert_eq!(error["error"]["code"], "DB_WRITE_QUEUE_UNAVAILABLE");
+    assert_eq!(
+        count_export_audit_with_format(&state_db, "excel").await,
+        before
     );
 }
 
