@@ -69,6 +69,9 @@ async fn main() -> anyhow::Result<()> {
     let (event_tx, _) = broadcast::channel::<AttendanceEventSSEPayload>(256);
 
     let shutdown = CancellationToken::new();
+    // Recompute remains alive after producer cancellation so accepted database
+    // callbacks can publish their final work before its own drain begins.
+    let recompute_shutdown = CancellationToken::new();
 
     // Phase 6: license gate. load_and_validate_license is fail-closed —
     // if file missing, signature invalid, or fingerprint mismatched, the
@@ -153,7 +156,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Start the Phase 3 recompute worker (mpsc + 500ms debounce + HashSet dedup).
-    let recompute_worker = recompute::worker::RecomputeWorker::new(state.clone(), shutdown.clone());
+    let recompute_worker =
+        recompute::worker::RecomputeWorker::new(state.clone(), recompute_shutdown.clone());
     let recompute_handle = tokio::spawn(async move {
         recompute_worker.run(recompute_rx).await;
     });
@@ -447,22 +451,21 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
 
-    // Await supervisor + watchdog shutdown so all child reqwest streams drain
-    // before process exit. Also drain the Phase 3 recompute worker, the
-    // nightly reconcile task, and Phase 7 workers so their last ops commit.
+    // Stop every producer before the two-stage writer/recompute drain.
     supervisor_handle.await?;
     watchdog_handle.await?;
-    recompute_handle.await?;
     nightly_handle.await?;
     renewal_handle.await?;
     purge_handle.await?;
     backfill_handle.await?;
 
-    // Producers are stopped before admission closes. The explicit shutdown
-    // command sits behind every accepted FIFO write and terminates the worker
-    // only after the queue has drained.
-    state.db_write.close_and_flush().await?;
-    db_write_handle.await??;
+    recompute::worker::shutdown_after_producers(
+        state.db_write.clone(),
+        recompute_shutdown,
+        recompute_handle,
+        db_write_handle,
+    )
+    .await?;
     tracing::info!("shutdown complete");
 
     Ok(())

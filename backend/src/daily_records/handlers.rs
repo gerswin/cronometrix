@@ -269,10 +269,18 @@ pub async fn create_override(
                             recompute_tx,
                             chrono::NaiveDate::parse_from_str(&anchor_date, "%Y-%m-%d"),
                         ) {
-                            let _ = sender.send(crate::recompute::RecomputeRequest {
-                                employee_id,
-                                anchor_date,
-                            });
+                            if sender
+                                .send(crate::recompute::RecomputeRequest::Day {
+                                    employee_id,
+                                    anchor_date,
+                                })
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    operation = "daily-records.create-override",
+                                    "post-commit recompute unavailable; identifiers omitted"
+                                );
+                            }
                         }
                     });
                     Ok(response)

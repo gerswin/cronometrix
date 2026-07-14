@@ -23,6 +23,7 @@ use cronometrix_api::auth;
 use cronometrix_api::config::Config;
 use cronometrix_api::daily_records::service as dr_service;
 use cronometrix_api::leaves;
+use cronometrix_api::recompute::RecomputeRequest;
 use cronometrix_api::state::AppState;
 use http_body_util::BodyExt;
 use libsql::params;
@@ -619,11 +620,66 @@ async fn cancelled_request_after_leave_job_admission_keeps_committed_evidence() 
     let recompute = recompute_rx
         .try_recv()
         .expect("committed leave must publish recompute after request cancellation");
-    assert_eq!(recompute.employee_id, emp);
-    assert_eq!(
-        recompute.anchor_date,
-        chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap()
-    );
+    assert!(matches!(
+        recompute,
+        RecomputeRequest::Range {
+            employee_id,
+            from_date,
+            to_date,
+        } if employee_id == emp
+            && from_date == chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap()
+            && to_date == chrono::NaiveDate::from_ymd_opt(2026, 5, 3).unwrap()
+    ));
+}
+
+#[tokio::test]
+async fn extreme_leave_range_publishes_one_bounded_recompute_unit() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept = create_test_department_with_shift(
+        &db,
+        "D-extreme-range",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+    let employee_id = seed_employee(&db, &dept, "E-EXTREME-RANGE").await;
+    let (mut state, _tmp) = make_state(db);
+    let (recompute_tx, mut recompute_rx) = tokio::sync::mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx);
+
+    leaves::service::create_leave_queued(
+        &state,
+        &admin,
+        leaves::models::CreateLeaveRequest {
+            employee_id: employee_id.clone(),
+            from_date: "0001-01-01".into(),
+            to_date: "9999-12-31".into(),
+            leave_type: "manual".into(),
+            justification: "bounded recompute publication".into(),
+        },
+        None,
+    )
+    .await
+    .expect("domain accepts the existing unrestricted leave range contract");
+
+    assert!(matches!(
+        recompute_rx.try_recv().expect("one recompute unit"),
+        RecomputeRequest::Range {
+            employee_id: actual_employee,
+            from_date,
+            to_date,
+        } if actual_employee == employee_id
+            && from_date == NaiveDate::from_ymd_opt(1, 1, 1).unwrap()
+            && to_date == NaiveDate::from_ymd_opt(9999, 12, 31).unwrap()
+    ));
+    assert!(matches!(
+        recompute_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]

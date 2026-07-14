@@ -224,7 +224,7 @@ pub async fn persist_attendance_event_queued(
     let recompute_request = event.employee_id.as_ref().and_then(|employee_id| {
         Utc.timestamp_opt(event.captured_at, 0)
             .single()
-            .map(|captured_at| RecomputeRequest {
+            .map(|captured_at| RecomputeRequest::Day {
                 employee_id: employee_id.clone(),
                 anchor_date: captured_at
                     .with_timezone(&state.config.timezone)
@@ -264,7 +264,12 @@ pub async fn persist_attendance_event_queued(
                             if let (Some(sender), Some(request)) =
                                 (recompute_tx, recompute_request)
                             {
-                                let _ = sender.send(request);
+                                if sender.send(request).is_err() {
+                                    tracing::warn!(
+                                        operation = "events.ingest-attendance",
+                                        "post-commit recompute unavailable; identifiers omitted"
+                                    );
+                                }
                             }
                         });
                     }

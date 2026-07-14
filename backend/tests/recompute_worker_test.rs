@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use cronometrix_api::config::Config;
+use cronometrix_api::db::write_queue::{run_write_worker, DbWriteQueue, DbWriteQueueConfig};
 use cronometrix_api::recompute::{worker::RecomputeWorker, RecomputeRequest};
 use libsql::params;
 use tokio::sync::mpsc;
@@ -112,6 +113,87 @@ async fn worker_exits_when_channel_drops() {
     assert!(r.is_ok(), "worker must exit when channel closes");
 }
 
+#[tokio::test]
+async fn shutdown_drains_accepted_callback_recompute_before_channels_close() {
+    let db = Arc::new(common::test_db().await);
+    let (mut state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let employee_id = seed_full(&db).await;
+    let anchor_date = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+
+    let (db_write, db_write_rx) = DbWriteQueue::channel(DbWriteQueueConfig::default());
+    state.db_write = db_write.clone();
+    let db_write_handle = tokio::spawn(run_write_worker(db, db_write_rx));
+    let (recompute_tx, recompute_rx) = mpsc::unbounded_channel();
+    state.recompute_tx = Some(recompute_tx.clone());
+    let recompute_shutdown = CancellationToken::new();
+    let recompute_worker = RecomputeWorker::new(state.clone(), recompute_shutdown.clone());
+    let recompute_handle = tokio::spawn(recompute_worker.run(recompute_rx));
+
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let callback_sender = recompute_tx.clone();
+    let callback_employee_id = employee_id.clone();
+    let producer_queue = db_write.clone();
+    let producer = tokio::spawn(async move {
+        producer_queue
+            .transact("shutdown.accepted-callback", move |tx| {
+                tx.after_commit(move || {
+                    callback_sender
+                        .send(RecomputeRequest::Day {
+                            employee_id: callback_employee_id,
+                            anchor_date,
+                        })
+                        .expect("recompute receiver must remain alive through writer drain");
+                });
+                Box::pin(async move {
+                    release_rx.await.expect("release accepted transaction");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let shutdown = tokio::spawn(
+        cronometrix_api::recompute::worker::shutdown_after_producers(
+            db_write.clone(),
+            recompute_shutdown,
+            recompute_handle,
+            db_write_handle,
+        ),
+    );
+    release_tx.send(()).unwrap();
+    producer.await.unwrap().unwrap();
+    shutdown.await.unwrap().unwrap();
+
+    let conn = state.db.connect().unwrap();
+    let count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM daily_records WHERE employee_id = ?1 AND anchor_date = ?2",
+            params![employee_id, anchor_date.to_string()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "callback recompute must finish before writer closes"
+    );
+    assert!(recompute_tx.is_closed(), "recompute closes after draining");
+    assert!(matches!(
+        db_write
+            .statement("shutdown.must-reject", "SELECT 1", Vec::new())
+            .await,
+        Err(cronometrix_api::db::write_queue::DbWriteError::Closed)
+    ));
+}
+
 // =============================================================================
 // Happy path — request triggers recompute_for_day
 // =============================================================================
@@ -129,7 +211,7 @@ async fn worker_invokes_recompute_for_day_after_debounce() {
     let handle = tokio::spawn(async move { worker.run(rx).await });
 
     // Send the request.
-    tx.send(RecomputeRequest {
+    tx.send(RecomputeRequest::Day {
         employee_id: emp_id.clone(),
         anchor_date: anchor,
     })
@@ -161,6 +243,57 @@ async fn worker_invokes_recompute_for_day_after_debounce() {
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
 
+#[tokio::test]
+async fn worker_expands_range_outside_writer_and_recomputes_each_day() {
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+    let employee_id = seed_full(&state.db).await;
+    let from_date = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+    let to_date = NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+    let shutdown = CancellationToken::new();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let worker = RecomputeWorker::new(state.clone(), shutdown.clone());
+    let handle = tokio::spawn(worker.run(rx));
+
+    tx.send(RecomputeRequest::Range {
+        employee_id: employee_id.clone(),
+        from_date,
+        to_date,
+    })
+    .unwrap();
+
+    let mut count = 0_i64;
+    for _ in 0..120 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let conn = state.db.connect().unwrap();
+        count = conn
+            .query(
+                "SELECT COUNT(*) FROM daily_records WHERE employee_id = ?1 \
+                 AND anchor_date BETWEEN ?2 AND ?3",
+                params![
+                    employee_id.clone(),
+                    from_date.to_string(),
+                    to_date.to_string()
+                ],
+            )
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        if count == 3 {
+            break;
+        }
+    }
+
+    assert_eq!(count, 3);
+    shutdown.cancel();
+    handle.await.unwrap();
+}
+
 // =============================================================================
 // Dedup: same key sent twice → single recompute
 // =============================================================================
@@ -179,7 +312,7 @@ async fn worker_dedupes_repeated_requests_within_debounce_window() {
 
     // Send 5 identical requests rapidly.
     for _ in 0..5 {
-        tx.send(RecomputeRequest {
+        tx.send(RecomputeRequest::Day {
             employee_id: emp_id.clone(),
             anchor_date: anchor,
         })
@@ -238,7 +371,7 @@ async fn worker_swallows_per_request_errors() {
     // No employee seeded → recompute_for_day silently early-returns Ok per
     // service.rs ("employee inactive or missing; skipping"). The worker
     // tolerates this without crashing.
-    tx.send(RecomputeRequest {
+    tx.send(RecomputeRequest::Day {
         employee_id: "no-such-employee".into(),
         anchor_date: anchor,
     })
@@ -249,7 +382,7 @@ async fn worker_swallows_per_request_errors() {
     tokio::time::sleep(Duration::from_millis(800)).await;
     let emp_id = seed_full(&state.db).await;
     let anchor2 = NaiveDate::from_ymd_opt(2026, 4, 23).unwrap();
-    tx.send(RecomputeRequest {
+    tx.send(RecomputeRequest::Day {
         employee_id: emp_id.clone(),
         anchor_date: anchor2,
     })

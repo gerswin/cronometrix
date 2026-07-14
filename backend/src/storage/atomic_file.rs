@@ -95,10 +95,16 @@ impl Drop for AtomicFileGuard {
         if self.kept {
             return;
         }
-        let _ = remove_if_owned(&self.temp_path, self.identity);
-        let _ = remove_if_owned(&self.final_path, self.identity);
+        if remove_if_owned(&self.temp_path, self.identity).is_err() {
+            warn_cleanup_failure("temporary", self.identity);
+        }
+        if remove_if_owned(&self.final_path, self.identity).is_err() {
+            warn_cleanup_failure("published", self.identity);
+        }
         if let Some(parent) = self.final_path.parent() {
-            let _ = sync_directory(parent);
+            if sync_directory(parent).is_err() {
+                warn_cleanup_failure("directory-sync", self.identity);
+            }
         }
     }
 }
@@ -151,7 +157,8 @@ fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("atomic file has no parent: {}", path.display()))?;
-    let quarantine = parent.join(format!(".atomic-quarantine-{}.tmp", Uuid::new_v4()));
+    let quarantine_id = Uuid::new_v4();
+    let quarantine = parent.join(format!(".atomic-quarantine-{quarantine_id}.tmp"));
     match claim_noreplace(path, &quarantine) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -170,19 +177,31 @@ fn remove_if_owned(path: &Path, identity: FileIdentity) -> anyhow::Result<()> {
     if claimed_identity == identity {
         fs::remove_file(&quarantine)
             .with_context(|| format!("remove owned atomic quarantine {}", quarantine.display()))?;
-    } else if let Err(error) = claim_noreplace(&quarantine, path) {
-        // A concurrent writer now owns the public path. Preserve the claimed
-        // foreign entry under its unique quarantine name for recovery rather
-        // than unlinking either writer's file.
-        return Err(error).with_context(|| {
-            format!(
-                "restore foreign atomic entry {} -> {}; retained for recovery",
-                quarantine.display(),
-                path.display()
-            )
-        });
+    } else {
+        tracing::warn!(
+            quarantine_id = %quarantine_id,
+            claimed_device = claimed_identity.device,
+            claimed_inode = claimed_identity.inode,
+            "atomic cleanup preserved foreign entry; paths omitted"
+        );
+        if let Err(error) = claim_noreplace(&quarantine, path) {
+            // A concurrent writer now owns the public path. Preserve the claimed
+            // foreign entry under its unique quarantine name for recovery rather
+            // than unlinking either writer's file.
+            return Err(error).context("restore foreign atomic entry; retained for recovery");
+        }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn warn_cleanup_failure(stage: &'static str, identity: FileIdentity) {
+    tracing::warn!(
+        stage,
+        device = identity.device,
+        inode = identity.inode,
+        "atomic cleanup failed; paths and content omitted"
+    );
 }
 
 #[cfg(not(unix))]
@@ -199,6 +218,11 @@ fn remove_if_owned(_path: &Path, _identity: FileIdentity) -> anyhow::Result<()> 
     // No stable file identity is exposed by portable std on non-Unix targets.
     // Conservatively preserve the path rather than risk deleting a replacement.
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn warn_cleanup_failure(stage: &'static str, _identity: FileIdentity) {
+    tracing::warn!(stage, "atomic cleanup failed; paths and content omitted");
 }
 
 #[cfg(target_os = "linux")]

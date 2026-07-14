@@ -13,7 +13,7 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -33,6 +33,28 @@ use libsql::params;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+#[derive(Clone)]
+struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogWriter {
+    type Writer = SharedLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 /// Build (Router, AppState, TempDir) for the events read API. The TempDir is
 /// returned so callers bind it to a local that outlives every assertion (see
@@ -157,12 +179,25 @@ fn atomic_file_guard_drop_preserves_replacement_owned_by_someone_else() {
     let replacement = root.join("2026-07-14/replacement.jpg");
     std::fs::write(&replacement, b"foreign").unwrap();
     std::fs::rename(&replacement, &final_path).unwrap();
-    drop(guard);
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_writer(SharedLogWriter(logs.clone()))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || drop(guard));
 
     assert_eq!(
         std::fs::read(&final_path).unwrap(),
         b"foreign",
         "compensation must not delete a replacement it does not own"
+    );
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("atomic cleanup preserved foreign entry"));
+    assert!(logs.contains("quarantine_id"));
+    assert!(!logs.contains("event.jpg"), "public path must be scrubbed");
+    assert!(
+        !logs.contains("replacement.jpg") && !logs.contains("guard-owned"),
+        "file content/name must be scrubbed"
     );
 }
 
@@ -406,11 +441,14 @@ async fn cancelled_event_future_after_job_admission_keeps_committed_photo() {
     let recompute = recompute_rx
         .try_recv()
         .expect("committed event must publish recompute after future cancellation");
-    assert_eq!(recompute.employee_id, "e-cancelled");
-    assert_eq!(
-        recompute.anchor_date,
-        chrono::NaiveDate::from_ymd_opt(2023, 11, 14).unwrap()
-    );
+    assert!(matches!(
+        recompute,
+        cronometrix_api::recompute::RecomputeRequest::Day {
+            employee_id,
+            anchor_date,
+        } if employee_id == "e-cancelled"
+            && anchor_date == chrono::NaiveDate::from_ymd_opt(2023, 11, 14).unwrap()
+    ));
 }
 
 #[tokio::test]

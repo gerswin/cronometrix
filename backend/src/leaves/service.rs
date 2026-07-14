@@ -248,13 +248,18 @@ pub async fn create_leave_queued_guarded(
                             guard.keep();
                         }
                         if let Some(sender) = recompute_tx {
-                            let mut anchor_date = from;
-                            while anchor_date <= to {
-                                let _ = sender.send(crate::recompute::RecomputeRequest {
-                                    employee_id: recompute_employee_id.clone(),
-                                    anchor_date,
-                                });
-                                anchor_date += chrono::Duration::days(1);
+                            if sender
+                                .send(crate::recompute::RecomputeRequest::Range {
+                                    employee_id: recompute_employee_id,
+                                    from_date: from,
+                                    to_date: to,
+                                })
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    operation = "leaves.create",
+                                    "post-commit recompute unavailable; identifiers omitted"
+                                );
                             }
                         }
                     });

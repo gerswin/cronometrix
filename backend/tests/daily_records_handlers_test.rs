@@ -761,9 +761,12 @@ async fn cancelled_request_after_override_job_admission_keeps_committed_evidence
     let recompute = recompute_rx
         .try_recv()
         .expect("committed override must publish recompute after request cancellation");
-    assert_eq!(recompute.employee_id, emp_id);
-    assert_eq!(
-        recompute.anchor_date,
-        chrono::NaiveDate::from_ymd_opt(2026, 4, 21).unwrap()
-    );
+    assert!(matches!(
+        recompute,
+        cronometrix_api::recompute::RecomputeRequest::Day {
+            employee_id,
+            anchor_date,
+        } if employee_id == emp_id
+            && anchor_date == chrono::NaiveDate::from_ymd_opt(2026, 4, 21).unwrap()
+    ));
 }

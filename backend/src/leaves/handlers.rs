@@ -320,7 +320,7 @@ pub async fn get_leave_evidence(
     Ok((StatusCode::OK, headers, bytes).into_response())
 }
 
-/// Publish a RecomputeRequest for every anchor_date in [from_date, to_date].
+/// Publish one bounded range work unit for [from_date, to_date].
 /// Silently no-ops if recompute_tx is None or the date strings don't parse.
 fn publish_recompute_for_range(
     state: &AppState,
@@ -337,16 +337,17 @@ fn publish_recompute_for_range(
     let Ok(to) = NaiveDate::parse_from_str(to_date, "%Y-%m-%d") else {
         return;
     };
-    let mut d = from;
-    while d <= to {
-        if let Err(e) = tx.send(RecomputeRequest {
+    if tx
+        .send(RecomputeRequest::Range {
             employee_id: employee_id.to_string(),
-            anchor_date: d,
-        }) {
-            tracing::warn!(err = %e, "recompute_tx send failed (worker down?)");
-            return;
-        }
-        let Some(next) = d.succ_opt() else { break };
-        d = next;
+            from_date: from,
+            to_date: to,
+        })
+        .is_err()
+    {
+        tracing::warn!(
+            operation = "leaves.cancel",
+            "post-commit recompute unavailable; identifiers omitted"
+        );
     }
 }
