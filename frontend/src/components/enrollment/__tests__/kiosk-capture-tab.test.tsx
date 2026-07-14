@@ -62,7 +62,7 @@ describe('KioskCaptureTab', () => {
     })
     vi.mocked(api.get).mockImplementation((url: string) => {
       if (url.includes('captures')) {
-        return Promise.resolve({ data: { capture_id: 'cap-123', status: 'capturing', source_device_id: 'dev-entry', photo_path: null, error_message: null } })
+        return Promise.resolve({ data: { capture_id: 'cap-123', status: 'capturing', source_device_id: 'dev-entry', error_message: null } })
       }
       return Promise.resolve({ data: { data: [DEVICE] } })
     })
@@ -98,7 +98,7 @@ describe('KioskCaptureTab', () => {
     vi.mocked(api.get).mockImplementation((url: string) => {
       if (url.includes('captures')) {
         return Promise.resolve({
-          data: { capture_id: 'cap-456', status: 'captured', source_device_id: 'dev-origin', photo_b64: b64, photo_path: null, error_message: null },
+          data: { capture_id: 'cap-456', status: 'captured', source_device_id: 'dev-origin', photo_b64: b64, error_message: null },
         })
       }
       return Promise.resolve({ data: { data: [DEVICE] } })
@@ -135,7 +135,7 @@ describe('KioskCaptureTab', () => {
     vi.mocked(api.get).mockImplementation((url: string) => {
       if (url.includes('captures')) {
         return Promise.resolve({
-          data: { capture_id: 'cap-789', status: 'timeout', source_device_id: 'dev-entry', photo_path: null, error_message: null },
+          data: { capture_id: 'cap-789', status: 'timeout', source_device_id: 'dev-entry', error_message: null },
         })
       }
       return Promise.resolve({ data: { data: [DEVICE] } })
@@ -205,7 +205,6 @@ describe('KioskCaptureTab', () => {
           status: 'captured',
           source_device_id: 'dev-entry',
           photo_b64: btoa('stale'),
-          photo_path: null,
           error_message: null,
         },
       })

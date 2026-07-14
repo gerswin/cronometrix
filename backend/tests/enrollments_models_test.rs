@@ -263,11 +263,14 @@ fn capture_response_omits_photo_b64_when_none() {
         capture_id: "cap-1".into(),
         status: "capturing".into(),
         source_device_id: "dev-1".into(),
-        photo_path: None,
         photo_b64: None,
         error_message: None,
     };
     let s = serde_json::to_string(&resp).unwrap();
+    assert!(
+        !s.contains("photo_path"),
+        "internal capture paths must never be public: {s}"
+    );
     // photo_b64 must be absent (skip_serializing_if = "Option::is_none").
     assert!(
         !s.contains("photo_b64"),
@@ -281,7 +284,6 @@ fn capture_response_includes_photo_b64_when_some() {
         capture_id: "cap-1".into(),
         status: "captured".into(),
         source_device_id: "dev-1".into(),
-        photo_path: Some("/tmp/cap-1.jpg".into()),
         photo_b64: Some("aGVsbG8=".into()),
         error_message: None,
     };
@@ -352,7 +354,6 @@ fn dtos_have_debug_impls() {
         capture_id: "c".into(),
         status: "capturing".into(),
         source_device_id: "d".into(),
-        photo_path: None,
         photo_b64: None,
         error_message: None,
     };

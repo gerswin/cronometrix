@@ -329,7 +329,6 @@ export interface CaptureFromDeviceState {
   capture_id: string
   status: 'capturing' | 'captured' | 'timeout' | 'error'
   source_device_id: string
-  photo_path: string | null
   photo_b64?: string            // base64 JPEG iff status=='captured'; omitted otherwise
   error_message: string | null
 }

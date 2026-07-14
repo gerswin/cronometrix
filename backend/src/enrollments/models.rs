@@ -69,7 +69,6 @@ pub struct CaptureResponse {
     pub capture_id: String,
     pub status: String, // capturing | captured | timeout | error
     pub source_device_id: String,
-    pub photo_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub photo_b64: Option<String>, // Some(base64 JPEG) iff status=="captured"
     pub error_message: Option<String>,

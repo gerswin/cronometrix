@@ -559,7 +559,6 @@ pub async fn get_capture(
         capture_id,
         status: capture_state.status,
         source_device_id: capture_state.source_device_id,
-        photo_path: capture_state.photo_path,
         photo_b64,
         error_message: capture_state.error_message,
     }))
