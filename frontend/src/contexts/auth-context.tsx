@@ -10,6 +10,7 @@ import {
 } from 'react'
 import {
   getAccessToken,
+  isSessionSupersededError,
   onAccessTokenChange,
   refreshAccessToken,
   setAccessToken,
@@ -121,7 +122,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
           setAccessToken(token)
         })
-        .catch(() => {
+        .catch((error) => {
+          if (isSessionSupersededError(error)) return
           if (
             !active ||
             tokenGeneration.current !== bootstrapGeneration ||

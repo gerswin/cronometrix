@@ -203,10 +203,18 @@ describe('lib/api single-flight refresh', () => {
     const pendingLogin = deferred<{ data: { access_token: string; user: { id: string } } }>()
     mocks.refreshPost.mockReturnValueOnce(pendingRefresh.promise)
     mocks.loginPost.mockReturnValueOnce(pendingLogin.promise)
-    const { api, getAccessToken, loginWithCredentials, setAccessToken } = await import('../api')
+    const {
+      api,
+      getAccessToken,
+      isSessionSupersededError,
+      loginWithCredentials,
+      refreshAccessToken,
+      setAccessToken,
+    } = await import('../api')
     expect(typeof loginWithCredentials).toBe('function')
     const client = api as unknown as ApiShim
     setAccessToken('old-token')
+    const bootstrapRefresh = refreshAccessToken()
     const staleError = unauthorizedError('/employees')
     const staleRequest = client.__triggerResponseError(staleError)
 
@@ -215,6 +223,7 @@ describe('lib/api single-flight refresh', () => {
     expect(mocks.loginPost).not.toHaveBeenCalled()
 
     pendingRefresh.resolve({ data: { access_token: 'late-refresh-token' } })
+    await expect(bootstrapRefresh).rejects.toSatisfy(isSessionSupersededError)
     await expect(staleRequest).rejects.toBe(staleError)
     expect(mocks.apiRetry).not.toHaveBeenCalled()
     expect(getAccessToken()).toBe('old-token')

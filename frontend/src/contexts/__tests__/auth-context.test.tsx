@@ -13,6 +13,9 @@ const authApi = vi.hoisted(() => {
     }
   })
   const refreshAccessToken = vi.fn<() => Promise<string>>()
+  const isSessionSupersededError = vi.fn(
+    (error: unknown) => error instanceof Error && error.message === 'session superseded'
+  )
   const setAccessToken = vi.fn((nextToken: string | null) => {
     token = nextToken
     for (const listener of listeners) listener()
@@ -22,6 +25,7 @@ const authApi = vi.hoisted(() => {
     getAccessToken,
     onAccessTokenChange,
     refreshAccessToken,
+    isSessionSupersededError,
     setAccessToken,
     currentToken: () => token,
     reset: () => {
@@ -42,6 +46,7 @@ vi.mock('@/lib/api', () => ({
   getAccessToken: authApi.getAccessToken,
   onAccessTokenChange: authApi.onAccessTokenChange,
   refreshAccessToken: authApi.refreshAccessToken,
+  isSessionSupersededError: authApi.isSessionSupersededError,
   setAccessToken: authApi.setAccessToken,
 }))
 
@@ -232,5 +237,30 @@ describe('AuthProvider bootstrap', () => {
       status: 'authenticated',
       sub: 'login-user',
     })
+  })
+
+  it('ignores a superseded bootstrap failure until the newer login publishes its token', async () => {
+    const refresh = deferred<string>()
+    authApi.refreshAccessToken.mockReturnValueOnce(refresh.promise)
+    renderProvider()
+
+    await act(async () => {
+      refresh.reject(new Error('session superseded'))
+      await refresh.promise.catch(() => undefined)
+    })
+
+    expectState({ jti: null, role: null, status: 'initializing', sub: null })
+    expect(authApi.setAccessToken).not.toHaveBeenCalled()
+
+    const loginToken = makeToken({ sub: 'login-user', jti: 'login-jti' })
+    act(() => authApi.setAccessToken(loginToken))
+    await waitFor(() =>
+      expectState({
+        jti: 'login-jti',
+        role: 'admin',
+        status: 'authenticated',
+        sub: 'login-user',
+      })
+    )
   })
 })

@@ -30,6 +30,17 @@ let refreshPromise: Promise<string> | null = null
 let sessionGeneration = 0
 let loginGeneration: number | null = null
 
+class SessionSupersededError extends Error {
+  constructor() {
+    super('session superseded')
+    this.name = 'SessionSupersededError'
+  }
+}
+
+export function isSessionSupersededError(error: unknown): boolean {
+  return error instanceof SessionSupersededError
+}
+
 // WR-05: pub-sub for token changes so AuthContext can re-decode claims after
 // login / refresh / logout instead of going stale until the next page reload.
 type Listener = () => void
@@ -69,12 +80,26 @@ export function onAccessTokenChange(listener: Listener): () => void {
  */
 export function refreshAccessToken(): Promise<string> {
   if (loginGeneration !== null) {
-    return Promise.reject(new Error('login in progress'))
+    return Promise.reject(new SessionSupersededError())
   }
   if (!refreshPromise) {
+    const refreshGeneration = sessionGeneration
     refreshPromise = refreshClient
       .post<{ access_token: string }>('/auth/refresh', {})
-      .then(({ data }) => data.access_token)
+      .then(
+        ({ data }) => {
+          if (refreshGeneration !== sessionGeneration) {
+            throw new SessionSupersededError()
+          }
+          return data.access_token
+        },
+        (error: unknown) => {
+          if (refreshGeneration !== sessionGeneration) {
+            throw new SessionSupersededError()
+          }
+          throw error
+        },
+      )
       .finally(() => {
         refreshPromise = null
       })
@@ -114,6 +139,9 @@ export async function loginWithCredentials(
     }
     setAccessToken(data.access_token)
     return data
+  } catch (error) {
+    if (generation === sessionGeneration) setAccessToken(null)
+    throw error
   } finally {
     if (loginGeneration === generation) loginGeneration = null
   }
