@@ -21,6 +21,7 @@ pub mod reports;
 pub mod rules;
 pub mod setup;
 pub mod state;
+pub mod storage;
 pub mod supervisor;
 pub mod tenant_info;
 pub mod test_reset;

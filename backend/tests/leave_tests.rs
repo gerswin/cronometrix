@@ -390,6 +390,185 @@ async fn create_leave_overlap_returns_conflict() {
     assert_eq!(body_json["error"]["code"], "LEAVE_OVERLAP");
 }
 
+#[tokio::test]
+async fn concurrent_overlapping_leave_creates_yield_one_success_and_one_conflict() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-concurrent", "day", false, 480, "09:00", "17:00")
+            .await;
+    let emp = seed_employee(&db, &dept, "E-CONCURRENT").await;
+    let (state, _tmp) = make_state(db);
+
+    // Hold the single writer so both requests are pending together behind the
+    // same serialized boundary. This makes the concurrency case deterministic.
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let blocker_queue = state.db_write.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_queue
+            .job("test.block-leave-writer", move |_| {
+                Box::pin(async move {
+                    release_rx.await.expect("release writer");
+                    Ok(())
+                })
+            })
+            .await
+    });
+    while state.db_write.stats().accepted < 1 {
+        tokio::task::yield_now().await;
+    }
+
+    let first_state = state.clone();
+    let first_admin = admin.clone();
+    let first_emp = emp.clone();
+    let first = tokio::spawn(async move {
+        leaves::service::create_leave_queued(
+            &first_state,
+            &first_admin,
+            leaves::models::CreateLeaveRequest {
+                employee_id: first_emp,
+                from_date: "2026-04-20".into(),
+                to_date: "2026-04-22".into(),
+                leave_type: "vacation".into(),
+                justification: "first concurrent request".into(),
+            },
+            None,
+        )
+        .await
+    });
+    let second_state = state.clone();
+    let second = tokio::spawn(async move {
+        leaves::service::create_leave_queued(
+            &second_state,
+            &admin,
+            leaves::models::CreateLeaveRequest {
+                employee_id: emp,
+                from_date: "2026-04-21".into(),
+                to_date: "2026-04-23".into(),
+                leave_type: "manual".into(),
+                justification: "second concurrent request".into(),
+            },
+            None,
+        )
+        .await
+    });
+
+    while state.db_write.stats().accepted < 3 {
+        tokio::task::yield_now().await;
+    }
+    release_tx.send(()).expect("release blocker");
+    blocker.await.unwrap().unwrap();
+
+    let results = [first.await.unwrap(), second.await.unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let conflicts: Vec<_> = results
+        .iter()
+        .filter_map(|result| match result {
+            Err(cronometrix_api::errors::AppError::LeaveConflict { code, .. }) => Some(*code),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(conflicts, vec!["LEAVE_OVERLAP"]);
+}
+
+#[tokio::test]
+async fn closed_queue_after_leave_evidence_write_leaves_no_row_or_file() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-closed", "day", false, 480, "09:00", "17:00")
+            .await;
+    let emp = seed_employee(&db, &dept, "E-CLOSED").await;
+    let (state, _tmp) = make_state(db);
+    let leaves_root = state.paths.leaves_root.clone();
+    state.db_write.close_and_flush().await.unwrap();
+    let app = build_test_app(state.clone());
+
+    let jpeg: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xD9];
+    let (body, ct) = build_leave_multipart(
+        &[
+            ("employee_id", &emp),
+            ("from_date", "2026-05-01"),
+            ("to_date", "2026-05-01"),
+            ("leave_type", "medical"),
+            ("justification", "queue closure compensation"),
+        ],
+        Some(("image/jpeg", jpeg)),
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/leaves")
+        .header(header::CONTENT_TYPE, ct)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let conn = state.db.connect().unwrap();
+    let count: i64 = conn
+        .query(
+            "SELECT COUNT(*) FROM leaves WHERE employee_id = ?1",
+            params![emp],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, 0);
+    let files = std::fs::read_dir(&leaves_root)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(files, 0, "failed queued write must remove leave evidence");
+}
+
+#[tokio::test]
+async fn leave_filesystem_failure_precedes_queue_admission() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let dept =
+        create_test_department_with_shift(&db, "D-fs", "day", false, 480, "09:00", "17:00").await;
+    let emp = seed_employee(&db, &dept, "E-FS").await;
+    let (mut state, tmp) = make_state(db);
+    let unusable_root = tmp.path().join("leaves-is-a-file");
+    std::fs::write(&unusable_root, b"not a directory").unwrap();
+    let mut paths = (*state.paths).clone();
+    paths.leaves_root = unusable_root;
+    state.paths = Arc::new(paths);
+    let app = build_test_app(state.clone());
+
+    let (body, ct) = build_leave_multipart(
+        &[
+            ("employee_id", &emp),
+            ("from_date", "2026-05-02"),
+            ("to_date", "2026-05-02"),
+            ("leave_type", "medical"),
+            ("justification", "filesystem failure"),
+        ],
+        Some(("image/jpeg", &[0xFF, 0xD8, 0xFF][..])),
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/leaves")
+        .header(header::CONTENT_TYPE, ct)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", test_access_token(&admin, "admin")),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(state.db_write.stats().accepted, 0);
+}
+
 // -----------------------------------------------------------------------------
 // Optimistic concurrency on cancel: 409 with stale version, 204 with correct
 // -----------------------------------------------------------------------------

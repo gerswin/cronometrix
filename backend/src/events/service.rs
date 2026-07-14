@@ -7,6 +7,7 @@ use crate::common::{epoch_to_iso, PaginatedResponse};
 use crate::errors::AppError;
 use crate::recompute::RecomputeRequest;
 use crate::state::{AppState, AttendanceEventSSEPayload};
+use crate::storage::atomic_file::AtomicFileGuard;
 
 use super::models::{AttendanceEventResponse, EventListQuery, NewAttendanceEvent, PersistOutcome};
 
@@ -150,9 +151,8 @@ fn row_to_event(row: libsql::Row) -> Result<AttendanceEventResponse, AppError> {
 
 /// Persist an attendance event with DB-level dedup. Returns `Deduplicated` when
 /// another event with the same (employee_id, device_id, direction, bucket_30s)
-/// tuple already exists (D-05/D-06). Photo JPEG is written to disk ONLY when the
-/// INSERT succeeds — `write_photo_atomic` is invoked only if `rows_affected == 1`
-/// so dedup hits never leave orphan files (D-13).
+/// tuple already exists (D-05/D-06). The photo is protected before the INSERT;
+/// deduplication or any database failure drops the guard and removes it (D-13).
 ///
 /// `events_root` is the filesystem root for the JPEG (Phase 8, D-18/D-19): the
 /// caller passes `&state.paths.events_root` from production code or a tempdir
@@ -171,6 +171,14 @@ pub async fn persist_attendance_event(
             .unwrap_or_else(|| "unknown-date".into());
         format!("{}/{}.jpg", date, event.id)
     });
+
+    let photo_guard = match (event.photo_bytes.as_ref(), photo_relpath.as_ref()) {
+        (Some(bytes), Some(relative_path)) => Some(
+            AtomicFileGuard::write(events_root, relative_path, bytes)
+                .map_err(AppError::Internal)?,
+        ),
+        _ => None,
+    };
 
     let rows_affected = conn
         .execute(
@@ -199,9 +207,8 @@ pub async fn persist_attendance_event(
         return Ok(PersistOutcome::Deduplicated);
     }
 
-    // Only write the JPEG AFTER confirming the DB insert succeeded (no orphaned files on dedup).
-    if let (Some(bytes), Some(rel)) = (event.photo_bytes.as_ref(), photo_relpath.as_ref()) {
-        write_photo_atomic(events_root, rel, bytes).map_err(AppError::Internal)?;
+    if let Some(guard) = photo_guard {
+        guard.keep();
     }
 
     Ok(PersistOutcome::Inserted {
@@ -224,42 +231,43 @@ pub async fn persist_attendance_event_queued(
         format!("{}/{}.jpg", date, event.id)
     });
 
+    let photo_guard = match (event.photo_bytes.as_ref(), photo_relpath.as_ref()) {
+        (Some(bytes), Some(relative_path)) => Some(
+            AtomicFileGuard::write(events_root, relative_path, bytes)
+                .map_err(AppError::Internal)?,
+        ),
+        _ => None,
+    };
+
+    let queued_photo_relpath = photo_relpath.clone();
     let rows_affected = state
         .db_write
-        .statement(
+        .transact(
             "events.ingest-attendance",
-            "INSERT OR IGNORE INTO attendance_events \
-             (id, employee_id, device_id, direction, captured_at, bucket_30s, \
-              is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
-            vec![
-                libsql::Value::Text(event.id.clone()),
-                event
-                    .employee_id
-                    .clone()
-                    .map(libsql::Value::Text)
-                    .unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(event.device_id.clone()),
-                libsql::Value::Text(event.direction.clone()),
-                libsql::Value::Integer(event.captured_at),
-                libsql::Value::Integer(bucket),
-                libsql::Value::Integer(event.is_unknown as i64),
-                event
-                    .face_id
-                    .clone()
-                    .map(libsql::Value::Text)
-                    .unwrap_or(libsql::Value::Null),
-                event
-                    .employee_no_string
-                    .clone()
-                    .map(libsql::Value::Text)
-                    .unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(event.raw_xml.clone()),
-                photo_relpath
-                    .clone()
-                    .map(libsql::Value::Text)
-                    .unwrap_or(libsql::Value::Null),
-            ],
+            move |tx| {
+                Box::pin(async move {
+                    tx.statement(
+                        "INSERT OR IGNORE INTO attendance_events \
+                         (id, employee_id, device_id, direction, captured_at, bucket_30s, \
+                          is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
+                        params![
+                            event.id,
+                            event.employee_id,
+                            event.device_id,
+                            event.direction,
+                            event.captured_at,
+                            bucket,
+                            event.is_unknown as i64,
+                            event.face_id,
+                            event.employee_no_string,
+                            event.raw_xml,
+                            queued_photo_relpath,
+                        ],
+                    )
+                    .await
+                })
+            },
         )
         .await
         .map_err(AppError::from)?;
@@ -268,8 +276,8 @@ pub async fn persist_attendance_event_queued(
         return Ok(PersistOutcome::Deduplicated);
     }
 
-    if let (Some(bytes), Some(rel)) = (event.photo_bytes.as_ref(), photo_relpath.as_ref()) {
-        write_photo_atomic(events_root, rel, bytes).map_err(AppError::Internal)?;
+    if let Some(guard) = photo_guard {
+        guard.keep();
     }
 
     Ok(PersistOutcome::Inserted {
@@ -277,24 +285,10 @@ pub async fn persist_attendance_event_queued(
     })
 }
 
-/// Atomic write: write to a tempfile in the same dir, fsync, rename. Ensures
-/// partial writes (crash mid-write) never leave a truncated JPEG under the
-/// published path.
+/// Compatibility wrapper for non-transactional enrollment photo callers.
+/// Publishes durably without clobbering and immediately keeps the file.
 pub fn write_photo_atomic(root: &Path, relpath: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    use std::fs::{self, File};
-    use std::io::Write;
-
-    let full = root.join(relpath);
-    if let Some(parent) = full.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = full.with_extension("jpg.tmp");
-    {
-        let mut f = File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
-    fs::rename(&tmp, &full)?;
+    AtomicFileGuard::write(root, relpath, bytes)?.keep();
     Ok(())
 }
 

@@ -171,65 +171,70 @@ pub async fn create_leave_queued(
             message: "from_date must be <= to_date".into(),
         });
     }
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let overlap_count: i64 = {
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM leaves \
-                 WHERE employee_id = ?1 \
-                   AND status = 'active' AND deleted_at IS NULL \
-                   AND from_date <= ?2 AND to_date >= ?3",
-                params![
-                    req.employee_id.clone(),
-                    to.format("%Y-%m-%d").to_string(),
-                    from.format("%Y-%m-%d").to_string(),
-                ],
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        let row = rows
-            .next()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("COUNT returned no row")))?;
-        row.get(0).map_err(|e| AppError::Internal(e.into()))?
-    };
-    if overlap_count > 0 {
-        return Err(AppError::LeaveConflict {
-            code: "LEAVE_OVERLAP",
-            message: format!(
-                "Employee {} has an overlapping active leave in range {} to {}",
-                req.employee_id, req.from_date, req.to_date
-            ),
-        });
-    }
     let id = Uuid::new_v4().to_string();
+    let actor_id = actor_id.to_string();
+    let overlap_to = to.format("%Y-%m-%d").to_string();
+    let overlap_from = from.format("%Y-%m-%d").to_string();
+    let select_sql = format!("SELECT {} FROM leaves WHERE id = ?1", LEAVE_SELECT_COLS);
     state
         .db_write
-        .statement(
+        .transact(
             "leaves.create",
-            "INSERT INTO leaves (id, employee_id, from_date, to_date, leave_type, \
-             justification, evidence_path, created_by, status, version, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 1, unixepoch(), unixepoch())",
-            vec![
-                libsql::Value::Text(id.clone()),
-                libsql::Value::Text(req.employee_id.clone()),
-                libsql::Value::Text(req.from_date.clone()),
-                libsql::Value::Text(req.to_date.clone()),
-                libsql::Value::Text(req.leave_type.clone()),
-                libsql::Value::Text(req.justification.clone()),
-                evidence_relpath
-                    .map(libsql::Value::Text)
-                    .unwrap_or(libsql::Value::Null),
-                libsql::Value::Text(actor_id.to_string()),
-            ],
+            move |tx| {
+                Box::pin(async move {
+                    let mut overlap_rows = tx
+                        .query(
+                            "SELECT COUNT(*) FROM leaves \
+                             WHERE employee_id = ?1 \
+                               AND status = 'active' AND deleted_at IS NULL \
+                               AND from_date <= ?2 AND to_date >= ?3",
+                            params![req.employee_id.clone(), overlap_to, overlap_from],
+                        )
+                        .await?;
+                    let overlap_count: i64 = overlap_rows
+                        .next()
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("COUNT returned no row"))?
+                        .get(0)?;
+                    if overlap_count > 0 {
+                        return Err(anyhow::Error::new(AppError::LeaveConflict {
+                            code: "LEAVE_OVERLAP",
+                            message: format!(
+                                "Employee {} has an overlapping active leave in range {} to {}",
+                                req.employee_id, req.from_date, req.to_date
+                            ),
+                        }));
+                    }
+
+                    tx.statement(
+                        "INSERT INTO leaves (id, employee_id, from_date, to_date, leave_type, \
+                         justification, evidence_path, created_by, status, version, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 1, unixepoch(), unixepoch())",
+                        params![
+                            id.clone(),
+                            req.employee_id,
+                            req.from_date,
+                            req.to_date,
+                            req.leave_type,
+                            req.justification,
+                            evidence_relpath,
+                            actor_id,
+                        ],
+                    )
+                    .await?;
+
+                    let row = tx
+                        .query(&select_sql, params![id])
+                        .await?
+                        .next()
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("inserted leave vanished"))?;
+                    row_to_leave(row).map_err(anyhow::Error::new)
+                })
+            },
         )
         .await
-        .map_err(AppError::from)?;
-    get_by_id(&conn, &id).await
+        .map_err(AppError::from)
 }
 
 /// Fetch a single leave row by id.
@@ -393,48 +398,52 @@ pub async fn cancel(conn: &Connection, id: &str, version: i64) -> Result<(), App
     Ok(())
 }
 
-pub async fn cancel_queued(state: &AppState, id: &str, version: i64) -> Result<(), AppError> {
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let rows_affected = state
+pub async fn cancel_queued(
+    state: &AppState,
+    id: &str,
+    version: i64,
+) -> Result<LeaveResponse, AppError> {
+    let id = id.to_string();
+    let select_sql = format!("SELECT {} FROM leaves WHERE id = ?1", LEAVE_SELECT_COLS);
+    state
         .db_write
-        .statement(
+        .transact(
             "leaves.cancel",
-            "UPDATE leaves SET status = 'cancelled', deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
-             WHERE id = ?1 AND status = 'active' AND version = ?2",
-            vec![
-                libsql::Value::Text(id.to_string()),
-                libsql::Value::Integer(version),
-            ],
+            move |tx| {
+                Box::pin(async move {
+                    let leave_row = tx
+                        .query(&select_sql, params![id.clone()])
+                        .await?
+                        .next()
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow::Error::new(AppError::NotFound {
+                                code: "LEAVE_NOT_FOUND",
+                                message: format!("Leave '{}' not found", id),
+                            })
+                        })?;
+                    let leave = row_to_leave(leave_row).map_err(anyhow::Error::new)?;
+
+                    let rows_affected = tx
+                        .statement(
+                            "UPDATE leaves SET status = 'cancelled', deleted_at = unixepoch(), updated_at = unixepoch(), version = version + 1 \
+                             WHERE id = ?1 AND status = 'active' AND version = ?2",
+                            params![id, version],
+                        )
+                        .await?;
+                    if rows_affected == 0 {
+                        return Err(anyhow::Error::new(AppError::Conflict {
+                            code: "VERSION_CONFLICT",
+                            message: "Leave was modified by another request. Fetch the latest version and retry."
+                                .to_string(),
+                        }));
+                    }
+                    Ok(leave)
+                })
+            },
         )
         .await
-        .map_err(AppError::from)?;
-    if rows_affected == 0 {
-        let exists = conn
-            .query(
-                "SELECT id FROM leaves WHERE id = ?1",
-                params![id.to_string()],
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .next()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        if exists.is_none() {
-            return Err(AppError::NotFound {
-                code: "LEAVE_NOT_FOUND",
-                message: format!("Leave '{}' not found", id),
-            });
-        }
-        return Err(AppError::Conflict {
-            code: "VERSION_CONFLICT",
-            message: "Leave was modified by another request. Fetch the latest version and retry."
-                .to_string(),
-        });
-    }
-    Ok(())
+        .map_err(AppError::from)
 }
 
 /// Engine-overlay query: fetch the single active leave row, if any, that

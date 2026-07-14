@@ -24,9 +24,10 @@ use cronometrix_api::config::Config;
 use cronometrix_api::events;
 use cronometrix_api::events::models::NewAttendanceEvent;
 use cronometrix_api::events::service::{
-    build_sse_payload, persist_attendance_event, publish_sse_event,
+    build_sse_payload, persist_attendance_event, persist_attendance_event_queued, publish_sse_event,
 };
 use cronometrix_api::state::AppState;
+use cronometrix_api::storage::atomic_file::AtomicFileGuard;
 use http_body_util::BodyExt;
 use libsql::params;
 use serde_json::{json, Value};
@@ -87,6 +88,63 @@ fn viewer_token() -> String {
 
 fn admin_token() -> String {
     common::test_access_token(&uuid::Uuid::new_v4().to_string(), "admin")
+}
+
+#[test]
+fn atomic_file_guard_rejects_unsafe_paths_before_touching_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let absent_root = tmp.path().join("not-created");
+
+    assert!(AtomicFileGuard::write(&absent_root, "../escape.jpg", b"bad").is_err());
+    assert!(AtomicFileGuard::write(&absent_root, "/absolute.jpg", b"bad").is_err());
+    assert!(
+        !absent_root.exists(),
+        "validation must run before disk access"
+    );
+    assert!(!tmp.path().join("escape.jpg").exists());
+}
+
+#[test]
+fn atomic_file_guard_drop_compensates_and_keep_persists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    let final_path = root.join("2026-07-14/event.jpg");
+
+    {
+        let _guard = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"first").unwrap();
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"first");
+    }
+    assert!(
+        !final_path.exists(),
+        "dropping an unkept guard removes final file"
+    );
+
+    AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"kept")
+        .unwrap()
+        .keep();
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"kept");
+}
+
+#[test]
+fn atomic_file_guard_never_clobbers_preexisting_destination_or_leaves_temp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("events");
+    std::fs::create_dir_all(root.join("2026-07-14")).unwrap();
+    let final_path = root.join("2026-07-14/event.jpg");
+    std::fs::write(&final_path, b"original").unwrap();
+
+    let error = AtomicFileGuard::write(&root, "2026-07-14/event.jpg", b"replacement")
+        .expect_err("preexisting destination must reject");
+    assert!(
+        error.to_string().contains("exist"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"original");
+    let names: Vec<_> = std::fs::read_dir(final_path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("event.jpg")]);
 }
 
 // =============================================================================
@@ -173,6 +231,62 @@ fn sse_event(id: &str, employee_id: Option<&str>, with_photo: bool) -> NewAttend
         raw_xml: "<EventNotificationAlert/>".to_string(),
         photo_bytes: with_photo.then(|| vec![0xff, 0xd8, 0xff]),
     }
+}
+
+#[tokio::test]
+async fn duplicate_queued_event_leaves_no_second_photo() {
+    let db = common::test_db().await;
+    let (_app, state, _tmp) = build_test_app(db).await;
+    let conn = state.db.connect().unwrap();
+    seed_device(&conn, "d-dedup", "10.9.8.7", 8443).await;
+    seed_employee(&conn, "e-dedup", "EMP-DEDUP").await;
+    drop(conn);
+
+    let first = NewAttendanceEvent {
+        id: "event-first".into(),
+        employee_id: Some("e-dedup".into()),
+        device_id: "d-dedup".into(),
+        direction: "entry".into(),
+        captured_at: 1_700_000_000,
+        is_unknown: false,
+        face_id: Some("face-1".into()),
+        employee_no_string: Some("EMP-DEDUP".into()),
+        raw_xml: "<first/>".into(),
+        photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x01]),
+    };
+    let duplicate = NewAttendanceEvent {
+        id: "event-duplicate".into(),
+        employee_id: Some("e-dedup".into()),
+        device_id: "d-dedup".into(),
+        direction: "entry".into(),
+        captured_at: 1_700_000_000,
+        is_unknown: false,
+        face_id: Some("face-1".into()),
+        employee_no_string: Some("EMP-DEDUP".into()),
+        raw_xml: "<duplicate/>".into(),
+        photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x02]),
+    };
+
+    let first_outcome = persist_attendance_event_queued(&state, &state.paths.events_root, first)
+        .await
+        .unwrap();
+    assert!(matches!(
+        first_outcome,
+        events::models::PersistOutcome::Inserted { .. }
+    ));
+    let duplicate_outcome =
+        persist_attendance_event_queued(&state, &state.paths.events_root, duplicate)
+            .await
+            .unwrap();
+    assert!(matches!(
+        duplicate_outcome,
+        events::models::PersistOutcome::Deduplicated
+    ));
+
+    let date_dir = state.paths.events_root.join("2023-11-14");
+    assert!(date_dir.join("event-first.jpg").exists());
+    assert!(!date_dir.join("event-duplicate.jpg").exists());
+    assert_eq!(std::fs::read_dir(date_dir).unwrap().count(), 1);
 }
 
 #[tokio::test]

@@ -30,9 +30,9 @@ use uuid::Uuid;
 use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
-use crate::events::service::write_photo_atomic;
 use crate::recompute::RecomputeRequest;
 use crate::state::AppState;
+use crate::storage::atomic_file::AtomicFileGuard;
 
 use super::models::{CreateLeaveRequest, LeaveListQuery, LeaveResponse};
 use super::service;
@@ -161,14 +161,15 @@ pub async fn create_leave(
     // 2. Write evidence to disk if present. Path is SERVER-GENERATED — user
     //    filename is discarded (T-3-15 mitigation). UUID v4 is cryptographically
     //    random so collisions require ≫ 2^122 leaves.
-    let evidence_relpath = if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext)
-    {
-        let rel = format!("{}.{}", Uuid::new_v4(), ext);
-        write_photo_atomic(&state.paths.leaves_root, &rel, bytes).map_err(AppError::Internal)?;
-        Some(rel)
-    } else {
-        None
-    };
+    let (evidence_relpath, evidence_guard) =
+        if let (Some(bytes), Some(ext)) = (evidence_bytes.as_ref(), evidence_ext) {
+            let rel = format!("{}.{}", Uuid::new_v4(), ext);
+            let guard = AtomicFileGuard::write(&state.paths.leaves_root, &rel, bytes)
+                .map_err(AppError::Internal)?;
+            (Some(rel), Some(guard))
+        } else {
+            (None, None)
+        };
 
     // 3. Call service with the resolved evidence path.
     let req = CreateLeaveRequest {
@@ -179,6 +180,9 @@ pub async fn create_leave(
         justification,
     };
     let leave = service::create_leave_queued(&state, &claims.sub, req, evidence_relpath).await?;
+    if let Some(guard) = evidence_guard {
+        guard.keep();
+    }
 
     // 4. Publish recompute for every anchor_date in [from_date, to_date] so
     //    existing daily_records pick up the new overlay. Safe if recompute_tx
@@ -221,13 +225,7 @@ pub async fn cancel_leave(
     Path(id): Path<String>,
     Query(q): Query<CancelQuery>,
 ) -> Result<StatusCode, AppError> {
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-    // Fetch the leave BEFORE cancelling so we know the date range to recompute.
-    let leave = service::get_by_id(&conn, &id).await?;
-    service::cancel_queued(&state, &id, q.version).await?;
+    let leave = service::cancel_queued(&state, &id, q.version).await?;
 
     publish_recompute_for_range(&state, &leave.employee_id, &leave.from_date, &leave.to_date);
 
