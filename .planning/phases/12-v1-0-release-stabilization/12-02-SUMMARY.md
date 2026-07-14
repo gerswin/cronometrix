@@ -28,6 +28,12 @@ This summary is a documentation commit created after the immutable tested
 implementation SHA. The summary commit is therefore not part of the tested
 SHA and must not be represented as if the clean gate ran against it.
 
+Three CI-portability remediations landed after that immutable macOS gate. The
+current tested implementation SHA for those remediations is
+`94d5df0e0e9a775dd1b9cd98b01d93defff2b380`; the original evidence directory
+and owned-coverage identity above remain immutable and are not rewritten by
+the later Linux evidence.
+
 ## Implemented Functional Contracts
 
 1. **Authentication and refresh rotation.** JWTs require a random `jti`, so
@@ -169,6 +175,40 @@ frontend statements 70% / branches 60% / functions 70% / lines 70%. The
 owned-file PASS does not waive, reduce, or redefine any project-wide gate or
 per-file floor.
 
+## Post-Checkpoint Linux CI Validation
+
+PR #11 exposed three portability defects that did not reproduce in the
+original macOS gate. They were repaired without weakening the functional,
+coverage, or hardware-evidence boundaries:
+
+1. `607e13a` replaced the preflight test's undeclared `ripgrep` dependency
+   with portable `grep -Fq` checks and added a no-`rg` regression contract.
+2. `3ac65a4` qualified Linux-only fingerprint references through the public
+   crate path so integration tests compile on the GitHub runner.
+3. `94d5df0` detects software WebGL renderers (SwiftShader/LLVMpipe) and asks
+   the same bundled TensorFlow.js runtime to run the real TinyFaceDetector on
+   its CPU backend. Hardware renderers retain the accelerated backend; no face
+   result, score, model, or enrollment acceptance check is stubbed or bypassed.
+
+Local verification at `94d5df0` passed TypeScript typecheck, focused ESLint,
+the production frontend build, 54 Vitest files / 435 tests, and the real
+enrollment Playwright slice 5/5 against Axum plus `mock_hikvision`.
+
+The GitHub pull-request run
+[`29306894039`](https://github.com/gerswin/cronometrix/actions/runs/29306894039)
+then established the Linux runner result:
+
+- `E2E Tests`: **PASS**, 80/80 in 1.8 minutes, including the previously
+  deterministic enrollment face-analysis failure.
+- `Backend Coverage`: 798/798 tests passed, 22 skipped; the job then failed
+  only at the unchanged project-wide 90% line gate.
+- `Frontend Coverage`: 54/54 files and 435/435 tests passed; the job then
+  failed only at the unchanged global gates (79.52% statements, 73.75%
+  branches, 75.68% functions, 81.13% lines).
+
+This closes the Linux CI functional defect and does not promote the release
+gate. The global coverage failures remain executable 12-05 debt.
+
 ## Exact Out-of-Scope Coverage Ledger
 
 Every item in this section is outside the 12-02 ownership manifest and remains
@@ -290,8 +330,13 @@ the tested implementation SHA:
 - `25e7456` fix(coverage): require external plan identity
 - `87224af` fix(coverage): accept Vitest empty metrics
 - `0a698b5` fix(e2e): keep Node contracts out of Playwright
+- `def01f5` docs(12-02): refresh final immutable gate evidence
+- `607e13a` fix(ci): remove ripgrep dependency from preflight tests
+- `3ac65a4` fix(ci): qualify Linux fingerprint references
+- `94d5df0` fix(e2e): avoid SwiftShader face inference stall
 
 The historical `e655763` summary commit is part of the now-tested 42-commit
-history. The later `docs(12-02): refresh final immutable gate evidence` commit
-only refreshes this checkpoint document; it remains outside the tested
-implementation SHA and does not promote the scoped PASS to a release PASS.
+history. `def01f5` refreshed this checkpoint document after the immutable
+macOS gate. The three later portability commits are covered by the Linux CI
+evidence above; this final documentation refresh remains outside both tested
+implementation SHAs and does not promote the scoped PASS to a release PASS.
