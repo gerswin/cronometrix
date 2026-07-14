@@ -3,157 +3,157 @@
   "concurrency": 32,
   "db_write_queue_busy": 0,
   "duration_seconds": 60,
-  "employee_code_prefix": "LT-20260714T201-c32-w70-",
-  "finished_at_epoch": 1784060417.884,
-  "http2xx": 11682,
+  "employee_code_prefix": "LT-20260714T203-c32-w70-",
+  "finished_at_epoch": 1784061719.844,
+  "http2xx": 11437,
   "http500": 0,
   "http503": 0,
   "latency_ms": {
     "all": {
-      "p50": 194.49,
-      "p95": 255.37,
-      "p99": 325.31
+      "p50": 183.9,
+      "p95": 247.92,
+      "p99": 290.27
     },
     "read": {
-      "p50": 46.08,
-      "p95": 114.31,
-      "p99": 150.05
+      "p50": 90.01,
+      "p95": 162.24,
+      "p99": 193.47
     },
     "write": {
-      "p50": 207.06,
-      "p95": 266.89,
-      "p99": 347.7
+      "p50": 200.95,
+      "p95": 257.42,
+      "p99": 301.29
     }
   },
   "other_failures": 0,
   "profile": "c32-w70",
-  "read_2xx": 3492,
-  "reads": 3492,
-  "run_id": "20260714T201536Z",
+  "read_2xx": 3449,
+  "reads": 3449,
+  "run_id": "20260714T203708Z",
   "samples": [
     {
       "code": 201,
-      "latency_ms": 120.86,
+      "latency_ms": 131.8,
+      "op": "write",
+      "worker": 23
+    },
+    {
+      "code": 201,
+      "latency_ms": 152.93,
+      "op": "write",
+      "worker": 23
+    },
+    {
+      "code": 201,
+      "latency_ms": 145.73,
+      "op": "write",
+      "worker": 11
+    },
+    {
+      "code": 201,
+      "latency_ms": 132.48,
+      "op": "write",
+      "worker": 11
+    },
+    {
+      "code": 200,
+      "latency_ms": 96.11,
+      "op": "read",
+      "worker": 22
+    },
+    {
+      "code": 201,
+      "latency_ms": 149.61,
+      "op": "write",
+      "worker": 22
+    },
+    {
+      "code": 201,
+      "latency_ms": 140.38,
       "op": "write",
       "worker": 13
     },
     {
       "code": 201,
-      "latency_ms": 219.06,
+      "latency_ms": 207.37,
       "op": "write",
       "worker": 13
     },
     {
+      "code": 200,
+      "latency_ms": 28.41,
+      "op": "read",
+      "worker": 2
+    },
+    {
       "code": 201,
-      "latency_ms": 154.95,
+      "latency_ms": 220.76,
       "op": "write",
-      "worker": 19
+      "worker": 2
+    },
+    {
+      "code": 201,
+      "latency_ms": 156.8,
+      "op": "write",
+      "worker": 9
+    },
+    {
+      "code": 201,
+      "latency_ms": 194.43,
+      "op": "write",
+      "worker": 9
     },
     {
       "code": 200,
-      "latency_ms": 168.42,
+      "latency_ms": 118.36,
       "op": "read",
-      "worker": 19
+      "worker": 26
     },
     {
       "code": 201,
-      "latency_ms": 152.8,
+      "latency_ms": 225.41,
       "op": "write",
-      "worker": 25
+      "worker": 26
     },
     {
       "code": 200,
-      "latency_ms": 166.11,
+      "latency_ms": 62.12,
       "op": "read",
-      "worker": 25
-    },
-    {
-      "code": 201,
-      "latency_ms": 142.34,
-      "op": "write",
-      "worker": 14
+      "worker": 4
     },
     {
       "code": 200,
-      "latency_ms": 147.73,
+      "latency_ms": 160.24,
       "op": "read",
-      "worker": 14
-    },
-    {
-      "code": 201,
-      "latency_ms": 118.46,
-      "op": "write",
-      "worker": 10
-    },
-    {
-      "code": 201,
-      "latency_ms": 237.28,
-      "op": "write",
-      "worker": 10
-    },
-    {
-      "code": 201,
-      "latency_ms": 116.71,
-      "op": "write",
-      "worker": 1
-    },
-    {
-      "code": 201,
-      "latency_ms": 221.36,
-      "op": "write",
-      "worker": 1
-    },
-    {
-      "code": 201,
-      "latency_ms": 50.65,
-      "op": "write",
       "worker": 4
     },
     {
       "code": 201,
-      "latency_ms": 196.61,
+      "latency_ms": 177.31,
       "op": "write",
-      "worker": 4
+      "worker": 31
     },
     {
       "code": 201,
-      "latency_ms": 182.66,
+      "latency_ms": 166.67,
       "op": "write",
-      "worker": 27
+      "worker": 31
     },
     {
       "code": 201,
-      "latency_ms": 238.56,
+      "latency_ms": 175.2,
       "op": "write",
-      "worker": 27
+      "worker": 19
     },
     {
       "code": 201,
-      "latency_ms": 185.44,
+      "latency_ms": 174.15,
       "op": "write",
-      "worker": 21
-    },
-    {
-      "code": 201,
-      "latency_ms": 191.01,
-      "op": "write",
-      "worker": 21
-    },
-    {
-      "code": 200,
-      "latency_ms": 99.51,
-      "op": "read",
-      "worker": 30
-    },
-    {
-      "code": 201,
-      "latency_ms": 166.49,
-      "op": "write",
-      "worker": 30
+      "worker": 19
     }
   ],
-  "started_at_epoch": 1784060357.822,
-  "write_2xx": 8190,
+  "started_at_epoch": 1784061659.778,
+  "write_2xx": 7988,
   "write_ratio": 70,
-  "writes": 8190
+  "writes": 7988
 }
