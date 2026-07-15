@@ -45,6 +45,7 @@ deploy/data/
 # Private release output and active install manifest
 deploy/release-manifest.env
 deploy/releases/
+deploy/test-artifacts/
 cronometrix-*.tar.gz
 cronometrix-*.tar.gz.sha256
 

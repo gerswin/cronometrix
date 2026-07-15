@@ -22,7 +22,7 @@ services:
     image: cronometrix-api:local
     restart: unless-stopped
     env_file:
-      - path: .env.local
+      - path: ${CRONOMETRIX_LOCAL_ENV_FILE:-.env.local}
         required: false
     environment:
       - SERVER_HOST=0.0.0.0
@@ -40,7 +40,7 @@ services:
     expose:
       - "3001"
     volumes:
-      - ./data:/opt/cronometrix/data
+      - ${CRONOMETRIX_DATA_DIR:-./data}:/opt/cronometrix/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:3001/api/v1/health"]
       interval: 30s
@@ -76,7 +76,7 @@ services:
     image: cronometrix-gateway:local
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${GATEWAY_HOST_PORT:-8080}:8080"
     depends_on:
       api:
         condition: service_healthy

@@ -112,3 +112,10 @@ tunnel token, and GHCR PAT private. License and admin inputs are sent as JSON
 through stdin and are immediately unset; neither is written to `.env`. A
 rerun preserves `JWT_SECRET`, `DEVICE_CREDS_KEY`, application data, and Docker
 credentials. A different supplied license key is a hard failure.
+
+The container smoke gate proves that complete SSE query-token markers do not
+appear in repository-controlled Nginx, API, web, or uploaded Compose logs for
+successful, unauthorized, and upstream-failure paths. It cannot inspect browser
+history/diagnostics or Cloudflare account-side telemetry. Keep access JWTs
+short-lived, never share stream URLs, and restrict Cloudflare log access and
+retention accordingly.

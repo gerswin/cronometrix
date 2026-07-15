@@ -7,7 +7,7 @@
 # The same commands are invoked by .github/workflows/ci.yml so local and CI runs
 # produce the same numbers (within toolchain version tolerance).
 
-.PHONY: test-ci-config check-db-write-queue write-queue-load-profiles coverage coverage-backend coverage-frontend
+.PHONY: test-ci-config check-db-write-queue write-queue-load-profiles coverage coverage-backend coverage-frontend container-smoke
 
 test-ci-config:
 	bash scripts/tests/test-ci-node-version-files.sh
@@ -35,6 +35,9 @@ coverage-backend: check-db-write-queue
 coverage-frontend:
 	cd frontend && npx vitest run --coverage
 	@echo "Frontend HTML: frontend/coverage/index.html"
+
+container-smoke:
+	bash deploy/tests/compose-smoke.sh
 
 .PHONY: e2e e2e-install e2e-build
 
