@@ -227,7 +227,7 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
                 colSpan={columns.length}
                 className="px-3 py-8 text-center text-slate-400 text-xs"
               >
-                Sin datos. Configure los filtros y haga clic en "Emitir Reporte".
+                Sin datos. Configure los filtros y haga clic en &quot;Emitir Reporte&quot;.
               </td>
             </tr>
           )}

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -264,7 +264,7 @@ export default function DepartmentsPage() {
         {/* Side panel (only when a row is selected) */}
         {selected && (
           <ConfigPanel
-            key={selected.id}
+            key={`${selected.id}:${selected.version}`}
             department={selected}
             employees={empListByDept.get(selected.id) ?? []}
             canEdit={isAdmin}
@@ -325,15 +325,6 @@ function ConfigPanel({
   )
   const [shiftStart, setShiftStart] = useState(department.shift_start_time)
   const [shiftEnd, setShiftEnd] = useState(department.shift_end_time)
-
-  // Re-prime when version changes (after server roundtrip)
-  useEffect(() => {
-    setLunchMode(department.lunch_mode)
-    setLunchDuration(department.lunch_duration_min ?? 60)
-    setBaseSalary(department.base_salary_cents / 100)
-    setShiftStart(department.shift_start_time)
-    setShiftEnd(department.shift_end_time)
-  }, [department])
 
   const isDirty =
     lunchMode !== department.lunch_mode ||

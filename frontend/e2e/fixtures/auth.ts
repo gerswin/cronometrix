@@ -80,23 +80,23 @@ type E2EFixtures = {
 export const test = base.extend<E2EFixtures>({
   role: ['admin', { option: true }],
 
-  roleSession: async ({ browser, role }, use) => {
+  roleSession: async ({ browser, role }, provide) => {
     const session = await newRoleSession(browser, role)
     try {
-      await use(session)
+      await provide(session)
     } finally {
       await session.context.close()
     }
   },
 
-  context: async ({ roleSession }, use) => {
-    await use(roleSession.context)
+  context: async ({ roleSession }, provide) => {
+    await provide(roleSession.context)
   },
 
-  request: async ({ playwright, roleSession }, use) => {
+  request: async ({ playwright, roleSession }, provide) => {
     const request = await newAuthenticatedRequest(playwright, roleSession.accessToken)
     try {
-      await use(request)
+      await provide(request)
     } finally {
       await request.dispose()
     }

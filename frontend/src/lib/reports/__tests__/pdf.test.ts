@@ -12,7 +12,12 @@ const textCalls: { args: unknown[] }[] = []
 const setPropertiesCalls: { args: unknown[] }[] = []
 const saveCalls: { filename: string }[] = []
 const setFontCalls: { args: unknown[] }[] = []
-const autoTableCalls: { doc: unknown; options: any }[] = []
+interface CapturedAutoTableOptions {
+  body?: (string | number)[][]
+  didDrawPage?: (data: { pageNumber: number }) => void
+}
+
+const autoTableCalls: { doc: unknown; options: CapturedAutoTableOptions }[] = []
 
 vi.mock('jspdf', () => {
   class MockJsPDF {
@@ -20,7 +25,9 @@ vi.mock('jspdf', () => {
     setProperties(...args: unknown[]) {
       setPropertiesCalls.push({ args })
     }
-    setFontSize(_size: number) {}
+    setFontSize(size: number) {
+      void size
+    }
     setFont(...args: unknown[]) {
       setFontCalls.push({ args })
     }
@@ -38,7 +45,7 @@ vi.mock('jspdf', () => {
 })
 
 vi.mock('jspdf-autotable', () => {
-  const fn = (doc: unknown, options: any) => {
+  const fn = (doc: unknown, options: CapturedAutoTableOptions) => {
     autoTableCalls.push({ doc, options })
     // Simulate one page draw so didDrawPage gets called.
     if (options.didDrawPage) {
