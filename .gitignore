@@ -42,6 +42,12 @@ deploy/dokku/deploy.env
 # Demo deploy local SQLite data (generated, contains seeded credentials)
 deploy/data/
 
+# Private release output and active install manifest
+deploy/release-manifest.env
+deploy/releases/
+cronometrix-*.tar.gz
+cronometrix-*.tar.gz.sha256
+
 # Backend load-test outputs (regenerated per run)
 backend/load-test-results/
 

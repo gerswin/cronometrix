@@ -20,6 +20,10 @@
 **/cronometrix.db
 **/cronometrix.db-*
 **/data/
+deploy/release-manifest.env
+deploy/releases/
+*.tar.gz
+*.tar.gz.sha256
 
 # IDE / OS
 .git/

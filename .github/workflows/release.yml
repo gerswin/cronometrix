@@ -1,0 +1,279 @@
+name: Release
+
+'on':
+  push:
+    branches:
+      - 'codex/release-build-*'
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-images:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/codex/release-build-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            manifest_key: API_IMAGE
+            image: ghcr.io/gerswin/cronometrix-api
+            dockerfile: deploy/Dockerfile.api
+            build_args: ''
+          - component: web
+            manifest_key: WEB_IMAGE
+            image: ghcr.io/gerswin/cronometrix-web
+            dockerfile: deploy/Dockerfile.web
+            build_args: NEXT_PUBLIC_API_URL=
+          - component: gateway
+            manifest_key: GATEWAY_IMAGE
+            image: ghcr.io/gerswin/cronometrix-gateway
+            dockerfile: deploy/Dockerfile.gateway
+            build_args: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify immutable candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse 'HEAD^{commit}')"
+          test "${GITHUB_SHA}" = "${SOURCE_SHA}"
+          test "${GITHUB_REF_NAME}" = "codex/release-build-${SOURCE_SHA}"
+          {
+            echo "SOURCE_SHA=${SOURCE_SHA}"
+            echo "RELEASE_VERSION=sha-${SOURCE_SHA:0:12}"
+          } >> "${GITHUB_ENV}"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and publish ${{ matrix.component }}
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ matrix.image }}:${{ env.RELEASE_VERSION }}
+          build-args: ${{ matrix.build_args }}
+          labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+          annotations: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+
+      - name: Record immutable digest
+        shell: bash
+        env:
+          MANIFEST_KEY: ${{ matrix.manifest_key }}
+          IMAGE: ${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          mkdir -p release-digest
+          printf '%s=%s:%s@%s\n' \
+            "${MANIFEST_KEY}" "${IMAGE}" "${RELEASE_VERSION}" "${DIGEST}" \
+            > "release-digest/${COMPONENT}.env"
+
+      - name: Upload ${{ matrix.component }} digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digest-${{ matrix.component }}
+          path: release-digest/${{ matrix.component }}.env
+          if-no-files-found: error
+          retention-days: 14
+
+  promote-images:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      checks: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            manifest_key: API_IMAGE
+            image: ghcr.io/gerswin/cronometrix-api
+          - component: web
+            manifest_key: WEB_IMAGE
+            image: ghcr.io/gerswin/cronometrix-web
+          - component: gateway
+            manifest_key: GATEWAY_IMAGE
+            image: ghcr.io/gerswin/cronometrix-gateway
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tagged commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse 'HEAD^{commit}')"
+          test "${GITHUB_SHA}" = "${SOURCE_SHA}"
+          {
+            echo "SOURCE_SHA=${SOURCE_SHA}"
+            echo "SOURCE_VERSION=sha-${SOURCE_SHA:0:12}"
+            echo "RELEASE_VERSION=${GITHUB_REF_NAME}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Verify required checks on tagged commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?per_page=100" \
+            > check-runs.json
+          jq -e '
+            ["Backend Coverage", "Frontend Coverage", "E2E Tests", "Container Smoke", "Release Gate"] as $required
+            | .check_runs as $checks
+            | all($required[]; . as $name
+                | any($checks[]; .name == $name and .conclusion == "success"))
+          ' check-runs.json >/dev/null
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Verify source image and add release alias
+        shell: bash
+        env:
+          IMAGE: ${{ matrix.image }}
+          COMPONENT: ${{ matrix.component }}
+          MANIFEST_KEY: ${{ matrix.manifest_key }}
+        run: |
+          set -euo pipefail
+          SOURCE_REF="${IMAGE}:${SOURCE_VERSION}"
+          docker buildx imagetools inspect "${SOURCE_REF}" > inspection.txt
+          docker buildx imagetools inspect "${SOURCE_REF}" --format '{{json .}}' > inspection.json
+          DIGEST="$(awk '$1 == "Digest:" {print $2; exit}' inspection.txt)"
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          jq -e --arg sha "${SOURCE_SHA}" \
+            '[.. | objects | .["org.opencontainers.image.revision"]? // empty] | any(. == $sha)' \
+            inspection.json >/dev/null
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${RELEASE_VERSION}" \
+            "${IMAGE}@${DIGEST}"
+          ALIAS_DIGEST="$(docker buildx imagetools inspect "${IMAGE}:${RELEASE_VERSION}" | awk '$1 == "Digest:" {print $2; exit}')"
+          test "${ALIAS_DIGEST}" = "${DIGEST}"
+          mkdir -p release-digest
+          printf '%s=%s:%s@%s\n' \
+            "${MANIFEST_KEY}" "${IMAGE}" "${RELEASE_VERSION}" "${DIGEST}" \
+            > "release-digest/${COMPONENT}.env"
+
+      - name: Upload ${{ matrix.component }} promoted digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digest-${{ matrix.component }}
+          path: release-digest/${{ matrix.component }}.env
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle:
+    needs: [build-images, promote-images]
+    if: >-
+      always() &&
+      ((needs.build-images.result == 'success' && needs.promote-images.result == 'skipped') ||
+       (needs.build-images.result == 'skipped' && needs.promote-images.result == 'success'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download immutable image references
+        uses: actions/download-artifact@v4
+        with:
+          pattern: image-digest-*
+          path: release-digests
+          merge-multiple: true
+
+      - name: Assemble and verify private bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse 'HEAD^{commit}')"
+          test "${GITHUB_SHA}" = "${SOURCE_SHA}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_VERSION="${GITHUB_REF_NAME}"
+          else
+            test "${GITHUB_REF_NAME}" = "codex/release-build-${SOURCE_SHA}"
+            RELEASE_VERSION="sha-${SOURCE_SHA:0:12}"
+          fi
+
+          test "$(find release-digests -type f -name '*.env' | wc -l)" -eq 3
+          API_IMAGE="$(sed -n 's/^API_IMAGE=//p' release-digests/api.env)"
+          WEB_IMAGE="$(sed -n 's/^WEB_IMAGE=//p' release-digests/web.env)"
+          GATEWAY_IMAGE="$(sed -n 's/^GATEWAY_IMAGE=//p' release-digests/gateway.env)"
+          test -n "${API_IMAGE}"
+          test -n "${WEB_IMAGE}"
+          test -n "${GATEWAY_IMAGE}"
+
+          mkdir -p bundle dist
+          install -m 0755 deploy/install.sh bundle/install.sh
+          install -m 0644 deploy/docker-compose.yml bundle/docker-compose.yml
+          install -m 0644 deploy/nginx.conf bundle/nginx.conf
+          printf '%s\n' \
+            "SOURCE_SHA=${SOURCE_SHA}" \
+            "RELEASE_VERSION=${RELEASE_VERSION}" \
+            "API_IMAGE=${API_IMAGE}" \
+            "WEB_IMAGE=${WEB_IMAGE}" \
+            "GATEWAY_IMAGE=${GATEWAY_IMAGE}" \
+            "CLOUDFLARED_IMAGE=cloudflare/cloudflared:2026.3.0@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0" \
+            > bundle/release-manifest.env
+          chmod 0644 bundle/release-manifest.env
+          bash scripts/verify-release-manifest.sh bundle/release-manifest.env
+
+          (
+            cd bundle
+            sha256sum install.sh docker-compose.yml release-manifest.env nginx.conf > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+          ARCHIVE="cronometrix-${RELEASE_VERSION}-${SOURCE_SHA:0:12}.tar.gz"
+          tar -C bundle -czf "dist/${ARCHIVE}" \
+            install.sh docker-compose.yml release-manifest.env nginx.conf SHA256SUMS
+          (
+            cd dist
+            sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+            sha256sum -c "${ARCHIVE}.sha256"
+          )
+          test "$(tar -tzf "dist/${ARCHIVE}" | wc -l)" -eq 5
+
+      - name: Upload private release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronometrix-private-release-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14

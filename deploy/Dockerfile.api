@@ -4,7 +4,7 @@
 # links to glibc; using musl/alpine would require extra effort and ships no
 # observable size win after stripping. ~80MB compressed final image.
 
-FROM rust:1.93-slim-bookworm AS builder
+FROM rust:1.93-slim-bookworm@sha256:5b9332190bb3b9ece73b810cd1f1e9f06343b294ce184bcb067f0747d7d333ea AS builder
 # Pin to bookworm so the binary's glibc symbols match the runner image
 # (debian:bookworm-slim ships glibc 2.36; bare `rust:1.93` defaults to trixie
 # which links against glibc 2.38+ and the runner aborts at startup).
@@ -23,24 +23,15 @@ RUN mkdir -p src && echo "fn main() {}" > src/main.rs && \
 COPY backend/ ./
 # Re-touch main so cargo recompiles with real source
 RUN touch src/main.rs && cargo build --release --bin cronometrix
-# Demo: also build seed_e2e (Cargo feature-gated) so the runner can self-seed
-# on startup when CRONOMETRIX_AUTO_SEED=true is set in env.
-RUN cargo build --release --bin seed_e2e --features seed-e2e
 
 # Runner: debian-slim with CA certs (needed for Turso TLS + DO Functions HTTPS)
-# python3 is added so the demo entrypoint can run scripts/seed-reports-data.py
-# to populate full daily_records coverage (late/OT/early/half-day/etc).
-FROM debian:bookworm-slim AS runner
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runner
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl python3 && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/cronometrix
 COPY --from=builder /app/target/release/cronometrix /usr/local/bin/cronometrix
-COPY --from=builder /app/target/release/seed_e2e /usr/local/bin/seed_e2e
-COPY scripts/seed-reports-data.py /usr/local/bin/seed-reports-data.py
-COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Data directory for SQLite + license.jwt; created by installer outside container
 # but ensured here so the binary's default paths work even without a volume mount.
@@ -57,4 +48,4 @@ ENV RUST_LOG=info \
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -fsS http://localhost:3001/api/v1/health || exit 1
 
-CMD ["/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/local/bin/cronometrix"]
