@@ -1,0 +1,28 @@
+{
+  "plan": "12-04",
+  "base_sha": "6453a4ceb8d3d2f23ccf1fb9d6f3c291cc81dec1",
+  "thresholds": {
+    "backend": {
+      "lines": 70,
+      "branches": 60
+    },
+    "frontend": {
+      "statements": 70,
+      "branches": 60,
+      "functions": 70,
+      "lines": 70
+    }
+  },
+  "backend": [
+    "backend/src/enrollments/image_pipeline.rs",
+    "backend/src/license/fingerprint.rs",
+    "backend/src/license/service.rs",
+    "backend/src/reports/money.rs",
+    "backend/src/storage/atomic_file.rs"
+  ],
+  "frontend": [
+    "frontend/src/components/reports/summary-table.tsx",
+    "frontend/src/lib/api-base.ts",
+    "frontend/src/lib/api.ts"
+  ]
+}
