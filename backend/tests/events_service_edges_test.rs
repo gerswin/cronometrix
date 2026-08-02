@@ -232,3 +232,49 @@ async fn list_and_single_record_reads_cover_unknown_and_photo_edges() {
         }
     ));
 }
+
+/// The device reports the enrolled identity in `employeeNoString`, not `faceID`.
+///
+/// Enrollment pushes our `face_id` as the device's `UserInfo.employeeNo`, and
+/// DS-K1T341CMFW echoes that value back in `employeeNoString` while sending no
+/// `faceID` field at all. Matching the mapping only against `faceID` left every
+/// correctly enrolled person unresolved — stored as `is_unknown`, which
+/// `calc::aggregation` discards, so their day computed zero hours.
+#[tokio::test]
+async fn lookup_resolves_a_mapping_reported_via_employee_no_string() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed_directory(&conn).await;
+
+    let face_id = "8fac76939c404e5894b4df22e74acbbf";
+    conn.execute(
+        "INSERT INTO device_face_mappings (id, device_id, employee_id, face_id, created_at, updated_at) \
+         VALUES ('map-1', 'dev-events', 'emp-events', ?1, unixepoch(), unixepoch())",
+        libsql::params![face_id],
+    )
+    .await
+    .unwrap();
+
+    // What the hardware actually sends: identity in employeeNoString, faceID empty.
+    let via_employee_no = service::lookup_employee_for_event(&conn, "dev-events", Some(""), Some(face_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        via_employee_no.as_deref(),
+        Some("emp-events"),
+        "a mapping reported through employeeNoString must still resolve"
+    );
+
+    // Firmware that does populate faceID keeps working.
+    let via_face_id = service::lookup_employee_for_event(&conn, "dev-events", Some(face_id), Some(""))
+        .await
+        .unwrap();
+    assert_eq!(via_face_id.as_deref(), Some("emp-events"));
+
+    // A mapping belongs to one device; another reader must not borrow it.
+    let other_device =
+        service::lookup_employee_for_event(&conn, "dev-other", Some(""), Some(face_id))
+            .await
+            .unwrap();
+    assert_eq!(other_device, None, "mappings must stay scoped to their device");
+}

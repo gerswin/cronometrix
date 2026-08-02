@@ -236,20 +236,31 @@ pub fn write_photo_atomic(root: &Path, relpath: &str, bytes: &[u8]) -> anyhow::R
 }
 
 /// Resolve an event to an employee given the (device_id, face_id, employee_no_string)
-/// triple emitted by Hikvision alertStream. Priority: (1) device_face_mappings, then
-/// (2) employees.employee_code == employee_no_string fallback (per A3 in 02-RESEARCH).
+/// pair emitted by Hikvision alertStream.
+///
+/// Both identifiers are matched against `device_face_mappings` before falling
+/// back to `employees.employee_code`, because the device does not consistently
+/// say WHERE it puts the identity. Enrollment pushes our `face_id` as the
+/// device's `UserInfo.employeeNo`, and DS-K1T341CMFW then reports that value
+/// back as `employeeNoString` while sending no `faceID` field at all. Trying
+/// only `faceID` against the mapping meant every correctly enrolled person
+/// resolved to nobody and was stored as `is_unknown` — which
+/// `calc::aggregation` discards outright, so their day computed zero hours.
 pub async fn lookup_employee_for_event(
     conn: &Connection,
     device_id: &str,
     face_id: Option<&str>,
     employee_no_string: Option<&str>,
 ) -> Result<Option<String>, AppError> {
-    // Priority 1: device_face_mappings lookup
-    if let Some(fid) = face_id {
+    // Priority 1: device_face_mappings, keyed by whichever field carried the id.
+    for candidate in [face_id, employee_no_string].into_iter().flatten() {
+        if candidate.is_empty() {
+            continue;
+        }
         let mut rows = conn
             .query(
                 "SELECT employee_id FROM device_face_mappings WHERE device_id = ?1 AND face_id = ?2",
-                params![device_id.to_string(), fid.to_string()],
+                params![device_id.to_string(), candidate.to_string()],
             )
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
@@ -262,7 +273,8 @@ pub async fn lookup_employee_for_event(
         }
     }
 
-    // Priority 2: employees.employee_code == employee_no_string fallback
+    // Priority 2: employees.employee_code == employee_no_string fallback. This
+    // covers people enrolled directly on the device, outside Cronometrix.
     if let Some(ens) = employee_no_string {
         if !ens.is_empty() {
             let mut rows = conn
