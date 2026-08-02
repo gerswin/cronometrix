@@ -329,6 +329,55 @@ impl DeviceConnection {
         self.send_json(&url, reqwest::Method::PUT, &body).await
     }
 
+    /// `PUT /ISAPI/Event/notification/httpHosts` — point the reader's event
+    /// webhook at this backend.
+    ///
+    /// Written as XML because the endpoint answers XML regardless of
+    /// `?format=json`, and addressed PER SLOT (`.../httpHosts/1`) rather than by
+    /// PUTting the whole list. Writing the list is accepted with `statusCode 1`
+    /// but silently lands the entry in a different slot and drops `ipAddress`
+    /// and `portNo` entirely, leaving `0.0.0.0:0` — a success response for a
+    /// webhook that can never fire.
+    ///
+    /// `hostName`/`ipAddress` and `portNo` are what the DEVICE dials, so they
+    /// must be an address it can reach; `url` is the path, capped at 128
+    /// characters by the firmware, which is where the per-device secret rides.
+    pub async fn set_event_http_host(
+        &self,
+        host: &str,
+        port: u16,
+        path: &str,
+        use_https: bool,
+    ) -> Result<String> {
+        let url = format!("{}/ISAPI/Event/notification/httpHosts/1", self.base_url);
+        let protocol = if use_https { "HTTPS" } else { "HTTP" };
+        let is_ip = host.parse::<std::net::IpAddr>().is_ok();
+        let addressing = if is_ip {
+            format!("<addressingFormatType>ipaddress</addressingFormatType><ipAddress>{host}</ipAddress>")
+        } else {
+            format!("<addressingFormatType>hostname</addressingFormatType><hostName>{host}</hostName>")
+        };
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><HttpHostNotification version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema"><id>1</id><url>{path}</url><protocolType>{protocol}</protocolType><parameterFormatType>json</parameterFormatType>{addressing}<portNo>{port}</portNo><httpAuthenticationMethod>none</httpAuthenticationMethod><SubscribeEvent><heartbeat>30</heartbeat><eventMode>all</eventMode></SubscribeEvent></HttpHostNotification>"#
+        );
+        self.send_xml(&url, reqwest::Method::PUT, &body).await
+    }
+
+    /// `PUT /ISAPI/Event/notification/httpHosts/{slot}` with an empty host.
+    ///
+    /// The device keeps two notification slots and we only occupy one, so the
+    /// other must be actively cleared rather than ignored: a reader was found in
+    /// the field posting every marking, name and face to a public Pipedream URL
+    /// somebody had left behind. Leaving a slot alone means trusting whatever is
+    /// already in it.
+    pub async fn clear_event_http_host(&self, slot: u8) -> Result<String> {
+        let url = format!("{}/ISAPI/Event/notification/httpHosts/{slot}", self.base_url);
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><HttpHostNotification version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema"><id>{slot}</id><url></url><protocolType>HTTP</protocolType><addressingFormatType>ipaddress</addressingFormatType><ipAddress>0.0.0.0</ipAddress><portNo>0</portNo></HttpHostNotification>"#
+        );
+        self.send_xml(&url, reqwest::Method::PUT, &body).await
+    }
+
     /// `PUT /ISAPI/System/reboot` — request a device reboot. Device typically
     /// 200s immediately then drops; the caller's 10s `tokio::time::timeout`
     /// absorbs any lag.

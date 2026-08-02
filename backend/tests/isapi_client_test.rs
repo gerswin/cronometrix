@@ -518,3 +518,66 @@ async fn set_capture_upload_enables_uploads_without_exposing_identity_on_screen(
         .await
         .expect("device accepts the capture config");
 }
+
+/// PUTting the whole `httpHosts` list is accepted with `statusCode 1` but lands
+/// the entry in the wrong slot and drops the address, leaving `0.0.0.0:0` — a
+/// success response for a webhook that can never fire. The per-slot path is the
+/// one that actually applies host and port, so the request URI is asserted.
+#[tokio::test]
+async fn set_event_http_host_addresses_a_single_slot_with_a_reachable_address() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/Event/notification/httpHosts/1"))
+        .and(body_string_contains("<ipAddress>192.168.1.138</ipAddress>"))
+        .and(body_string_contains("<portNo>3001</portNo>"))
+        .and(body_string_contains("<url>/api/v1/devices/dev-1/push/secret</url>"))
+        .and(body_string_contains("<protocolType>HTTP</protocolType>"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ResponseStatus/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_event_http_host("192.168.1.138", 3001, "/api/v1/devices/dev-1/push/secret", false)
+        .await
+        .expect("device accepts the webhook");
+}
+
+/// A hostname must go in `hostName`, not `ipAddress` — the reader validates the
+/// field against `addressingFormatType` and rejects a mismatch.
+#[tokio::test]
+async fn set_event_http_host_uses_hostname_addressing_for_a_non_ip() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/Event/notification/httpHosts/1"))
+        .and(body_string_contains("<addressingFormatType>hostname</addressingFormatType>"))
+        .and(body_string_contains("<hostName>acme.cronometrix.com</hostName>"))
+        .and(body_string_contains("<protocolType>HTTPS</protocolType>"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ResponseStatus/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_event_http_host("acme.cronometrix.com", 443, "/hook", true)
+        .await
+        .expect("device accepts a hostname webhook");
+}
+
+/// The spare slot must be actively emptied: a reader was found posting every
+/// marking to a public endpoint left behind in it.
+#[tokio::test]
+async fn clear_event_http_host_blanks_the_spare_slot() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/Event/notification/httpHosts/2"))
+        .and(body_string_contains("<url></url>"))
+        .and(body_string_contains("<ipAddress>0.0.0.0</ipAddress>"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ResponseStatus/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.clear_event_http_host(2).await.expect("slot cleared");
+}

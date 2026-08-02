@@ -46,6 +46,7 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
@@ -624,6 +625,7 @@ async fn dispatch_door_open_writes_audit() {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     let db_arc = Arc::new(db);
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
@@ -737,6 +739,7 @@ async fn dispatch_timeout_returns_504() {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     let db_arc = Arc::new(db);
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
@@ -819,6 +822,7 @@ async fn dispatch_bad_gateway_on_500() {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     let db_arc = Arc::new(db);
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
@@ -969,6 +973,7 @@ async fn patch_updates_password_and_reencrypts() {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     // Plan 08-02 D-20: tempdir-rooted Paths injected via test_state.
     let _tmp = tempfile::TempDir::new().expect("tempdir");

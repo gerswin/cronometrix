@@ -458,7 +458,8 @@ pub async fn start_enrollment(
                 let mut device_rows = tx
                     .query(
                         "SELECT id, name, ip, port, scheme, username, encrypted_password, \
-                                direction, allow_insecure_tls, status, version \
+                                direction, allow_insecure_tls, status, version, \
+                                ingest_mode, push_token \
                          FROM devices \
                          WHERE status='active' AND deleted_at IS NULL \
                          ORDER BY created_at, id",
@@ -482,6 +483,8 @@ pub async fn start_enrollment(
                         allow_insecure_tls: row.get::<i64>(8)? != 0,
                         status: row.get(9)?,
                         version: row.get(10)?,
+                        ingest_mode: row.get(11)?,
+                        push_token: row.get(12)?,
                     });
                 }
                 drop(device_rows);

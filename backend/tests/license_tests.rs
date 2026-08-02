@@ -348,6 +348,7 @@ mod gate_behavior_tests {
             do_functions_renew_url: String::new(),
             cors_allowed_origins: Vec::new(),
             cookie_secure: false,
+        device_push_base_url: String::new(),
         });
 
         let tmp = tempfile::TempDir::new().expect("tempdir");

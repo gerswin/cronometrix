@@ -51,7 +51,18 @@ pub async fn device_task(dev: DeviceWithPlaintext, state: AppState, cancel: Canc
         password: dev.password.clone(),
         direction_default: dev.direction.clone(),
         allow_insecure_tls: dev.allow_insecure_tls,
+        ingest_mode: dev.ingest_mode.clone(),
+        push_token: dev.push_token.clone(),
     };
+
+    // A push-mode reader delivers events over the webhook, so opening the
+    // alertStream would double-ingest every marking — and the dedup index keys
+    // on employee_id, which is NULL for unknown faces and therefore never
+    // collides. This task only keeps the device provisioned.
+    if dev.ingest_mode == "push" {
+        push_provisioning_loop(&cfg, &state, &cancel).await;
+        return;
+    }
 
     let mut backoff_ms: u64 = INITIAL_BACKOFF_MS;
 
@@ -91,6 +102,33 @@ pub async fn device_task(dev: DeviceWithPlaintext, state: AppState, cancel: Canc
 
         // Double the backoff for the NEXT failure, capped at MAX.
         backoff_ms = backoff_ms.saturating_mul(2).min(MAX_BACKOFF_MS);
+    }
+}
+
+/// Keep a push-mode device provisioned without holding a stream open.
+///
+/// Reprovisioning periodically matters more here than in stream mode: nothing
+/// else reconnects, so a reader that is power-cycled or factory-reset would
+/// otherwise sit with its webhook pointing nowhere and simply stop reporting,
+/// silently, with no error anywhere to notice.
+async fn push_provisioning_loop(
+    cfg: &DeviceConfig,
+    state: &AppState,
+    cancel: &CancellationToken,
+) {
+    const REPROVISION_INTERVAL: Duration = Duration::from_secs(300);
+
+    loop {
+        crate::isapi::stream::provision_device(cfg, state).await;
+
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                tracing::info!(device_id = %cfg.id, "push device task cancelled");
+                return;
+            }
+            _ = tokio::time::sleep(REPROVISION_INTERVAL) => {}
+        }
     }
 }
 

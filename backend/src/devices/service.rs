@@ -398,7 +398,7 @@ pub async fn get_decrypted(
     let row = conn
         .query(
             "SELECT id, name, ip, port, scheme, username, encrypted_password, \
-                    direction, allow_insecure_tls, status, version \
+                    direction, allow_insecure_tls, status, version, ingest_mode, push_token \
              FROM devices WHERE id = ?1 AND status = 'active'",
             params![id.to_string()],
         )
@@ -423,6 +423,8 @@ pub async fn get_decrypted(
     let allow_int: i64 = row.get(8).map_err(|e| AppError::Internal(e.into()))?;
     let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
     let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
+    let ingest_mode: String = row.get(11).map_err(|e| AppError::Internal(e.into()))?;
+    let push_token: Option<String> = row.get(12).map_err(|e| AppError::Internal(e.into()))?;
 
     let password = crypto::decrypt_password(&encrypted, key).map_err(AppError::Internal)?;
 
@@ -436,6 +438,8 @@ pub async fn get_decrypted(
         allow_insecure_tls: allow_int != 0,
         status,
         version,
+        ingest_mode,
+        push_token,
     })
 }
 
@@ -455,7 +459,7 @@ pub async fn list_active(
     let mut rows = conn
         .query(
             "SELECT id, name, ip, port, scheme, username, encrypted_password, \
-                    direction, allow_insecure_tls, status, version \
+                    direction, allow_insecure_tls, status, version, ingest_mode, push_token \
              FROM devices WHERE status = 'active' AND deleted_at IS NULL \
              ORDER BY created_at ASC",
             (),
@@ -480,6 +484,8 @@ pub async fn list_active(
         let allow_int: i64 = row.get(8).map_err(|e| AppError::Internal(e.into()))?;
         let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
         let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
+        let ingest_mode: String = row.get(11).map_err(|e| AppError::Internal(e.into()))?;
+        let push_token: Option<String> = row.get(12).map_err(|e| AppError::Internal(e.into()))?;
 
         match crypto::decrypt_password(&encrypted, key) {
             Ok(password) => out.push(DeviceWithPlaintext {
@@ -492,6 +498,8 @@ pub async fn list_active(
                 allow_insecure_tls: allow_int != 0,
                 status,
                 version,
+                ingest_mode,
+                push_token,
             }),
             Err(e) => {
                 tracing::error!(

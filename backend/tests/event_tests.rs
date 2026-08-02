@@ -54,6 +54,7 @@ async fn build_test_app(db: libsql::Database) -> (Router, AppState, TempDir) {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
@@ -465,6 +466,7 @@ async fn sse_enrichment_failure_broadcasts_fallback_without_undoing_persisted_ev
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let conn = state.db.connect().unwrap();

@@ -86,6 +86,7 @@ fn make_config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -170,6 +171,8 @@ fn make_plain_device(id: &str, base_url: &str) -> DeviceWithPlaintext {
         allow_insecure_tls: false,
         status: "active".into(),
         version: 1,
+            ingest_mode: "stream".into(),
+            push_token: None,
     }
 }
 

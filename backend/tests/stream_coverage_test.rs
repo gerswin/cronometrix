@@ -27,6 +27,7 @@ fn config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -38,6 +39,8 @@ fn device(id: &str, addr: SocketAddr, direction_default: &str) -> DeviceConfig {
         password: "do-not-log".into(),
         direction_default: direction_default.into(),
         allow_insecure_tls: false,
+        ingest_mode: "stream".into(),
+        push_token: None,
     }
 }
 
@@ -99,6 +102,8 @@ fn device_config_debug_redacts_password_and_exposes_connection_fields() {
         password: "super-secret".into(),
         direction_default: "entry".into(),
         allow_insecure_tls: true,
+        ingest_mode: "stream".into(),
+        push_token: None,
     };
 
     let debug = format!("{cfg:?}");

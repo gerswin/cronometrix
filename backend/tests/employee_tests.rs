@@ -56,6 +56,7 @@ async fn deactivate_handler_publishes_a_purge_request_when_worker_is_available()
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let (purge_tx, mut purge_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -91,6 +92,7 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);

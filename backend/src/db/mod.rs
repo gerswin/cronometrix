@@ -87,6 +87,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "021_face_id_isapi_length",
         include_str!("migrations/021_face_id_isapi_length.sql"),
     ),
+    (
+        "022_device_ingest_mode",
+        include_str!("migrations/022_device_ingest_mode.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded

@@ -20,13 +20,11 @@ use chrono::Offset;
 use diqwest::WithDigestAuth;
 use reqwest::Client;
 
-use crate::events::models::{NewAttendanceEvent, PersistOutcome};
-use crate::events::service as events_service;
 use crate::state::AppState;
 use crate::supervisor::status::{touch_last_seen, update_connection_state};
 
 use super::client::{posix_time_zone, DeviceConnection};
-use super::events::{parse_alert, EventNotificationAlert};
+use super::ingest::ingest_alert;
 
 /// Minimal plaintext-carrying handle for the stream loop. Deliberately NOT
 /// `Debug`/`Serialize` — the password must stay on the task stack and must
@@ -38,6 +36,10 @@ pub struct DeviceConfig {
     pub password: String,
     pub direction_default: String,
     pub allow_insecure_tls: bool,
+    /// `stream` or `push`. Only push-mode devices get a webhook configured.
+    pub ingest_mode: String,
+    /// Secret for this device's webhook path. Redacted from Debug.
+    pub push_token: Option<String>,
 }
 
 impl std::fmt::Debug for DeviceConfig {
@@ -47,6 +49,8 @@ impl std::fmt::Debug for DeviceConfig {
             .field("base_url", &self.base_url)
             .field("username", &self.username)
             .field("password", &"[redacted]")
+            .field("push_token", &"[redacted]")
+            .field("ingest_mode", &self.ingest_mode)
             .field("direction_default", &self.direction_default)
             .field("allow_insecure_tls", &self.allow_insecure_tls)
             .finish()
@@ -237,7 +241,7 @@ const ATTENDANCE_KEYS: [(u8, &str, &str); 6] = [
 /// Each step is independent and non-fatal: losing the attendance config is bad
 /// (markings arrive without a direction) but losing the event stream is worse,
 /// so nothing here is allowed to abort the connection.
-async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
+pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
     sync_device_clock(cfg, state).await;
 
     let conn = match DeviceConnection::new(
@@ -283,6 +287,12 @@ async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
         failures += 1;
         tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: capture upload");
     }
+    if cfg.ingest_mode == "push" {
+        if let Err(error) = provision_webhook(&conn, cfg, state).await {
+            failures += 1;
+            tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: event webhook");
+        }
+    }
 
     if failures == 0 {
         tracing::info!(
@@ -298,6 +308,72 @@ async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
             "device attendance configuration incomplete — markings may lack a direction"
         );
     }
+}
+
+/// Point the reader's event webhook at this backend.
+///
+/// Replaces the device's whole host list, which is how a stale third-party
+/// endpoint gets removed: a reader was found in the field posting every
+/// marking, name and face to a public Pipedream URL somebody had left behind.
+///
+/// Requires `CRONOMETRIX_DEVICE_PUSH_BASE_URL`, because a bind address is not a
+/// destination — `SERVER_HOST` is usually `0.0.0.0`, which the device cannot
+/// dial. Without it the webhook is left untouched rather than pointed at a
+/// guess.
+async fn provision_webhook(
+    conn: &DeviceConnection,
+    cfg: &DeviceConfig,
+    state: &AppState,
+) -> anyhow::Result<()> {
+    let base = state.config.device_push_base_url.trim();
+    anyhow::ensure!(
+        !base.is_empty(),
+        "CRONOMETRIX_DEVICE_PUSH_BASE_URL is unset; refusing to guess a webhook address"
+    );
+    let token = cfg
+        .push_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("device is in push mode but has no push_token"))?;
+
+    let parsed = reqwest::Url::parse(base)
+        .map_err(|error| anyhow::anyhow!("invalid device push base URL '{base}': {error}"))?;
+    let use_https = parsed.scheme().eq_ignore_ascii_case("https");
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("device push base URL has no host"))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("device push base URL has no port"))?;
+
+    let path = format!("/api/v1/devices/{}/push/{}", cfg.id, token);
+    anyhow::ensure!(
+        path.len() <= 128,
+        "webhook path is {} chars; firmware caps `url` at 128",
+        path.len()
+    );
+
+    // ORDER IS LOAD-BEARING: clear the spare slot BEFORE writing ours. Writing
+    // slot 2 makes this firmware recompact the list — it empties slot 1 and
+    // shifts our entry down, dropping `ipAddress` and `portNo` on the way, while
+    // still answering `statusCode 1`. Doing it first leaves nothing to shift.
+    //
+    // Clearing at all is what evicts a stale third-party endpoint: a reader was
+    // found in the field posting every marking, name and face to a public
+    // Pipedream URL somebody had left behind.
+    if let Err(error) = conn.clear_event_http_host(2).await {
+        tracing::warn!(device_id = %cfg.id, err = %error, "could not clear the spare webhook slot");
+    }
+    conn.set_event_http_host(&host, port, &path, use_https)
+        .await?;
+    tracing::info!(
+        device_id = %cfg.id,
+        host = %host,
+        port,
+        "event webhook pointed at this backend"
+    );
+    Ok(())
 }
 
 /// Push the server's wall clock onto the device, in the operator's timezone.
@@ -357,136 +433,21 @@ async fn ingest_pair(
 ) -> anyhow::Result<()> {
     let PendingAlert {
         bytes,
-        raw: raw_payload,
+        raw,
         content_type,
     } = pending;
 
-    let alert: EventNotificationAlert = match parse_alert(&bytes, &content_type) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!(
-                device_id = %cfg.id,
-                content_type = %content_type,
-                err = %e,
-                "failed to parse alertStream payload — skipping part"
-            );
-            return Ok(());
-        }
-    };
-
-    // Heartbeats: last_seen_at is already refreshed; skip persistence.
-    if alert.is_heartbeat() {
-        tracing::debug!(device_id = %cfg.id, "heartbeat received");
-        return Ok(());
-    }
-
-    let Some(ace) = alert.access_controller_event.as_ref() else {
-        tracing::debug!(device_id = %cfg.id, "alert without AccessControllerEvent — skipped");
-        return Ok(());
-    };
-
-    // Door, tamper and status events share the AccessControllerEvent envelope
-    // with real markings but name nobody. Persisting them would invent an
-    // unknown-face row every time the door moved.
-    if !ace.has_identity() {
-        tracing::debug!(
-            device_id = %cfg.id,
-            major = ?ace.major_event_type,
-            sub = ?ace.sub_event_type,
-            "access-control event without an identity — skipped"
-        );
-        return Ok(());
-    }
-
-    let captured_at = alert
-        .captured_at_epoch()
-        .unwrap_or_else(|| chrono::Utc::now().timestamp());
-
-    let direction = ace
-        .reported_direction()
-        .map(str::to_string)
-        .unwrap_or_else(|| cfg.direction_default.clone());
-
-    let face_id = if ace.face_id.is_empty() {
-        None
-    } else {
-        Some(ace.face_id.clone())
-    };
-    let employee_no_string = if ace.employee_no_string.is_empty() {
-        None
-    } else {
-        Some(ace.employee_no_string.clone())
-    };
-
-    let conn = state.db.connect().map_err(anyhow::Error::from)?;
-    let employee_id = events_service::lookup_employee_for_event(
-        &conn,
-        &cfg.id,
-        face_id.as_deref(),
-        employee_no_string.as_deref(),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("lookup_employee_for_event failed: {}", e))?;
-    let is_unknown = employee_id.is_none();
-
-    let new_event = NewAttendanceEvent {
-        id: uuid::Uuid::new_v4().to_string(),
-        employee_id,
-        device_id: cfg.id.clone(),
-        direction,
-        captured_at,
-        is_unknown,
-        face_id,
-        employee_no_string,
-        raw_xml: raw_payload,
-        photo_bytes: jpeg_bytes.map(|b| b.to_vec()),
-    };
-
-    // Retain fields we need for the Phase 3 recompute publish BEFORE consuming
-    // `new_event` into `persist_attendance_event` (which takes it by value).
-    let recompute_snapshot = crate::events::models::NewAttendanceEvent {
-        id: new_event.id.clone(),
-        employee_id: new_event.employee_id.clone(),
-        device_id: new_event.device_id.clone(),
-        direction: new_event.direction.clone(),
-        captured_at: new_event.captured_at,
-        is_unknown: new_event.is_unknown,
-        face_id: new_event.face_id.clone(),
-        employee_no_string: new_event.employee_no_string.clone(),
-        raw_xml: String::new(), // not needed for recompute publish
-        photo_bytes: None,
-    };
-
-    match events_service::persist_attendance_event_queued(
+    ingest_alert(
         state,
-        &state.paths.events_root,
-        new_event,
+        &cfg.id,
+        &cfg.direction_default,
+        &bytes,
+        &content_type,
+        raw,
+        jpeg_bytes,
     )
     .await
-    {
-        Ok(PersistOutcome::Inserted { photo_path }) => {
-            tracing::info!(
-                device_id = %cfg.id,
-                photo_path = ?photo_path,
-                "event persisted"
-            );
-            // Phase 3 D-02: publish recompute AFTER successful insert.
-            // publish_recompute_if_employee guards on employee_id.is_some()
-            // and on state.recompute_tx.is_some() so unknown-face events and
-            // test setups without a worker are silently skipped.
-            events_service::publish_recompute_if_employee(state, &recompute_snapshot);
-            // Phase 4: broadcast to SSE stream clients (non-fatal if no subscribers).
-            events_service::publish_sse_event(state, &recompute_snapshot, &photo_path).await;
-        }
-        Ok(PersistOutcome::Deduplicated) => {
-            tracing::debug!(device_id = %cfg.id, "event deduplicated");
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!("persist_attendance_event failed: {}", e));
-        }
-    }
-
-    Ok(())
+    .map(|_| ())
 }
 
 #[cfg(test)]

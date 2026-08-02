@@ -251,7 +251,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/setup/activate", post(setup::handlers::setup_activate))
         // SSE stream: EventSource cannot send Bearer headers (T-4-02), so auth is
         // handled inside the handler via ?token=<jwt> query param.
-        .route("/events/stream", get(events::handlers::events_stream));
+        .route("/events/stream", get(events::handlers::events_stream))
+        // Device webhook. Public by necessity: a reader cannot present a JWT and
+        // this firmware family leaves `httpAuthenticationMethod` empty, so the
+        // only credential available is the per-device secret in the path.
+        .route(
+            "/devices/{device_id}/push/{token}",
+            post(devices::push::receive_push),
+        );
 
     // Cookie-authenticated routes (refresh/logout validate via refresh cookie, not Bearer)
     // License gate is applied here too: an unlicensed install must not refresh sessions.

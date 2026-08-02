@@ -317,6 +317,8 @@ fn device_with_plaintext_debug_redacts_password() {
         allow_insecure_tls: false,
         status: "active".into(),
         version: 1,
+            ingest_mode: "stream".into(),
+            push_token: None,
     };
     let dbg = format!("{:?}", d);
     assert!(

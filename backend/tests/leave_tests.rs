@@ -61,6 +61,7 @@ fn make_state(db: libsql::Database) -> (AppState, tempfile::TempDir) {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     common::test_state_with_tmpdir(Arc::new(db), config)
 }

@@ -493,6 +493,7 @@ mod tests {
                 do_functions_renew_url: String::new(),
                 cors_allowed_origins: Vec::new(),
                 cookie_secure: false,
+                device_push_base_url: String::new(),
             }),
             paths: Arc::new(Paths::for_test(events_root)),
             lifecycle_tx: None,
