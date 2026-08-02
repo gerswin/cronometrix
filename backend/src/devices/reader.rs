@@ -22,10 +22,17 @@ pub enum DeviceCommand {
 
 /// What the installation needs of a reader, in domain terms.
 pub struct ProvisioningIntent {
-    /// Local wall-clock time, `%Y-%m-%dT%H:%M:%S`.
-    pub local_time: String,
-    /// POSIX `TZ` string. The sign is inverted relative to the ISO offset.
-    pub time_zone: String,
+    /// The moment to write to the reader's clock, carrying its own UTC
+    /// offset. A single neutral value rather than a vendor-formatted string
+    /// pair: Hikvision's wire format — POSIX `TZ`, sign inverted relative to
+    /// the ISO offset everyone reads off a clock — is a `client.rs` detail,
+    /// not a port concern. It used to leak here as `local_time`/`time_zone`
+    /// strings built with `posix_time_zone`; a second adapter receiving
+    /// `"CST+4:00:00"` would have had to strip a meaningless prefix and
+    /// reverse Hikvision's sign convention to recover its own UTC offset,
+    /// and getting the sign wrong stamps every marking 8 hours off with
+    /// nothing to catch it.
+    pub now: chrono::DateTime<chrono::FixedOffset>,
     /// Whether every marking must carry a direction. A reader that cannot
     /// guarantee it reports `attendance_mode` as unsupported.
     pub require_direction: bool,
@@ -59,12 +66,7 @@ pub trait BiometricReader: Send + Sync {
     /// `person_id` is the identifier the device will report back on a marking;
     /// `display_name` is what it shows on screen. They are separate because
     /// Hikvision caps `employeeNo` at 32 chars while the name may be 128.
-    async fn enroll(
-        &self,
-        person_id: &str,
-        display_name: &str,
-        face: &[u8],
-    ) -> anyhow::Result<()>;
+    async fn enroll(&self, person_id: &str, display_name: &str, face: &[u8]) -> anyhow::Result<()>;
     async fn revoke(&self, person_id: &str) -> anyhow::Result<()>;
     async fn capture_face(&self) -> anyhow::Result<Vec<u8>>;
     async fn execute(&self, command: DeviceCommand) -> anyhow::Result<String>;

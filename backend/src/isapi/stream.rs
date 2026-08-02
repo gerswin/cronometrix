@@ -16,7 +16,6 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use chrono::Offset;
 use diqwest::WithDigestAuth;
 use reqwest::Client;
 
@@ -24,7 +23,6 @@ use crate::devices::reader::{reader_for, ProvisioningIntent};
 use crate::state::AppState;
 use crate::supervisor::status::{touch_last_seen, update_connection_state};
 
-use super::client::posix_time_zone;
 use super::ingest::ingest_alert;
 
 /// Minimal plaintext-carrying handle for the stream loop. Deliberately NOT
@@ -261,11 +259,18 @@ pub(crate) const ATTENDANCE_KEYS: [(u8, &str, &str); 6] = [
 /// (markings arrive without a direction) but losing the event stream is worse,
 /// so nothing here is allowed to abort the connection. Delegates to
 /// `BiometricReader::provision`; this function's job is only to assemble the
-/// vendor-neutral `ProvisioningIntent` and log the returned `ProvisionReport`.
+/// vendor-neutral `ProvisioningIntent`, log the returned `ProvisionReport`, and
+/// attribute each failure to the right symptom — a clock miss and a webhook
+/// miss are different operator problems even though the port files both under
+/// the same generic `report.failed`.
 pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
-    let now = chrono::Utc::now().with_timezone(&state.config.timezone);
-    let local_time = now.format("%Y-%m-%dT%H:%M:%S").to_string();
-    let time_zone = posix_time_zone(now.offset().fix().local_minus_utc());
+    // `.fixed_offset()` collapses the IANA zone down to what the port needs:
+    // the instant plus its UTC offset. Hikvision's wire format for this
+    // (POSIX `TZ`, sign inverted) is assembled inside `client.rs`, not here —
+    // that is a vendor detail, not a domain one.
+    let now = chrono::Utc::now()
+        .with_timezone(&state.config.timezone)
+        .fixed_offset();
 
     let reader = match reader_for(
         &cfg.base_url,
@@ -288,13 +293,18 @@ pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
     // token, or an oversized path) it's recorded as a failure here, same as
     // when this validation lived inline before the port existed — the port
     // itself never sees the field, so its report has no way to.
-    let mut webhook_build_failure: Option<String> = None;
+    let mut webhook_build_failure = false;
+    let mut webhook_target: Option<WebhookTarget> = None;
     let event_webhook = if cfg.ingest_mode == "push" {
         match build_webhook_url(cfg, state) {
-            Ok(url) => Some(url),
+            Ok(target) => {
+                let url = target.url.clone();
+                webhook_target = Some(target);
+                Some(url)
+            }
             Err(error) => {
                 tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: event webhook");
-                webhook_build_failure = Some(format!("event_webhook: {error}"));
+                webhook_build_failure = true;
                 None
             }
         }
@@ -303,8 +313,7 @@ pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
     };
 
     let intent = ProvisioningIntent {
-        local_time,
-        time_zone,
+        now,
         // Always true: `ATTENDANCE_MODE` is the fixed constant `"manual"`,
         // which requires the person to declare a direction on every marking.
         require_direction: true,
@@ -321,7 +330,23 @@ pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
     };
 
     for failure in &report.failed {
-        tracing::warn!(device_id = %cfg.id, %failure, "provisioning: step failed");
+        // The clock and the webhook are distinct operator-facing failure
+        // modes, not interchangeable "configuration incomplete" noise: a
+        // skewed clock puts wrong timestamps on payroll rows, independent of
+        // direction. Restored from the pre-port `sync_device_clock` warning
+        // (see docs/ARQUITECTURA-HEXAGONAL.md) — the port's `report.failed`
+        // is a flat `Vec<String>` with no room for this distinction, so it is
+        // reconstructed here from the `"clock: ..."` prefix `client.rs`
+        // pushes.
+        if let Some(detail) = failure.strip_prefix("clock: ") {
+            tracing::warn!(
+                device_id = %cfg.id,
+                err = %detail,
+                "device clock sync failed — events may carry a skewed captured_at"
+            );
+        } else {
+            tracing::warn!(device_id = %cfg.id, %failure, "provisioning: step failed");
+        }
     }
     if !report.unsupported.is_empty() {
         tracing::info!(
@@ -331,7 +356,24 @@ pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
         );
     }
 
-    let failures = report.failed.len() + usize::from(webhook_build_failure.is_some());
+    // Same audit-trail line `provision_webhook` used to emit directly. After
+    // the incident recorded on `clear_event_http_host` — a reader found
+    // posting every marking to a third-party endpoint someone had left
+    // configured — knowing where a reader was actually pointed has
+    // independent investigative value, separate from whether the write
+    // succeeded.
+    if report.applied.contains(&"event_webhook") {
+        if let Some(target) = &webhook_target {
+            tracing::info!(
+                device_id = %cfg.id,
+                host = %target.host,
+                port = target.port,
+                "event webhook pointed at this backend"
+            );
+        }
+    }
+
+    let failures = report.failed.len() + usize::from(webhook_build_failure);
     if failures == 0 {
         tracing::info!(
             device_id = %cfg.id,
@@ -341,12 +383,25 @@ pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
             "device attendance configuration applied"
         );
     } else {
+        // Cause-neutral on purpose: the specific reason (clock, webhook, or a
+        // plain config write) was already warned above with its own message,
+        // so this summary must not imply a single cause like "no direction".
         tracing::warn!(
             device_id = %cfg.id,
             failures,
-            "device attendance configuration incomplete — markings may lack a direction"
+            "device attendance configuration incomplete — see prior warnings for cause"
         );
     }
+}
+
+/// The host/port a reader was pointed at, alongside the full URL handed to
+/// the port. Kept apart from `url` so the "event webhook pointed at this
+/// backend" audit line never has to parse `push_token` back out of a URL —
+/// it logs only what the device dials, not the credential riding in the path.
+struct WebhookTarget {
+    url: String,
+    host: String,
+    port: u16,
 }
 
 /// Assemble the URL `ProvisioningIntent::event_webhook` needs for a push-mode
@@ -359,7 +414,7 @@ pub(crate) async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
 /// destination — `SERVER_HOST` is usually `0.0.0.0`, which the device cannot
 /// dial. Without it the webhook is left untouched rather than pointed at a
 /// guess.
-fn build_webhook_url(cfg: &DeviceConfig, state: &AppState) -> anyhow::Result<String> {
+fn build_webhook_url(cfg: &DeviceConfig, state: &AppState) -> anyhow::Result<WebhookTarget> {
     let base = state.config.device_push_base_url.trim();
     anyhow::ensure!(
         !base.is_empty(),
@@ -380,7 +435,8 @@ fn build_webhook_url(cfg: &DeviceConfig, state: &AppState) -> anyhow::Result<Str
     };
     let host = parsed
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("device push base URL has no host"))?;
+        .ok_or_else(|| anyhow::anyhow!("device push base URL has no host"))?
+        .to_string();
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| anyhow::anyhow!("device push base URL has no port"))?;
@@ -392,7 +448,25 @@ fn build_webhook_url(cfg: &DeviceConfig, state: &AppState) -> anyhow::Result<Str
         path.len()
     );
 
-    Ok(format!("{scheme}://{host}:{port}{path}"))
+    // `push_token` is operator-supplied — nothing in this codebase mints it —
+    // and unvalidated. `client.rs::parse_webhook_target` round-trips this URL
+    // through `reqwest::Url::parse`, which treats an unescaped `?` as the
+    // start of a query string and `#` as the start of a fragment: either one
+    // silently truncates everything after it out of the path, including the
+    // rest of the token. The device would then be pointed at a token-less
+    // URL — every push gets rejected, the reader goes silent, and this
+    // function still returns `Ok`, so provisioning logs success. Reject those
+    // characters here, before the token ever reaches a URL.
+    anyhow::ensure!(
+        !token.contains(['?', '#']),
+        "push_token contains a character ('?' or '#') a URL cannot carry through its path; rotate the token to remove it"
+    );
+
+    Ok(WebhookTarget {
+        url: format!("{scheme}://{host}:{port}{path}"),
+        host,
+        port,
+    })
 }
 
 /// An alert part held back until we know whether a JPEG part follows it.

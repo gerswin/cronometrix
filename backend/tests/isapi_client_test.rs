@@ -664,8 +664,7 @@ async fn provision_clears_the_spare_webhook_slot_before_writing_the_target_slot(
     let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
     let report = conn
         .provision(&ProvisioningIntent {
-            local_time: "2026-08-02T10:15:30".into(),
-            time_zone: "CST+4:00:00".into(),
+            now: chrono::DateTime::parse_from_rfc3339("2026-08-02T10:15:30-04:00").unwrap(),
             require_direction: true,
             day_split: "13:00:00".into(),
             event_webhook: Some(format!("{}/api/v1/devices/dev-1/push/secret", server.uri())),
@@ -747,8 +746,7 @@ async fn provision_with_no_webhook_touches_neither_notification_slot() {
     let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
     let report = conn
         .provision(&ProvisioningIntent {
-            local_time: "2026-08-02T10:15:30".into(),
-            time_zone: "CST+4:00:00".into(),
+            now: chrono::DateTime::parse_from_rfc3339("2026-08-02T10:15:30-04:00").unwrap(),
             require_direction: true,
             day_split: "13:00:00".into(),
             event_webhook: None,
@@ -771,5 +769,77 @@ async fn provision_with_no_webhook_touches_neither_notification_slot() {
             .path()
             .starts_with("/ISAPI/Event/notification/httpHosts")),
         "a pull-mode device must not have its notification slots touched"
+    );
+}
+
+/// `require_direction: false` must skip attendance-mode configuration
+/// entirely, not just omit it from `report.applied`. Asserted against
+/// `received_requests()` rather than only the report, so an adapter that
+/// writes the mode anyway (but simply forgets to record it) is still caught —
+/// the report alone would pass such a bug silently.
+#[tokio::test]
+async fn provision_with_require_direction_false_never_writes_attendance_mode() {
+    let server = MockServer::start().await;
+    let ok_xml = || {
+        ResponseTemplate::new(200)
+            .set_body_string("<ResponseStatus><statusCode>1</statusCode></ResponseStatus>")
+    };
+    let ok_json = || ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#);
+
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/System/time"))
+        .respond_with(ok_xml())
+        .mount(&server)
+        .await;
+    for key in 1..=6u8 {
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/ISAPI/AccessControl/keyCfg/{key}/attendance"
+            )))
+            .respond_with(ok_json())
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/weekPlan/1"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/planTemplate/1"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/AcsCfg"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    // Deliberately NOT mounted: /ISAPI/AccessControl/Configuration/attendanceMode.
+    // If `provision` writes it despite `require_direction: false`, wiremock has
+    // no matching mock and the request errors, failing this test.
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    let report = conn
+        .provision(&ProvisioningIntent {
+            now: chrono::DateTime::parse_from_rfc3339("2026-08-02T10:15:30-04:00").unwrap(),
+            require_direction: false,
+            day_split: "13:00:00".into(),
+            event_webhook: None,
+        })
+        .await
+        .expect("provision");
+
+    assert!(
+        report.unsupported.contains(&"attendance_mode"),
+        "a reader that cannot guarantee direction must report attendance_mode \
+         unsupported, got: {report:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.url.path() != "/ISAPI/AccessControl/Configuration/attendanceMode"),
+        "attendance_mode must never be written when require_direction is false"
     );
 }

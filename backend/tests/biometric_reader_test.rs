@@ -1,6 +1,16 @@
 //! The port exists so application code can depend on a capability rather than a
 //! manufacturer. This test never names Hikvision: it drives a fake reader,
 //! which is exactly what a second vendor's adapter has to satisfy.
+//!
+//! What this file is NOT: coverage of the port's real-world behaviour. Every
+//! test here would still pass with `impl BiometricReader for DeviceConnection`
+//! deleted, because `FakeReader` is the only thing under test — the trait
+//! bounds and the fake's own logic. Kept anyway as a compile-time contract
+//! (a caller written against `BiometricReader` alone must build against this)
+//! and as executable documentation of what a second vendor's adapter has to
+//! satisfy. The actual coverage of `DeviceConnection`'s behaviour — request
+//! shapes, ordering, firmware quirks — lives in the wiremock tests in
+//! `isapi_client_test.rs`.
 
 use async_trait::async_trait;
 use cronometrix_api::devices::reader::{
@@ -35,7 +45,12 @@ impl BiometricReader for FakeReader {
         Ok(report)
     }
 
-    async fn enroll(&self, person_id: &str, _display_name: &str, _face: &[u8]) -> anyhow::Result<()> {
+    async fn enroll(
+        &self,
+        person_id: &str,
+        _display_name: &str,
+        _face: &[u8],
+    ) -> anyhow::Result<()> {
         self.enrolled.lock().unwrap().push(person_id.to_string());
         Ok(())
     }
@@ -62,8 +77,7 @@ async fn a_reader_reports_what_it_could_not_apply_instead_of_failing_silently() 
     };
     let report = reader
         .provision(&ProvisioningIntent {
-            local_time: "2026-08-02T13:00:00".into(),
-            time_zone: "CST+4:00:00".into(),
+            now: chrono::DateTime::parse_from_rfc3339("2026-08-02T13:00:00-04:00").unwrap(),
             require_direction: true,
             day_split: "13:00:00".into(),
             event_webhook: None,
@@ -85,7 +99,10 @@ async fn enrol_and_revoke_round_trip_through_the_port() {
         enrolled: std::sync::Mutex::new(Vec::new()),
         webhook_slots_touched: std::sync::Mutex::new(false),
     };
-    reader.enroll("person-1", "Person One", &[0xFF, 0xD8, 0xFF]).await.unwrap();
+    reader
+        .enroll("person-1", "Person One", &[0xFF, 0xD8, 0xFF])
+        .await
+        .unwrap();
     assert_eq!(reader.enrolled.lock().unwrap().len(), 1);
     reader.revoke("person-1").await.unwrap();
     assert!(reader.enrolled.lock().unwrap().is_empty());
@@ -99,8 +116,7 @@ async fn a_none_webhook_leaves_the_readers_notification_targets_untouched() {
     };
     let report = reader
         .provision(&ProvisioningIntent {
-            local_time: "2026-08-02T13:00:00".into(),
-            time_zone: "CST+4:00:00".into(),
+            now: chrono::DateTime::parse_from_rfc3339("2026-08-02T13:00:00-04:00").unwrap(),
             require_direction: false,
             day_split: "13:00:00".into(),
             event_webhook: None,

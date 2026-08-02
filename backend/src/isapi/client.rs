@@ -641,14 +641,28 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
 
         let mut report = crate::devices::reader::ProvisionReport::default();
 
-        match self.set_time(&intent.local_time, &intent.time_zone).await {
+        // The port carries a neutral `DateTime<FixedOffset>`; Hikvision's wire
+        // format for it — POSIX `TZ`, sign inverted relative to the ISO
+        // offset — is this vendor's own quirk, so it is built here rather
+        // than by the port's callers. See [`posix_time_zone`].
+        let local_time = intent.now.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let time_zone = posix_time_zone(intent.now.offset().local_minus_utc());
+
+        match self.set_time(&local_time, &time_zone).await {
             Ok(_) => report.applied.push("clock"),
             Err(error) => report.failed.push(format!("clock: {error}")),
         }
 
-        match self.set_attendance_mode(ATTENDANCE_MODE).await {
-            Ok(_) => report.applied.push("attendance_mode"),
-            Err(error) => report.failed.push(format!("attendance_mode: {error}")),
+        // A reader that cannot guarantee a direction on every marking must say
+        // so rather than silently write a mode that promises one it can't
+        // keep — see `ProvisioningIntent::require_direction`.
+        if intent.require_direction {
+            match self.set_attendance_mode(ATTENDANCE_MODE).await {
+                Ok(_) => report.applied.push("attendance_mode"),
+                Err(error) => report.failed.push(format!("attendance_mode: {error}")),
+            }
+        } else {
+            report.unsupported.push("attendance_mode");
         }
 
         let mut key_failures = 0usize;
@@ -757,17 +771,21 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
 /// from a device id and push token), the port's caller already supplies a
 /// complete URL — the port has no notion of "device id" or "push token", only
 /// "where to POST events" — so this only parses, it does not assemble.
+///
+/// None of these error messages interpolate `url`: `push_token` — the only
+/// credential a reader can present — rides in its path, and these messages
+/// land in `report.failed`, which gets logged at `warn!`.
 fn parse_webhook_target(url: &str) -> Result<(String, u16, String, bool)> {
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|error| anyhow::anyhow!("invalid URL '{url}': {error}"))?;
+    let parsed =
+        reqwest::Url::parse(url).map_err(|error| anyhow::anyhow!("invalid webhook URL: {error}"))?;
     let use_https = parsed.scheme().eq_ignore_ascii_case("https");
     let host = parsed
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("URL '{url}' has no host"))?
+        .ok_or_else(|| anyhow::anyhow!("webhook URL has no host"))?
         .to_string();
     let port = parsed
         .port_or_known_default()
-        .ok_or_else(|| anyhow::anyhow!("URL '{url}' has no port"))?;
+        .ok_or_else(|| anyhow::anyhow!("webhook URL has no port"))?;
     let path = parsed.path().to_string();
     anyhow::ensure!(
         path.len() <= 128,
