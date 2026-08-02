@@ -11,7 +11,7 @@
 //!   - Debug impl redacts password
 //!   - new() returns a Client successfully
 
-use cronometrix_api::isapi::client::DeviceConnection;
+use cronometrix_api::isapi::client::{posix_time_zone, DeviceConnection};
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -341,4 +341,62 @@ async fn capture_face_image_fails_fast_on_non_busy_rejection() {
     let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
     let err = conn.capture_face_image().await.expect_err("must not retry");
     assert!(err.to_string().contains("400"), "got: {err}");
+}
+
+// =============================================================================
+// set_time / posix_time_zone
+// =============================================================================
+
+/// POSIX inverts the sign everyone reads off a clock: it states how far you
+/// must move to reach UTC. Caracas (UTC-4) is therefore `CST+4:00:00`. Getting
+/// this backwards puts the device eight hours out — worse than not syncing.
+#[test]
+fn posix_time_zone_inverts_the_utc_offset_sign() {
+    assert_eq!(posix_time_zone(-4 * 3600), "CST+4:00:00");
+    assert_eq!(posix_time_zone(2 * 3600), "CST-2:00:00");
+    assert_eq!(posix_time_zone(0), "CST+0:00:00");
+    // India, UTC+5:30 — the half-hour must survive.
+    assert_eq!(posix_time_zone(5 * 3600 + 1800), "CST-5:30:00");
+    // Chatham, UTC+12:45.
+    assert_eq!(posix_time_zone(12 * 3600 + 2700), "CST-12:45:00");
+}
+
+#[tokio::test]
+async fn set_time_puts_manual_mode_with_local_time_and_zone() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/System/time"))
+        .and(header("content-type", "application/xml"))
+        .and(body_string_contains("<timeMode>manual</timeMode>"))
+        .and(body_string_contains("<localTime>2026-08-02T10:15:30</localTime>"))
+        .and(body_string_contains("<timeZone>CST+4:00:00</timeZone>"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<ResponseStatus><statusCode>1</statusCode></ResponseStatus>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_time("2026-08-02T10:15:30", "CST+4:00:00")
+        .await
+        .expect("device accepts the clock write");
+}
+
+#[tokio::test]
+async fn set_time_surfaces_device_rejection() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/System/time"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    let err = conn
+        .set_time("2026-08-02T10:15:30", "CST+4:00:00")
+        .await
+        .expect_err("403 must not be silently swallowed");
+    assert!(err.to_string().contains("403"), "got: {err}");
 }

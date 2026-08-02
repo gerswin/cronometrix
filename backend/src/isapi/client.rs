@@ -42,6 +42,25 @@ const CAPTURE_MAX_ATTEMPTS: usize = 8;
 /// and earns `400 / deviceBusy` — measured: 2s still collides, 3s does not.
 const CAPTURE_RETRY_DELAY: Duration = Duration::from_secs(3);
 
+/// Render a UTC offset in the POSIX `TZ` convention Hikvision expects.
+///
+/// The sign is INVERTED relative to the ISO offset everyone reads off a clock:
+/// POSIX states how far you must move to reach UTC, so `UTC-4` (Caracas) is
+/// written `CST+4:00:00`. Getting this backwards puts the device eight hours
+/// out, which is worse than leaving it unsynchronised.
+pub fn posix_time_zone(utc_offset_seconds: i32) -> String {
+    let inverted = -utc_offset_seconds;
+    let sign = if inverted < 0 { '-' } else { '+' };
+    let abs = inverted.abs();
+    format!(
+        "CST{}{}:{:02}:{:02}",
+        sign,
+        abs / 3600,
+        (abs % 3600) / 60,
+        abs % 60
+    )
+}
+
 /// Locate `needle` inside `haystack`, returning its start offset.
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
@@ -169,6 +188,24 @@ impl DeviceConnection {
         let url = format!("{}/ISAPI/AccessControl/RemoteControl/door/1", self.base_url);
         let body = r#"<RemoteControlDoor><cmd>open</cmd></RemoteControlDoor>"#;
         self.send_xml(&url, reqwest::Method::PUT, body).await
+    }
+
+    /// `PUT /ISAPI/System/time` — push the server's clock onto the device.
+    ///
+    /// Device clocks drift, and nothing downstream can compensate: `captured_at`
+    /// comes straight off the event payload, so a device six months behind files
+    /// every marking under the wrong date. Observed on hardware — a reader
+    /// reporting `2026-01-29` while the server ran `2026-08-02`.
+    ///
+    /// `time_zone` uses the POSIX sign convention, which is INVERTED relative to
+    /// the usual UTC offset: `UTC-4` is written `CST+4:00:00`. Build it with
+    /// [`posix_time_zone`] rather than by hand.
+    pub async fn set_time(&self, local_time: &str, time_zone: &str) -> Result<String> {
+        let url = format!("{}/ISAPI/System/time", self.base_url);
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Time xmlns="http://www.isapi.org/ver20/XMLSchema" version="2.0"><timeMode>manual</timeMode><localTime>{local_time}</localTime><timeZone>{time_zone}</timeZone></Time>"#
+        );
+        self.send_xml(&url, reqwest::Method::PUT, &body).await
     }
 
     /// `PUT /ISAPI/System/reboot` — request a device reboot. Device typically

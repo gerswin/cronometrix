@@ -143,13 +143,18 @@ async fn stream_handles_magic_byte_parts_unknown_parts_and_skippable_xml() {
 
     let without_access_event = br#"<EventNotificationAlert><dateTime>bad</dateTime><eventType>AccessControllerEvent</eventType></EventNotificationAlert>"#;
     let malformed = br#"<EventNotificationAlert><broken>"#;
-    let attendance = br#"<EventNotificationAlert><dateTime>not-a-date</dateTime><eventType>AccessControllerEvent</eventType><AccessControllerEvent><employeeNoString></employeeNoString><attendanceStatus></attendanceStatus><faceID></faceID></AccessControllerEvent></EventNotificationAlert>"#;
+    // Carries an identity that resolves to no employee — the is_unknown path.
+    // An identity-LESS access-control event is a door/tamper notification and is
+    // asserted separately below to stay out of attendance_events entirely.
+    let attendance = br#"<EventNotificationAlert><dateTime>not-a-date</dateTime><eventType>AccessControllerEvent</eventType><AccessControllerEvent><employeeNoString>99999</employeeNoString><attendanceStatus></attendanceStatus><faceID></faceID></AccessControllerEvent></EventNotificationAlert>"#;
+    let door_event = br#"<EventNotificationAlert><dateTime>2026-08-02T10:00:00-04:00</dateTime><eventType>AccessControllerEvent</eventType><AccessControllerEvent><majorEventType>5</majorEventType><subEventType>22</subEventType><attendanceStatus>undefined</attendanceStatus></AccessControllerEvent></EventNotificationAlert>"#;
     let jpeg = common::MINI_JPEG;
     let body = multipart(&[
         (None, jpeg),
         (Some("application/octet-stream"), b"ignored"),
         (Some("application/xml"), malformed),
         (None, without_access_event),
+        (None, door_event),
         (None, attendance),
         (None, jpeg),
     ]);
@@ -181,10 +186,25 @@ async fn stream_handles_magic_byte_parts_unknown_parts_and_skippable_xml() {
     assert_eq!(row.get::<Option<String>>(0).unwrap(), None);
     assert_eq!(row.get::<String>(1).unwrap(), "exit");
     assert_eq!(row.get::<Option<String>>(2).unwrap(), None);
-    assert_eq!(row.get::<Option<String>>(3).unwrap(), None);
+    assert_eq!(
+        row.get::<Option<String>>(3).unwrap(),
+        Some("99999".to_string())
+    );
     assert_eq!(row.get::<i64>(4).unwrap(), 1);
     assert!(row.get::<i64>(5).unwrap() > 0);
     assert!(row.get::<Option<String>>(6).unwrap().is_some());
+
+    // The door event (no employeeNoString, no faceID) must not have produced a
+    // row of its own — otherwise every door movement fabricates a marking.
+    let mut count = conn
+        .query(
+            "SELECT COUNT(*) FROM attendance_events WHERE device_id = 'stream-branches'",
+            (),
+        )
+        .await
+        .unwrap();
+    let total: i64 = count.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(total, 1, "identity-less access-control events must be skipped");
 }
 
 #[tokio::test]
@@ -198,10 +218,20 @@ async fn stream_rejects_invalid_utf8_xml_part() {
     let body = multipart(&[(Some("application/xml"), &invalid_utf8)]);
     let addr = spawn_response(Some(&format!("multipart/mixed; boundary={BOUNDARY}")), body).await;
 
-    let error = connect_and_stream(&device("invalid-utf8", addr, "entry"), &state)
+    connect_and_stream(&device("invalid-utf8", addr, "entry"), &state)
         .await
-        .expect_err("invalid UTF-8 must not enter the XML parser");
-    assert!(error.to_string().contains("not valid UTF-8"));
+        .expect("one malformed part must not tear down the stream");
+
+    let conn = state.db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM attendance_events WHERE device_id = 'invalid-utf8'",
+            (),
+        )
+        .await
+        .unwrap();
+    let total: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(total, 0, "an unparseable part must persist nothing");
 }
 
 #[tokio::test]

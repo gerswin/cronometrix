@@ -16,6 +16,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use chrono::Offset;
 use diqwest::WithDigestAuth;
 use reqwest::Client;
 
@@ -24,7 +25,8 @@ use crate::events::service as events_service;
 use crate::state::AppState;
 use crate::supervisor::status::{touch_last_seen, update_connection_state};
 
-use super::events::{direction_for_attendance_status, strip_xmlns, EventNotificationAlert};
+use super::client::{posix_time_zone, DeviceConnection};
+use super::events::{parse_alert, EventNotificationAlert};
 
 /// Minimal plaintext-carrying handle for the stream loop. Deliberately NOT
 /// `Debug`/`Serialize` — the password must stay on the task stack and must
@@ -127,6 +129,12 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
     update_connection_state(state, &cfg.id, "online").await?;
     touch_last_seen(state, &cfg.id).await?;
 
+    // Push our clock onto the device before consuming any event. `captured_at`
+    // is read straight off the payload, so a drifted reader files every marking
+    // under the wrong date — hardware was found six months behind. Best effort:
+    // a device that refuses the write still streams usable events.
+    sync_device_clock(cfg, state).await;
+
     let stream = resp.bytes_stream();
     let constraints = multer::Constraints::new().size_limit(
         multer::SizeLimit::new()
@@ -135,7 +143,7 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
     );
     let mut mp = multer::Multipart::with_constraints(stream, boundary, constraints);
 
-    let mut pending_xml: Option<(Bytes, String)> = None;
+    let mut pending_alert: Option<PendingAlert> = None;
 
     loop {
         let field_res = mp.next_field().await;
@@ -158,19 +166,28 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
         // Any successful read means the device is alive — refresh last_seen.
         touch_last_seen(state, &cfg.id).await?;
 
-        if ct.starts_with("application/xml") || bytes.starts_with(b"<EventNotificationAlert") {
-            // Commit any pending XML with no JPEG (Pitfall 2: some events
-            // carry no attachment).
-            if let Some((prev_bytes, prev_raw)) = pending_xml.take() {
-                ingest_pair(state, cfg, prev_bytes, None, prev_raw).await?;
+        let is_alert = ct.starts_with("application/xml")
+            || ct.starts_with("application/json")
+            || bytes.starts_with(b"<EventNotificationAlert")
+            || bytes.first() == Some(&b'{');
+
+        if is_alert {
+            // Commit any pending alert with no JPEG (Pitfall 2: some events
+            // carry no attachment — and this firmware never sends one).
+            if let Some(pending) = pending_alert.take() {
+                ingest_pair(state, cfg, pending, None).await?;
             }
             let raw = std::str::from_utf8(&bytes).unwrap_or_default().to_string();
-            pending_xml = Some((bytes, raw));
+            pending_alert = Some(PendingAlert {
+                bytes,
+                raw,
+                content_type: ct,
+            });
         } else if ct.starts_with("image/jpeg") || bytes.starts_with(b"\xFF\xD8\xFF") {
-            if let Some((prev_bytes, prev_raw)) = pending_xml.take() {
-                ingest_pair(state, cfg, prev_bytes, Some(bytes), prev_raw).await?;
+            if let Some(pending) = pending_alert.take() {
+                ingest_pair(state, cfg, pending, Some(bytes)).await?;
             }
-            // Orphan JPEG (no preceding XML) — drop.
+            // Orphan JPEG (no preceding alert) — drop.
         } else {
             tracing::debug!(
                 device_id = %cfg.id,
@@ -180,31 +197,82 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
         }
     }
 
-    // Flush any pending XML on clean end-of-stream.
-    if let Some((prev_bytes, prev_raw)) = pending_xml.take() {
-        ingest_pair(state, cfg, prev_bytes, None, prev_raw).await?;
+    // Flush any pending alert on clean end-of-stream.
+    if let Some(pending) = pending_alert.take() {
+        ingest_pair(state, cfg, pending, None).await?;
     }
     Ok(())
 }
 
-/// Parse a (xml, jpeg?) pair and route it through the persist pipeline.
+/// Push the server's wall clock onto the device, in the operator's timezone.
+///
+/// Non-fatal by design: a failure here must not cost us the event stream, which
+/// is the device's primary job. It runs on every reconnect rather than once at
+/// startup so a reader that was power-cycled (and reset its clock) is corrected
+/// without operator action.
+async fn sync_device_clock(cfg: &DeviceConfig, state: &AppState) {
+    let now = chrono::Utc::now().with_timezone(&state.config.timezone);
+    let local_time = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let time_zone = posix_time_zone(now.offset().fix().local_minus_utc());
+
+    let conn = match DeviceConnection::new(
+        &cfg.base_url,
+        &cfg.username,
+        &cfg.password,
+        cfg.allow_insecure_tls,
+    ) {
+        Ok(conn) => conn,
+        Err(error) => {
+            tracing::warn!(device_id = %cfg.id, err = %error, "clock sync: client build failed");
+            return;
+        }
+    };
+
+    match conn.set_time(&local_time, &time_zone).await {
+        Ok(_) => tracing::info!(
+            device_id = %cfg.id,
+            local_time = %local_time,
+            time_zone = %time_zone,
+            "device clock synchronised"
+        ),
+        Err(error) => tracing::warn!(
+            device_id = %cfg.id,
+            err = %error,
+            "device clock sync failed — events may carry a skewed captured_at"
+        ),
+    }
+}
+
+/// An alert part held back until we know whether a JPEG part follows it.
+struct PendingAlert {
+    bytes: Bytes,
+    /// Verbatim payload, persisted for audit. Named `raw_xml` in the schema for
+    /// historical reasons; it may now hold JSON.
+    raw: String,
+    content_type: String,
+}
+
+/// Parse an (alert, jpeg?) pair and route it through the persist pipeline.
 async fn ingest_pair(
     state: &AppState,
     cfg: &DeviceConfig,
-    xml_bytes: Bytes,
+    pending: PendingAlert,
     jpeg_bytes: Option<Bytes>,
-    raw_xml: String,
 ) -> anyhow::Result<()> {
-    let xml_str = std::str::from_utf8(&xml_bytes)
-        .map_err(|e| anyhow::anyhow!("XML part is not valid UTF-8: {}", e))?;
-    let stripped = strip_xmlns(xml_str);
-    let alert: EventNotificationAlert = match quick_xml::de::from_str(&stripped) {
+    let PendingAlert {
+        bytes,
+        raw: raw_payload,
+        content_type,
+    } = pending;
+
+    let alert: EventNotificationAlert = match parse_alert(&bytes, &content_type) {
         Ok(a) => a,
         Err(e) => {
             tracing::warn!(
                 device_id = %cfg.id,
+                content_type = %content_type,
                 err = %e,
-                "failed to parse EventNotificationAlert XML — skipping part"
+                "failed to parse alertStream payload — skipping part"
             );
             return Ok(());
         }
@@ -221,15 +289,27 @@ async fn ingest_pair(
         return Ok(());
     };
 
+    // Door, tamper and status events share the AccessControllerEvent envelope
+    // with real markings but name nobody. Persisting them would invent an
+    // unknown-face row every time the door moved.
+    if !ace.has_identity() {
+        tracing::debug!(
+            device_id = %cfg.id,
+            major = ?ace.major_event_type,
+            sub = ?ace.sub_event_type,
+            "access-control event without an identity — skipped"
+        );
+        return Ok(());
+    }
+
     let captured_at = alert
         .captured_at_epoch()
         .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
-    let direction = if !ace.attendance_status.is_empty() {
-        direction_for_attendance_status(&ace.attendance_status).to_string()
-    } else {
-        cfg.direction_default.clone()
-    };
+    let direction = ace
+        .reported_direction()
+        .map(str::to_string)
+        .unwrap_or_else(|| cfg.direction_default.clone());
 
     let face_id = if ace.face_id.is_empty() {
         None
@@ -262,7 +342,7 @@ async fn ingest_pair(
         is_unknown,
         face_id,
         employee_no_string,
-        raw_xml,
+        raw_xml: raw_payload,
         photo_bytes: jpeg_bytes.map(|b| b.to_vec()),
     };
 
