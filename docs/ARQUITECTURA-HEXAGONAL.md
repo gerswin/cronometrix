@@ -156,12 +156,12 @@ Ordenado por dependencia, no por importancia.
    comportamiento observable, cubierto por la suite existente. Commit
    `1fd36d3`.
 
-3. **[HECHO] Definir `BiometricReader` e implementarlo sobre `DeviceConnection`;
+3. **[PARCIAL] Definir `BiometricReader` e implementarlo sobre `DeviceConnection`;
    migrar los siete llamadores.**
    Definición del trait y del `ProvisionReport`/`ProvisioningIntent`:
-   commits `12cdcf5`, `91246e3`. Migración de cada llamador, un commit por
-   sitio (todos validados con la suite completa — 1057 tests, 0 fallos —
-   entre cada uno):
+   commits `12cdcf5`, `91246e3`. De los siete llamadores originales, CINCO
+   quedaron migrados, uno por sitio (todos validados con la suite completa —
+   1057 tests, 0 fallos — entre cada uno):
    - `workers/purge.rs` (`delete_user` → `revoke`): `b947cff`
    - `devices/handlers.rs` (`door_open`/`reboot`/`enrollment_mode` →
      `execute(DeviceCommand)`): `a6afb41`
@@ -175,34 +175,76 @@ Ordenado por dependencia, no por importancia.
      así que se migró en vez de dejarlo en `DeviceConnection`.
    - `enrollments/service.rs` (validación de conectividad antes de escribir
      filas): `2e740f2`
-   - `isapi/stream.rs::provision_device` (delega en `BiometricReader::provision`,
-     `sync_device_clock` y `provision_webhook` absorbidos en la construcción
-     del `ProvisioningIntent`): commit siguiente a este documento
 
-   Ya no queda ni una referencia a `DeviceConnection` fuera de `isapi/` y de
-   la fábrica `reader_for` en `devices/reader.rs`.
+   `isapi/stream.rs::provision_device` también fue migrado (delega en
+   `BiometricReader::provision`) — pero ese sitio nunca estuvo en la lista
+   original de siete; su migración tomó, sin querer, el lugar de dos
+   llamadores que SÍ estaban en la lista y NO se migraron: `supervisor/task.rs`
+   (sigue con `use crate::isapi::stream::{connect_and_stream, DeviceConfig}` y
+   llama `provision_device` directamente) y `devices/push.rs` (sigue con
+   `use crate::isapi::ingest::{ingest_alert, IngestOutcome}` y
+   `use crate::isapi::parser`). Ver "Todavía abierto" para lo que esto
+   significa.
 
 ## Todavía abierto
 
-4. **Columna `devices.vendor`** con default `hikvision`, más un `match` en
+4. **`BiometricReader` cubre control, no datos — la mitad más difícil sigue
+   sin puerto.** El trait tiene `provision`, `enroll`, `revoke`,
+   `capture_face`, `execute`: todo comandos que el backend envía AL lector.
+   No tiene ningún método para que el lector ENTREGUE marcaciones — ni
+   `stream`, ni `connect`. Por eso:
+   - `supervisor/task.rs` sigue construyendo `DeviceConfig` y llamando
+     `isapi::stream::connect_and_stream` directamente: el bucle de
+     reconexión del alertStream es 100% Hikvision.
+   - `devices/push.rs` sigue llamando `isapi::ingest::ingest_alert` e
+     `isapi::parser` directamente: el webhook de push es 100% Hikvision.
+
+   `attendance::ingest` (el puerto de ENTRADA, `RawMarking` → `ingest()`) sí
+   es agnóstico de marca y ya está listo para recibirlas. Lo que falta es el
+   transporte: quien escriba un adaptador ZKTeco satisfaría `BiometricReader`
+   por completo — compilaría, pasaría cualquier test de contrato — y seguiría
+   sin recibir una sola marcación, porque no hay ningún puerto que le pida
+   "entrégame lo que el lector capture". Lo descubriría a mitad de la
+   integración, no al leer el trait. Migrar estos dos módulos a un puerto de
+   transporte (probablemente algo como `BiometricReader::stream(&self) ->
+   impl Stream<Item = RawMarking>`, o un callback de entrega) es el trabajo
+   real que queda antes de que "agregar una marca" sea cierto.
+
+5. **`enrollments/pusher.rs:602` decide `terminal` con un downcast a un tipo
+   de error Hikvision.** `e.downcast_ref::<crate::isapi::client::DeviceResponseError>()`
+   distingue un rechazo limpio del dispositivo (se archiva como fallo
+   terminal) de un resultado ambiguo (va a la cola de reconciliación manual
+   del operador). Un segundo adaptador devuelve su propio tipo de error, así
+   que `terminal` daría `false` para CUALQUIER fallo de ese adaptador — un
+   401 llano, un 404, una cara rechazada — y cada enrolamiento fallido
+   terminaría en la cola de reconciliación manual. Corregirlo requiere un
+   tipo de error a nivel de puerto que distinga un RECHAZO del dispositivo de
+   un resultado AMBIGUO — cambio de diseño, no de esta pasada de limpieza; el
+   sitio queda marcado con un comentario explicando esto exactamente.
+
+6. **Columna `devices.vendor`** con default `hikvision`, más un `match` en
    `reader_for` que despache por marca. Hoy `reader_for` ya tiene la forma
    correcta (`base_url, username, password, allow_insecure_tls) -> Box<dyn
    BiometricReader>`) pero solo construye `DeviceConnection` — es una
    migración de una línea, mejor hacerla cuando exista una segunda marca real
    con la que probar el `match`, no antes.
 
-5. **Generalizar el modelo de conexión** cuando llegue el primer lector no-HTTP.
+7. **Generalizar el modelo de conexión** cuando llegue el primer lector no-HTTP.
    No antes: hacerlo ahora sería especular sobre un protocolo desconocido.
 
 ---
 
 ## Deuda encontrada de paso
 
-**`isapi/parser.rs` son 240 líneas de código muerto.** Ningún módulo lo importa;
-`stream.rs` usa `multer` directamente. Se escribió como fallback para firmware
-no estándar (RESEARCH § Pitfall 2) y quedó huérfano. Borrarlo o volver a
-cablearlo, pero no dejarlo: da falsa impresión de cobertura sobre un camino que
-nunca se ejecuta.
+**[RESUELTO] `isapi/parser.rs` ya no es código muerto.** Esto era cierto cuando
+se escribió la auditoría: ningún módulo lo importaba y `stream.rs` usaba
+`multer` directamente. El commit `9b36341` lo recableó como el único parser
+multipart tolerante del código, consolidando tres implementaciones
+independientes (`stream.rs`, `client.rs::extract_face_jpeg`,
+`devices/push.rs`) en una. Hoy lo importan `isapi/client.rs`
+(`extract_face_jpeg`) y `devices/push.rs` (`split_payload`); `stream.rs` sigue
+usando `multer` directamente porque consume una conexión en vivo en vez de un
+buffer, no porque `parser.rs` esté huérfano.
 
 **`posix_time_zone` es `pub` en `client.rs`** y lo consume `stream.rs`. Es un
 detalle del formato que espera Hikvision expuesto como utilidad general.
