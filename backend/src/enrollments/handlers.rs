@@ -29,8 +29,8 @@ use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
+use crate::devices::reader::reader_for;
 use crate::errors::AppError;
-use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
 use crate::storage::atomic_file::{read_owned_file, AtomicFileGuard, FileIdentity};
 
@@ -45,8 +45,9 @@ use super::service;
 /// Maximum size of a photo upload field (2 MB, per D-04 frontend cap).
 const MAX_UPLOAD_BYTES: usize = 2 * 1024 * 1024;
 
-/// Kiosk capture timeout. `capture_face_image` retries the device-side capture
-/// window (~6s each) up to 8 times spaced 3s apart, so a full run is ~70s — the
+/// Kiosk capture timeout. The adapter behind `capture_face` retries the
+/// device-side capture window (~6s each) up to 8 times spaced 3s apart, so a
+/// full run is ~70s — the
 /// previous 30s ceiling cut the retry loop off after roughly three windows. On
 /// hardware a cooperating subject already needed three. 90s leaves headroom
 /// without letting a stuck session hold the slot indefinitely.
@@ -397,7 +398,7 @@ pub async fn capture_from_device(
     reqwest::Url::parse(&device.base_url)
         .map_err(|error| AppError::Internal(anyhow::anyhow!("invalid device base URL: {error}")))?;
 
-    let isapi = DeviceConnection::new(
+    let isapi = reader_for(
         &device.base_url,
         &device.username,
         &device.password,
@@ -431,7 +432,7 @@ pub async fn capture_from_device(
             _ = capture_shutdown.cancelled() => return,
             result = timeout(
                 Duration::from_secs(CAPTURE_TIMEOUT_SECS),
-                isapi.capture_face_image(),
+                isapi.capture_face(),
             ) => result,
         };
 
