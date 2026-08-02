@@ -617,3 +617,179 @@ impl DeviceConnection {
         accepted_response(status, text)
     }
 }
+
+/// Adapter: this vendor's client satisfying the vendor-neutral port.
+///
+/// Delegates to the inherent methods above rather than moving their bodies —
+/// this impl is additive only. `isapi::stream::provision_device` is not yet a
+/// caller (that migration is a separate task); this exists so it CAN become
+/// one without editing every other call site first.
+impl crate::devices::reader::BiometricReader for DeviceConnection {
+    /// Same steps, same order as `isapi::stream::provision_device`: clock,
+    /// attendance mode, function keys, week plan, plan template, picture
+    /// upload, event webhook. Every step is independent and best-effort,
+    /// matching current behaviour: a reader that rejects one setting still
+    /// gets the rest applied.
+    async fn provision(
+        &self,
+        intent: &crate::devices::reader::ProvisioningIntent,
+    ) -> Result<crate::devices::reader::ProvisionReport> {
+        use crate::isapi::stream::{
+            ATTENDANCE_KEYS, ATTENDANCE_MODE, ATTENDANCE_TEMPLATE_NO, ATTENDANCE_WEEK_PLAN_NO,
+        };
+
+        let mut report = crate::devices::reader::ProvisionReport::default();
+
+        // The port carries a neutral `DateTime<FixedOffset>`; Hikvision's wire
+        // format for it — POSIX `TZ`, sign inverted relative to the ISO
+        // offset — is this vendor's own quirk, so it is built here rather
+        // than by the port's callers. See [`posix_time_zone`].
+        let local_time = intent.now.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let time_zone = posix_time_zone(intent.now.offset().local_minus_utc());
+
+        match self.set_time(&local_time, &time_zone).await {
+            Ok(_) => report.applied.push("clock"),
+            Err(error) => report.failed.push(format!("clock: {error}")),
+        }
+
+        // A reader that cannot guarantee a direction on every marking must say
+        // so rather than silently write a mode that promises one it can't
+        // keep — see `ProvisioningIntent::require_direction`.
+        if intent.require_direction {
+            match self.set_attendance_mode(ATTENDANCE_MODE).await {
+                Ok(_) => report.applied.push("attendance_mode"),
+                Err(error) => report.failed.push(format!("attendance_mode: {error}")),
+            }
+        } else {
+            report.unsupported.push("attendance_mode");
+        }
+
+        let mut key_failures = 0usize;
+        for (key, status, label) in ATTENDANCE_KEYS {
+            if let Err(error) = self.set_attendance_key(key, status, label).await {
+                key_failures += 1;
+                tracing::warn!(key, err = %error, "provisioning: attendance key");
+            }
+        }
+        if key_failures == 0 {
+            report.applied.push("function_keys");
+        } else {
+            report.failed.push(format!(
+                "function_keys: {key_failures} of {} rejected",
+                ATTENDANCE_KEYS.len()
+            ));
+        }
+
+        match self
+            .set_attendance_week_plan(ATTENDANCE_WEEK_PLAN_NO, &intent.day_split)
+            .await
+        {
+            Ok(_) => report.applied.push("week_plan"),
+            Err(error) => report.failed.push(format!("week_plan: {error}")),
+        }
+
+        match self
+            .set_attendance_plan_template(ATTENDANCE_TEMPLATE_NO, ATTENDANCE_WEEK_PLAN_NO)
+            .await
+        {
+            Ok(_) => report.applied.push("plan_template"),
+            Err(error) => report.failed.push(format!("plan_template: {error}")),
+        }
+
+        match self.set_capture_upload(true).await {
+            Ok(_) => report.applied.push("picture_upload"),
+            Err(error) => report.failed.push(format!("picture_upload: {error}")),
+        }
+
+        // `None` is a pull-mode device: touch neither slot, record nothing —
+        // clearing a slot on a reader nobody asked to push would be
+        // destructive for no reason.
+        if let Some(url) = intent.event_webhook.as_deref() {
+            match parse_webhook_target(url) {
+                Ok((host, port, path, use_https)) => {
+                    // ORDER IS LOAD-BEARING (see
+                    // `isapi::stream::provision_webhook`): clear the spare slot
+                    // BEFORE writing ours, or this firmware recompacts its host
+                    // list, silently emptying slot 1 and dropping the address
+                    // we just wrote. A failure to clear does not abandon the
+                    // write -- matching `provision_device`'s existing
+                    // behaviour -- but is still recorded.
+                    if let Err(error) = self.clear_event_http_host(2).await {
+                        report.failed.push(format!(
+                            "event_webhook: could not clear spare slot: {error}"
+                        ));
+                    }
+                    match self
+                        .set_event_http_host(&host, port, &path, use_https)
+                        .await
+                    {
+                        Ok(_) => report.applied.push("event_webhook"),
+                        Err(error) => report.failed.push(format!("event_webhook: {error}")),
+                    }
+                }
+                Err(error) => report.failed.push(format!("event_webhook: {error}")),
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// `display_name` is not decoration: `enrollments::pusher` calls
+    /// `upsert_user(face_id, full_name)` with two distinct values, and
+    /// collapsing them would put a 32-char id on the reader's screen instead
+    /// of the person's name.
+    async fn enroll(&self, person_id: &str, display_name: &str, face: &[u8]) -> Result<()> {
+        self.upsert_user(person_id, display_name).await?;
+        self.upload_face(person_id, face.to_vec()).await?;
+        Ok(())
+    }
+
+    async fn revoke(&self, person_id: &str) -> Result<()> {
+        self.delete_user(person_id).await?;
+        Ok(())
+    }
+
+    async fn capture_face(&self) -> Result<Vec<u8>> {
+        self.capture_face_image().await
+    }
+
+    async fn send_command(&self, command: crate::devices::reader::DeviceCommand) -> Result<String> {
+        use crate::devices::reader::DeviceCommand;
+        match command {
+            DeviceCommand::DoorOpen => self.door_open().await,
+            DeviceCommand::Reboot => self.reboot().await,
+            DeviceCommand::EnrollmentMode => self.enrollment_mode().await,
+        }
+    }
+}
+
+/// Break a `ProvisioningIntent::event_webhook` URL into what
+/// `set_event_http_host` needs.
+///
+/// Unlike `isapi::stream::provision_webhook` (which builds the path itself
+/// from a device id and push token), the port's caller already supplies a
+/// complete URL — the port has no notion of "device id" or "push token", only
+/// "where to POST events" — so this only parses, it does not assemble.
+///
+/// None of these error messages interpolate `url`: `push_token` — the only
+/// credential a reader can present — rides in its path, and these messages
+/// land in `report.failed`, which gets logged at `warn!`.
+fn parse_webhook_target(url: &str) -> Result<(String, u16, String, bool)> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|error| anyhow::anyhow!("invalid webhook URL: {error}"))?;
+    let use_https = parsed.scheme().eq_ignore_ascii_case("https");
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("webhook URL has no host"))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("webhook URL has no port"))?;
+    let path = parsed.path().to_string();
+    anyhow::ensure!(
+        path.len() <= 128,
+        "webhook path is {} chars; firmware caps `url` at 128",
+        path.len()
+    );
+    Ok((host, port, path, use_https))
+}

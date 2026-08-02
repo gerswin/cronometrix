@@ -10,9 +10,10 @@ use libsql::{params, Connection};
 use uuid::Uuid;
 
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
-use crate::devices::{crypto, models::DeviceWithPlaintext, service as devices_service};
+use crate::devices::{
+    crypto, models::DeviceWithPlaintext, reader::reader_for, service as devices_service,
+};
 use crate::errors::AppError;
-use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
 use crate::storage::atomic_file::AtomicFileGuard;
 
@@ -492,7 +493,7 @@ pub async fn start_enrollment(
                 let mut device_pushes = Vec::with_capacity(devices.len());
                 let mut targets = Vec::with_capacity(devices.len());
                 for device in devices {
-                    DeviceConnection::new(
+                    reader_for(
                         &device.base_url,
                         &device.username,
                         &device.password,
@@ -1025,7 +1026,7 @@ pub async fn retry_enrollment_push(
         &state.config.device_creds_key,
     )
     .await?;
-    DeviceConnection::new(
+    reader_for(
         &device.base_url,
         &device.username,
         &device.password,

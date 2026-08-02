@@ -11,8 +11,8 @@ use validator::Validate;
 
 use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
+use crate::devices::reader::{reader_for, BiometricReader, DeviceCommand};
 use crate::errors::AppError;
-use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
 use crate::supervisor::DeviceLifecycleEvent;
 
@@ -229,7 +229,7 @@ pub async fn deactivate_device(
 /// Flow per D-09 + D-11:
 /// 1. Parse + validate the command string (422 on unknown).
 /// 2. Load device with decrypted password (404 if inactive/missing).
-/// 3. Build DeviceConnection; fire the ISAPI call inside `timeout(10s, ...)`.
+/// 3. Build the reader through the port; fire the call inside `timeout(10s, ...)`.
 /// 4. Record the outcome in `command_audit_log` (EVERY branch: Ok / Err / Timeout).
 /// 5. Map Ok -> 200 CommandResult; Err -> 502 DEVICE_ERROR; Timeout -> 504 DEVICE_TIMEOUT.
 ///
@@ -260,7 +260,7 @@ pub async fn dispatch_command(
         .map_err(|e| AppError::Internal(e.into()))?;
     let device = service::get_decrypted(&conn, &device_id, &state.config.device_creds_key).await?;
 
-    let isapi = DeviceConnection::new(
+    let isapi = reader_for(
         &device.base_url,
         &device.username,
         &device.password,
@@ -268,14 +268,19 @@ pub async fn dispatch_command(
     )
     .map_err(AppError::Internal)?;
 
+    // `Command` (models.rs) is the API-facing type, kept stable for request
+    // parsing/validation; `DeviceCommand` (the port) has no vendor semantics.
+    // Converting here, at the handler boundary, is the only place that needs
+    // to know both exist.
+    let device_command = match command {
+        Command::DoorOpen => DeviceCommand::DoorOpen,
+        Command::Reboot => DeviceCommand::Reboot,
+        Command::EnrollmentMode => DeviceCommand::EnrollmentMode,
+    };
+
     let dispatched_at = chrono::Utc::now().timestamp();
 
-    // Hold the future value explicitly to keep the match arms readable.
-    let result = match command {
-        Command::DoorOpen => timeout(Duration::from_secs(10), isapi.door_open()).await,
-        Command::Reboot => timeout(Duration::from_secs(10), isapi.reboot()).await,
-        Command::EnrollmentMode => timeout(Duration::from_secs(10), isapi.enrollment_mode()).await,
-    };
+    let result = timeout(Duration::from_secs(10), isapi.send_command(device_command)).await;
 
     let completed_at = chrono::Utc::now().timestamp();
 

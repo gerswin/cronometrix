@@ -91,6 +91,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "022_device_ingest_mode",
         include_str!("migrations/022_device_ingest_mode.sql"),
     ),
+    (
+        "023_raw_payload_rename",
+        include_str!("migrations/023_raw_payload_rename.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded

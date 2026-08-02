@@ -99,7 +99,7 @@ async fn seed_event(
     let bucket = captured_at / 30;
     conn.execute(
         "INSERT INTO attendance_events (id, employee_id, device_id, direction, captured_at, \
-         bucket_30s, is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
+         bucket_30s, is_unknown, face_id, employee_no_string, raw_payload, photo_path, created_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, NULL, '<x/>', NULL, unixepoch())",
         params![
             Uuid::new_v4().to_string(),

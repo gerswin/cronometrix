@@ -5,34 +5,29 @@
 //! how bytes arrive — parsing, identity resolution, filtering and persistence
 //! must stay identical, or a marking would be recorded differently depending on
 //! which transport a given reader happens to use.
+//!
+//! This module only decodes the Hikvision wire format into a vendor-neutral
+//! `RawMarking` and hands it to `attendance::ingest`; resolution and
+//! persistence live there so a second reader brand can reuse them.
 
 use bytes::Bytes;
 
-use crate::events::models::{NewAttendanceEvent, PersistOutcome};
-use crate::events::service as events_service;
-use crate::state::AppState;
+use crate::attendance;
+use crate::attendance::marking::RawMarking;
 
 use super::events::{parse_alert, EventNotificationAlert};
 
-/// What ingesting one payload did, so callers can log or count without
-/// re-deriving it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IngestOutcome {
-    /// A new attendance row was written.
-    Persisted,
-    /// Already recorded — the device replayed it, or both transports saw it.
-    Deduplicated,
-    /// A heartbeat, a door/tamper notification, or anything else that names
-    /// nobody. Deliberately not persisted.
-    Skipped,
-}
+/// Re-exported so `use crate::isapi::ingest::{ingest_alert, IngestOutcome}`
+/// call sites (e.g. `devices/push.rs`) keep resolving after the outcome type
+/// moved to `attendance::ingest`.
+pub use crate::attendance::ingest::IngestOutcome;
 
 /// Parse one alert payload and persist it if it is a real marking.
 ///
 /// `direction_default` comes from the device row and is used only when the
 /// reader did not report an attendance status of its own.
 pub async fn ingest_alert(
-    state: &AppState,
+    state: &crate::state::AppState,
     device_id: &str,
     direction_default: &str,
     bytes: &[u8],
@@ -74,14 +69,18 @@ pub async fn ingest_alert(
         return Ok(IngestOutcome::Skipped);
     }
 
-    let Some(ace) = alert.access_controller_event.as_ref() else {
-        tracing::debug!(device_id = %device_id, "alert without AccessControllerEvent — skipped");
-        return Ok(IngestOutcome::Skipped);
+    let ace = match alert.access_controller_event.as_ref() {
+        Some(ace) => ace,
+        None => {
+            tracing::debug!(device_id = %device_id, "alert without AccessControllerEvent — skipped");
+            return Ok(IngestOutcome::Skipped);
+        }
     };
 
     // Door, tamper and status events share the AccessControllerEvent envelope
     // with real markings but name nobody. Persisting them would invent an
-    // unknown-face row every time the door moved.
+    // unknown-face row every time the door moved. Logged here, with the sub/
+    // major codes, because only the adapter knows what those codes mean.
     if !ace.has_identity() {
         // The decoded fields go in alongside the codes: knowing an event was
         // `sub=76` says nothing without knowing it carried a picture, a verify
@@ -100,75 +99,17 @@ pub async fn ingest_alert(
         return Ok(IngestOutcome::Skipped);
     }
 
-    let captured_at = alert
-        .captured_at_epoch()
-        .unwrap_or_else(|| chrono::Utc::now().timestamp());
-
-    let direction = ace
-        .reported_direction()
-        .map(str::to_string)
-        .unwrap_or_else(|| direction_default.to_string());
-
-    let face_id = (!ace.face_id.is_empty()).then(|| ace.face_id.clone());
-    let employee_no_string =
-        (!ace.employee_no_string.is_empty()).then(|| ace.employee_no_string.clone());
-
-    let conn = state.db.connect().map_err(anyhow::Error::from)?;
-    let employee_id = events_service::lookup_employee_for_event(
-        &conn,
-        device_id,
-        face_id.as_deref(),
-        employee_no_string.as_deref(),
-    )
-    .await
-    .map_err(|error| anyhow::anyhow!("lookup_employee_for_event failed: {error}"))?;
-    let is_unknown = employee_id.is_none();
-
-    let new_event = NewAttendanceEvent {
-        id: uuid::Uuid::new_v4().to_string(),
-        employee_id,
-        device_id: device_id.to_string(),
-        direction,
-        captured_at,
-        is_unknown,
-        face_id,
-        employee_no_string,
-        raw_xml: raw_payload,
-        photo_bytes: jpeg_bytes.map(|b| b.to_vec()),
+    let marking = RawMarking {
+        external_person_id: (!ace.employee_no_string.is_empty())
+            .then(|| ace.employee_no_string.clone()),
+        face_id: (!ace.face_id.is_empty()).then(|| ace.face_id.clone()),
+        occurred_at: alert
+            .captured_at_epoch()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp()),
+        direction: ace.reported_direction().map(str::to_string),
+        photo: jpeg_bytes.map(|bytes| bytes.to_vec()),
+        raw_payload,
     };
 
-    // Snapshot the fields the SSE publish needs BEFORE `new_event` is consumed
-    // by value.
-    let sse_snapshot = NewAttendanceEvent {
-        id: new_event.id.clone(),
-        employee_id: new_event.employee_id.clone(),
-        device_id: new_event.device_id.clone(),
-        direction: new_event.direction.clone(),
-        captured_at: new_event.captured_at,
-        is_unknown: new_event.is_unknown,
-        face_id: new_event.face_id.clone(),
-        employee_no_string: new_event.employee_no_string.clone(),
-        raw_xml: String::new(),
-        photo_bytes: None,
-    };
-
-    match events_service::persist_attendance_event_queued(
-        state,
-        &state.paths.events_root,
-        new_event,
-    )
-    .await
-    {
-        Ok(PersistOutcome::Inserted { photo_path }) => {
-            tracing::info!(device_id = %device_id, photo_path = ?photo_path, "event persisted");
-            events_service::publish_recompute_if_employee(state, &sse_snapshot);
-            events_service::publish_sse_event(state, &sse_snapshot, &photo_path).await;
-            Ok(IngestOutcome::Persisted)
-        }
-        Ok(PersistOutcome::Deduplicated) => {
-            tracing::debug!(device_id = %device_id, "event deduplicated");
-            Ok(IngestOutcome::Deduplicated)
-        }
-        Err(error) => Err(anyhow::anyhow!("persist_attendance_event failed: {error}")),
-    }
+    attendance::ingest::ingest(state, device_id, direction_default, marking).await
 }

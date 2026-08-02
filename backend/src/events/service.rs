@@ -107,8 +107,8 @@ pub async fn publish_sse_event(
     let _ = tx.send(payload);
 }
 
-/// SELECT column list for read-side mappers. `raw_xml` is DELIBERATELY absent
-/// (T-2-14 — raw XML is never exposed on the API).
+/// SELECT column list for read-side mappers. `raw_payload` is DELIBERATELY
+/// absent (T-2-14 — the raw device payload is never exposed on the API).
 const EVENT_SELECT_COLS: &str =
     "id, employee_id, device_id, direction, captured_at, is_unknown, face_id, \
      employee_no_string, photo_path, created_at";
@@ -180,7 +180,7 @@ pub async fn persist_attendance_event_queued(
                         .statement(
                             "INSERT OR IGNORE INTO attendance_events \
                              (id, employee_id, device_id, direction, captured_at, bucket_30s, \
-                              is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
+                              is_unknown, face_id, employee_no_string, raw_payload, photo_path, created_at) \
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
                             params![
                                 event.id,
@@ -192,7 +192,7 @@ pub async fn persist_attendance_event_queued(
                                 event.is_unknown as i64,
                                 event.face_id,
                                 event.employee_no_string,
-                                event.raw_xml,
+                                event.raw_payload,
                                 queued_photo_relpath,
                             ],
                         )
@@ -570,7 +570,7 @@ mod tests {
             is_unknown: false,
             face_id: Some("42".to_string()),
             employee_no_string: Some("EMP001".to_string()),
-            raw_xml: "<EventNotificationAlert/>".to_string(),
+            raw_payload: "<EventNotificationAlert/>".to_string(),
             photo_bytes: None,
         }
     }
@@ -671,35 +671,33 @@ mod tests {
         );
     }
 
+    /// The column holds whatever the device sent — JSON on current firmware —
+    /// and must survive byte-for-byte for forensic re-parsing (D-12).
     #[tokio::test]
-    async fn persist_raw_xml_round_trip() {
+    async fn persist_raw_payload_round_trip() {
         let tmp = fresh_events_root();
         let state = setup_state(tmp.path()).await;
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1").await;
         seed_employee(&conn, "e1", "EMP001").await;
 
-        let xml = "<EventNotificationAlert version=\"2.0\">\
-                   <employeeNoString>EMP001</employeeNoString>\
-                   <faceID>42</faceID>\
-                   <dateTime>2026-04-19T12:34:56+00:00</dateTime>\
-                   </EventNotificationAlert>";
+        let payload = r#"{"eventType":"AccessControllerEvent"}"#;
         let mut ev = sample_event("evt-1", Some("e1"), "d1", "entry", 1000);
-        ev.raw_xml = xml.to_string();
+        ev.raw_payload = payload.to_string();
         let _ = persist_attendance_event_queued(&state, tmp.path(), ev)
             .await
             .unwrap();
 
         let mut rows = conn
             .query(
-                "SELECT raw_xml FROM attendance_events WHERE id = ?1",
+                "SELECT raw_payload FROM attendance_events WHERE id = ?1",
                 params!["evt-1".to_string()],
             )
             .await
             .unwrap();
         let row = rows.next().await.unwrap().expect("row");
         let stored: String = row.get(0).unwrap();
-        assert_eq!(stored, xml, "raw_xml must round-trip byte-for-byte");
+        assert_eq!(stored, payload, "raw_payload must round-trip byte-for-byte");
     }
 
     #[tokio::test]
