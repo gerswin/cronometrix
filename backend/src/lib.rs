@@ -1,4 +1,5 @@
 pub mod anomalies;
+pub mod attendance;
 pub mod audit;
 pub mod auth;
 pub mod calc;
