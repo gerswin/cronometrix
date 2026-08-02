@@ -228,7 +228,10 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
 /// The trade is friction: every employee selects twice a day. `manualAndAuto`
 /// removes that by inferring from the week plan, at the cost of reintroducing
 /// silently wrong directions whenever reality departs from the schedule.
-const ATTENDANCE_MODE: &str = "manual";
+// `pub(crate)`: also read by the `BiometricReader` impl in `isapi::client` so
+// the port's provision path uses the same constant instead of a duplicate
+// that could drift from this one.
+pub(crate) const ATTENDANCE_MODE: &str = "manual";
 
 /// Midpoint that splits arrivals from departures when the reader infers them.
 ///
@@ -238,11 +241,11 @@ const ATTENDANCE_MODE: &str = "manual";
 /// [`DeviceConnection::set_attendance_week_plan`].
 const ATTENDANCE_DAY_SPLIT: &str = "13:00:00";
 
-const ATTENDANCE_WEEK_PLAN_NO: u8 = 1;
-const ATTENDANCE_TEMPLATE_NO: u8 = 1;
+pub(crate) const ATTENDANCE_WEEK_PLAN_NO: u8 = 1;
+pub(crate) const ATTENDANCE_TEMPLATE_NO: u8 = 1;
 
 /// Function keys, in the order the reader displays them.
-const ATTENDANCE_KEYS: [(u8, &str, &str); 6] = [
+pub(crate) const ATTENDANCE_KEYS: [(u8, &str, &str); 6] = [
     (1, "checkIn", "Check In"),
     (2, "checkOut", "Check Out"),
     (3, "breakOut", "Break Out"),

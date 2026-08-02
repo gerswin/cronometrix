@@ -798,6 +798,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-trait",
  "axum 0.8.9",
  "axum-extra",
  "axum-test",

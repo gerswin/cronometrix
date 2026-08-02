@@ -617,3 +617,108 @@ impl DeviceConnection {
         accepted_response(status, text)
     }
 }
+
+/// Adapter: this vendor's client satisfying the vendor-neutral port.
+///
+/// Delegates to the inherent methods above rather than moving their bodies —
+/// this impl is additive only. `isapi::stream::provision_device` is not yet a
+/// caller (that migration is a separate task); this exists so it CAN become
+/// one without editing every other call site first.
+#[async_trait::async_trait]
+impl crate::devices::reader::BiometricReader for DeviceConnection {
+    /// Same steps, same order as `isapi::stream::provision_device`: clock,
+    /// attendance mode, function keys, week plan, plan template, picture
+    /// upload. The event-webhook step is deliberately NOT reproduced here —
+    /// it needs the device id, push token and the backend's public base URL,
+    /// none of which a vendor-neutral `ProvisioningIntent` carries, so it
+    /// stays on `provision_device` for now. Every step is independent and
+    /// best-effort, matching current behaviour: a reader that rejects one
+    /// setting still gets the rest applied.
+    async fn provision(
+        &self,
+        intent: &crate::devices::reader::ProvisioningIntent,
+    ) -> Result<crate::devices::reader::ProvisionReport> {
+        use crate::isapi::stream::{
+            ATTENDANCE_KEYS, ATTENDANCE_MODE, ATTENDANCE_TEMPLATE_NO, ATTENDANCE_WEEK_PLAN_NO,
+        };
+
+        let mut report = crate::devices::reader::ProvisionReport::default();
+
+        match self.set_time(&intent.local_time, &intent.time_zone).await {
+            Ok(_) => report.applied.push("clock"),
+            Err(error) => report.failed.push(format!("clock: {error}")),
+        }
+
+        match self.set_attendance_mode(ATTENDANCE_MODE).await {
+            Ok(_) => report.applied.push("attendance_mode"),
+            Err(error) => report.failed.push(format!("attendance_mode: {error}")),
+        }
+
+        let mut key_failures = 0usize;
+        for (key, status, label) in ATTENDANCE_KEYS {
+            if let Err(error) = self.set_attendance_key(key, status, label).await {
+                key_failures += 1;
+                tracing::warn!(key, err = %error, "provisioning: attendance key");
+            }
+        }
+        if key_failures == 0 {
+            report.applied.push("function_keys");
+        } else {
+            report.failed.push(format!(
+                "function_keys: {key_failures} of {} rejected",
+                ATTENDANCE_KEYS.len()
+            ));
+        }
+
+        match self
+            .set_attendance_week_plan(ATTENDANCE_WEEK_PLAN_NO, &intent.day_split)
+            .await
+        {
+            Ok(_) => report.applied.push("week_plan"),
+            Err(error) => report.failed.push(format!("week_plan: {error}")),
+        }
+
+        match self
+            .set_attendance_plan_template(ATTENDANCE_TEMPLATE_NO, ATTENDANCE_WEEK_PLAN_NO)
+            .await
+        {
+            Ok(_) => report.applied.push("plan_template"),
+            Err(error) => report.failed.push(format!("plan_template: {error}")),
+        }
+
+        match self.set_capture_upload(true).await {
+            Ok(_) => report.applied.push("picture_upload"),
+            Err(error) => report.failed.push(format!("picture_upload: {error}")),
+        }
+
+        Ok(report)
+    }
+
+    /// `display_name` is not decoration: `enrollments::pusher` calls
+    /// `upsert_user(face_id, full_name)` with two distinct values, and
+    /// collapsing them would put a 32-char id on the reader's screen instead
+    /// of the person's name.
+    async fn enroll(&self, person_id: &str, display_name: &str, face: &[u8]) -> Result<()> {
+        self.upsert_user(person_id, display_name).await?;
+        self.upload_face(person_id, face.to_vec()).await?;
+        Ok(())
+    }
+
+    async fn revoke(&self, person_id: &str) -> Result<()> {
+        self.delete_user(person_id).await?;
+        Ok(())
+    }
+
+    async fn capture_face(&self) -> Result<Vec<u8>> {
+        self.capture_face_image().await
+    }
+
+    async fn execute(&self, command: crate::devices::reader::DeviceCommand) -> Result<String> {
+        use crate::devices::reader::DeviceCommand;
+        match command {
+            DeviceCommand::DoorOpen => self.door_open().await,
+            DeviceCommand::Reboot => self.reboot().await,
+            DeviceCommand::EnrollmentMode => self.enrollment_mode().await,
+        }
+    }
+}
