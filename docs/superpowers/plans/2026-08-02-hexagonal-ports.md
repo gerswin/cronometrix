@@ -514,7 +514,7 @@ impl BiometricReader for FakeReader {
         Ok(report)
     }
 
-    async fn enroll(&self, person_id: &str, _face: &[u8]) -> anyhow::Result<()> {
+    async fn enroll(&self, person_id: &str, _display_name: &str, _face: &[u8]) -> anyhow::Result<()> {
         self.enrolled.lock().unwrap().push(person_id.to_string());
         Ok(())
     }
@@ -631,8 +631,15 @@ pub struct ProvisionReport {
 #[async_trait]
 pub trait BiometricReader: Send + Sync {
     async fn provision(&self, intent: &ProvisioningIntent) -> anyhow::Result<ProvisionReport>;
-    /// `person_id` is the identifier the device will report back on a marking.
-    async fn enroll(&self, person_id: &str, face: &[u8]) -> anyhow::Result<()>;
+    /// `person_id` is the identifier the device will report back on a marking;
+    /// `display_name` is what it shows on screen. They are separate because
+    /// Hikvision caps `employeeNo` at 32 chars while the name may be 128.
+    async fn enroll(
+        &self,
+        person_id: &str,
+        display_name: &str,
+        face: &[u8],
+    ) -> anyhow::Result<()>;
     async fn revoke(&self, person_id: &str) -> anyhow::Result<()>;
     async fn capture_face(&self) -> anyhow::Result<Vec<u8>>;
     async fn execute(&self, command: DeviceCommand) -> anyhow::Result<String>;
@@ -673,8 +680,8 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
         Ok(report)
     }
 
-    async fn enroll(&self, person_id: &str, face: &[u8]) -> Result<()> {
-        self.upsert_user(person_id, person_id).await?;
+    async fn enroll(&self, person_id: &str, display_name: &str, face: &[u8]) -> Result<()> {
+        self.upsert_user(person_id, display_name).await?;
         self.upload_face(person_id, face.to_vec()).await?;
         Ok(())
     }
@@ -699,7 +706,7 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
 }
 ```
 
-`enroll` passing `person_id` as the display name is wrong — check `enrollments::pusher` for what it currently passes as `full_name` and add a `display_name: &str` parameter to the trait method if it passes something different. Update the fake in the test to match.
+The `display_name` parameter is not decoration: `enrollments::pusher` calls `upsert_user(face_id, full_name)` with two distinct values, and collapsing them would put a 32-char id on the reader's screen instead of the person's name.
 
 - [ ] **Step 7: Run the full suite**
 
