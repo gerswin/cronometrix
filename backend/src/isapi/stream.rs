@@ -279,6 +279,10 @@ async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
         failures += 1;
         tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: plan template");
     }
+    if let Err(error) = conn.set_capture_upload(true).await {
+        failures += 1;
+        tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: capture upload");
+    }
 
     if failures == 0 {
         tracing::info!(

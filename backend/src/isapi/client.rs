@@ -307,6 +307,28 @@ impl DeviceConnection {
         self.send_json(&url, reqwest::Method::PUT, &body).await
     }
 
+    /// `PUT /ISAPI/AccessControl/AcsCfg` — make the reader attach the captured
+    /// face to each event.
+    ///
+    /// Ships with `uploadCapPic` and `uploadVerificationPic` disabled, so events
+    /// arrive with no image and `attendance_events.photo_path` is always null —
+    /// removing the visual evidence an operator needs to contest or confirm a
+    /// disputed marking. The stream consumer already pairs an alert with a
+    /// following JPEG part; nothing else had to change.
+    ///
+    /// The `save*` flags keep a copy in device flash so a picture survives a
+    /// transient upload failure. `showPicture` / `showEmployeeNo` stay off:
+    /// those control what the reader displays to whoever is standing in front of
+    /// it, and showing one person's identity to the next in the queue is a
+    /// privacy leak, not a feature.
+    pub async fn set_capture_upload(&self, enabled: bool) -> Result<String> {
+        let url = format!("{}/ISAPI/AccessControl/AcsCfg?format=json", self.base_url);
+        let body = format!(
+            r#"{{"AcsCfg":{{"uploadCapPic":{enabled},"saveCapPic":{enabled},"uploadVerificationPic":{enabled},"saveVerificationPic":{enabled},"voicePrompt":true,"showPicture":false,"showEmployeeNo":false,"showName":true,"desensitiseEmployeeNo":true,"desensitiseName":true,"saveFacePic":false}}}}"#
+        );
+        self.send_json(&url, reqwest::Method::PUT, &body).await
+    }
+
     /// `PUT /ISAPI/System/reboot` — request a device reboot. Device typically
     /// 200s immediately then drops; the caller's 10s `tokio::time::timeout`
     /// absorbs any lag.

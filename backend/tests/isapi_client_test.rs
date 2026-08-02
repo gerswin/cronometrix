@@ -492,3 +492,29 @@ async fn set_attendance_plan_template_binds_the_check_property() {
         .await
         .expect("device accepts the template");
 }
+
+/// Readers ship with picture upload disabled, so `attendance_events.photo_path`
+/// stays null and an operator has no visual evidence for a disputed marking.
+///
+/// The display flags are asserted OFF on purpose: they control what the reader
+/// shows to whoever is standing in front of it, and putting one person's name
+/// or number on screen for the next in the queue is a privacy leak.
+#[tokio::test]
+async fn set_capture_upload_enables_uploads_without_exposing_identity_on_screen() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/AcsCfg"))
+        .and(body_string_contains(r#""uploadCapPic":true"#))
+        .and(body_string_contains(r#""uploadVerificationPic":true"#))
+        .and(body_string_contains(r#""showPicture":false"#))
+        .and(body_string_contains(r#""showEmployeeNo":false"#))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_capture_upload(true)
+        .await
+        .expect("device accepts the capture config");
+}
