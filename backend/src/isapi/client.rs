@@ -42,6 +42,22 @@ const CAPTURE_MAX_ATTEMPTS: usize = 8;
 /// and earns `400 / deviceBusy` — measured: 2s still collides, 3s does not.
 const CAPTURE_RETRY_DELAY: Duration = Duration::from_secs(3);
 
+/// Minor event codes the webhook subscribes to, as the hex the firmware expects.
+///
+/// `0x4b` (75) is a passed face authentication — the marking itself, and the
+/// only one attendance strictly needs. The rest are kept because they are the
+/// difference between "nobody came in" and "somebody tried and was rejected",
+/// which an operator investigating a missing marking needs to tell apart:
+///
+/// - `0x4c` (76) authentication failed
+/// - `0x01` (1)  legal card / credential passed
+/// - `0x26` (38) door opened
+/// - `0x27` (39) door closed
+///
+/// Events without an identity are discarded at ingest, so subscribing to them
+/// costs a parse, not a row.
+const SUBSCRIBED_MINOR_EVENTS: &str = "0x4b,0x4c,0x1,0x26,0x27";
+
 /// Render a UTC offset in the POSIX `TZ` convention Hikvision expects.
 ///
 /// The sign is INVERTED relative to the ISO offset everyone reads off a clock:
@@ -342,6 +358,15 @@ impl DeviceConnection {
     /// `hostName`/`ipAddress` and `portNo` are what the DEVICE dials, so they
     /// must be an address it can reach; `url` is the path, capped at 128
     /// characters by the firmware, which is where the per-device secret rides.
+    ///
+    /// The subscription is an explicit list, NOT `eventMode: all`. On
+    /// DS-K1T341CMFW, `all` with an empty `EventList` is accepted and then
+    /// delivers only device-status pushes — the reader logs face recognitions
+    /// normally and simply never sends them. Attendance looked like a transport
+    /// failure while the transport was fine and the subscription was empty.
+    ///
+    /// All four `minor*` elements must be present even when empty, or the
+    /// device rejects the write with `MessageParametersLack`.
     pub async fn set_event_http_host(
         &self,
         host: &str,
@@ -358,7 +383,7 @@ impl DeviceConnection {
             format!("<addressingFormatType>hostname</addressingFormatType><hostName>{host}</hostName>")
         };
         let body = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><HttpHostNotification version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema"><id>1</id><url>{path}</url><protocolType>{protocol}</protocolType><parameterFormatType>json</parameterFormatType>{addressing}<portNo>{port}</portNo><httpAuthenticationMethod>none</httpAuthenticationMethod><SubscribeEvent><heartbeat>30</heartbeat><eventMode>all</eventMode></SubscribeEvent></HttpHostNotification>"#
+            r#"<?xml version="1.0" encoding="UTF-8"?><HttpHostNotification version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema"><id>1</id><url>{path}</url><protocolType>{protocol}</protocolType><parameterFormatType>json</parameterFormatType>{addressing}<portNo>{port}</portNo><httpAuthenticationMethod>none</httpAuthenticationMethod><SubscribeEvent><heartbeat>30</heartbeat><eventMode>list</eventMode><EventList><Event><type>AccessControllerEvent</type><minorAlarm></minorAlarm><minorException></minorException><minorOperation></minorOperation><minorEvent>{SUBSCRIBED_MINOR_EVENTS}</minorEvent><pictureURLType>binary</pictureURLType></Event></EventList></SubscribeEvent></HttpHostNotification>"#
         );
         self.send_xml(&url, reqwest::Method::PUT, &body).await
     }

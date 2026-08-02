@@ -532,6 +532,17 @@ async fn set_event_http_host_addresses_a_single_slot_with_a_reachable_address() 
         .and(body_string_contains("<portNo>3001</portNo>"))
         .and(body_string_contains("<url>/api/v1/devices/dev-1/push/secret</url>"))
         .and(body_string_contains("<protocolType>HTTP</protocolType>"))
+        // `eventMode: all` with an empty EventList is ACCEPTED by the firmware
+        // and then delivers only device-status pushes: face recognitions are
+        // logged on the reader and never sent. Attendance then looks like a
+        // transport failure while the transport is fine.
+        .and(body_string_contains("<eventMode>list</eventMode>"))
+        .and(body_string_contains("<minorEvent>0x4b,"))
+        // All four minor lists must be present even when empty, or the device
+        // rejects the write with `MessageParametersLack`.
+        .and(body_string_contains("<minorAlarm></minorAlarm>"))
+        .and(body_string_contains("<minorException></minorException>"))
+        .and(body_string_contains("<minorOperation></minorOperation>"))
         .respond_with(ResponseTemplate::new(200).set_body_string("<ResponseStatus/>"))
         .expect(1)
         .mount(&server)
