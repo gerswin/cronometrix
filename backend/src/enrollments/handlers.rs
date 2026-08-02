@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
-use crate::devices::reader::reader_for;
+use crate::devices::reader::{reader_for, BiometricReader};
 use crate::errors::AppError;
 use crate::state::AppState;
 use crate::storage::atomic_file::{read_owned_file, AtomicFileGuard, FileIdentity};

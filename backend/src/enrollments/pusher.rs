@@ -19,7 +19,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::devices::models::DeviceWithPlaintext;
-use crate::devices::reader::reader_for;
+use crate::devices::reader::{reader_for, BiometricReader};
 use crate::state::AppState;
 
 use super::dispatcher::{AuthorizedAttempt, AuthorizedDispatchCommand};

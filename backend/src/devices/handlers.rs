@@ -11,7 +11,7 @@ use validator::Validate;
 
 use crate::auth::rbac::AuthUser;
 use crate::common::PaginatedResponse;
-use crate::devices::reader::{reader_for, DeviceCommand};
+use crate::devices::reader::{reader_for, BiometricReader, DeviceCommand};
 use crate::errors::AppError;
 use crate::state::AppState;
 use crate::supervisor::DeviceLifecycleEvent;

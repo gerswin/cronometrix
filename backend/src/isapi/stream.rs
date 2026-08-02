@@ -19,7 +19,7 @@ use bytes::Bytes;
 use diqwest::WithDigestAuth;
 use reqwest::Client;
 
-use crate::devices::reader::{reader_for, ProvisioningIntent};
+use crate::devices::reader::{reader_for, BiometricReader, ProvisioningIntent};
 use crate::state::AppState;
 use crate::supervisor::status::{touch_last_seen, update_connection_state};
 

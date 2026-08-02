@@ -25,7 +25,6 @@ required-features = ["mock-hikvision"]
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1"
-async-trait = "0.1"
 axum = { version = "0.8.8", features = ["macros", "multipart"] }
 axum-extra = { version = "0.12.5", features = ["cookie"] }
 base64 = "0.22.1"

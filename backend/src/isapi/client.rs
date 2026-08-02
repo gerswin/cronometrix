@@ -624,7 +624,6 @@ impl DeviceConnection {
 /// this impl is additive only. `isapi::stream::provision_device` is not yet a
 /// caller (that migration is a separate task); this exists so it CAN become
 /// one without editing every other call site first.
-#[async_trait::async_trait]
 impl crate::devices::reader::BiometricReader for DeviceConnection {
     /// Same steps, same order as `isapi::stream::provision_device`: clock,
     /// attendance mode, function keys, week plan, plan template, picture

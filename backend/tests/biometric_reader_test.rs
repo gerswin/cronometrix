@@ -12,7 +12,6 @@
 //! shapes, ordering, firmware quirks — lives in the wiremock tests in
 //! `isapi_client_test.rs`.
 
-use async_trait::async_trait;
 use cronometrix_api::devices::reader::{
     BiometricReader, DeviceCommand, ProvisionReport, ProvisioningIntent,
 };
@@ -26,7 +25,6 @@ struct FakeReader {
     webhook_slots_touched: std::sync::Mutex<bool>,
 }
 
-#[async_trait]
 impl BiometricReader for FakeReader {
     async fn provision(&self, intent: &ProvisioningIntent) -> anyhow::Result<ProvisionReport> {
         // A reader that cannot honour a request reports it rather than lying.

@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
-use crate::devices::reader::reader_for;
+use crate::devices::reader::{reader_for, BiometricReader};
 use crate::devices::service as devices_service;
 use crate::enrollments::service as enrollment_service;
 use crate::state::AppState;

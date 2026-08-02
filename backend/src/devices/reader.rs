@@ -10,8 +10,6 @@
 //! not apply: an adapter must be able to say "I could not do that" without
 //! either lying or failing the whole operation.
 
-use async_trait::async_trait;
-
 /// A one-shot instruction with no vendor semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceCommand {
@@ -60,16 +58,84 @@ pub struct ProvisionReport {
     pub failed: Vec<String>,
 }
 
-#[async_trait]
+/// The outbound port, static-dispatch.
+///
+/// Not `#[async_trait]`: that macro boxes a future per call, and with one
+/// implementor (`isapi::client::DeviceConnection`) plus `Box<dyn
+/// BiometricReader>` type erasure on top, LLVM's coverage instrumentation
+/// crashed grouping the generated instantiations
+/// (`llvm::coverage::CoverageMapping::getInstantiationGroups`, reproduced on
+/// both the pinned nightly and current nightly). Bare `async fn` in a trait
+/// doesn't guarantee the returned future is `Send`, and these run inside
+/// `tokio::spawn`, so each method spells out `impl Future<Output = ..> +
+/// Send` instead. An `impl` block may still write `async fn` — that satisfies
+/// this signature — only the trait declaration needs the explicit form.
 pub trait BiometricReader: Send + Sync {
-    async fn provision(&self, intent: &ProvisioningIntent) -> anyhow::Result<ProvisionReport>;
+    fn provision(
+        &self,
+        intent: &ProvisioningIntent,
+    ) -> impl std::future::Future<Output = anyhow::Result<ProvisionReport>> + Send;
+
     /// `person_id` is the identifier the device will report back on a marking;
     /// `display_name` is what it shows on screen. They are separate because
     /// Hikvision caps `employeeNo` at 32 chars while the name may be 128.
-    async fn enroll(&self, person_id: &str, display_name: &str, face: &[u8]) -> anyhow::Result<()>;
-    async fn revoke(&self, person_id: &str) -> anyhow::Result<()>;
-    async fn capture_face(&self) -> anyhow::Result<Vec<u8>>;
-    async fn send_command(&self, command: DeviceCommand) -> anyhow::Result<String>;
+    fn enroll(
+        &self,
+        person_id: &str,
+        display_name: &str,
+        face: &[u8],
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+
+    fn revoke(&self, person_id: &str) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+
+    fn capture_face(&self) -> impl std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send;
+
+    fn send_command(
+        &self,
+        command: DeviceCommand,
+    ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send;
+}
+
+/// The adapter for one device.
+///
+/// An enum rather than a trait object: there is one adapter today, type
+/// erasure bought nothing, and it made LLVM's coverage instrumentation crash
+/// on the generated instantiations. A second brand is a variant plus a match
+/// arm — which is also easier to read than a boxed trait object.
+pub enum Reader {
+    Hikvision(crate::isapi::client::DeviceConnection),
+}
+
+impl BiometricReader for Reader {
+    async fn provision(&self, intent: &ProvisioningIntent) -> anyhow::Result<ProvisionReport> {
+        match self {
+            Reader::Hikvision(inner) => inner.provision(intent).await,
+        }
+    }
+
+    async fn enroll(&self, person_id: &str, display_name: &str, face: &[u8]) -> anyhow::Result<()> {
+        match self {
+            Reader::Hikvision(inner) => inner.enroll(person_id, display_name, face).await,
+        }
+    }
+
+    async fn revoke(&self, person_id: &str) -> anyhow::Result<()> {
+        match self {
+            Reader::Hikvision(inner) => inner.revoke(person_id).await,
+        }
+    }
+
+    async fn capture_face(&self) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Reader::Hikvision(inner) => inner.capture_face().await,
+        }
+    }
+
+    async fn send_command(&self, command: DeviceCommand) -> anyhow::Result<String> {
+        match self {
+            Reader::Hikvision(inner) => inner.send_command(command).await,
+        }
+    }
 }
 
 /// Build the adapter for a device.
@@ -82,8 +148,8 @@ pub fn reader_for(
     username: &str,
     password: &str,
     allow_insecure_tls: bool,
-) -> anyhow::Result<Box<dyn BiometricReader>> {
-    Ok(Box::new(crate::isapi::client::DeviceConnection::new(
+) -> anyhow::Result<Reader> {
+    Ok(Reader::Hikvision(crate::isapi::client::DeviceConnection::new(
         base_url,
         username,
         password,
