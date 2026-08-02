@@ -219,11 +219,15 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
 /// direction is worse than a missing one, because it produces a plausible day
 /// that nobody flags.
 ///
-/// The cost is that a person who authenticates without selecting gets whatever
-/// the firmware defaults to, which is not documented and which our hardware
-/// testing did not isolate. Watch `attendance_events.direction` against the
-/// anomalies queue after rollout; if forgotten selections turn out to be common,
-/// `manualAndAuto` trades this failure for schedule-shaped guesses instead.
+/// There is no silent-default failure mode: verified on hardware that the
+/// reader records NOTHING when someone authenticates without selecting first.
+/// A forgotten selection therefore leaves a visible gap an operator can correct,
+/// never a plausible-looking row with the wrong direction — which is the
+/// property that makes this mode safe for payroll.
+///
+/// The trade is friction: every employee selects twice a day. `manualAndAuto`
+/// removes that by inferring from the week plan, at the cost of reintroducing
+/// silently wrong directions whenever reality departs from the schedule.
 const ATTENDANCE_MODE: &str = "manual";
 
 /// Midpoint that splits arrivals from departures when the reader infers them.
