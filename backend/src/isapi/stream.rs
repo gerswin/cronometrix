@@ -209,18 +209,29 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
     Ok(())
 }
 
-/// Attendance mode. `manualAndAuto` labels a marking from the week plan and lets
-/// a person override it with a function key on an atypical day. `manual` alone
-/// puts the burden on
-/// every employee twice a day and fails silently when somebody forgets; `auto`
-/// alone offers no escape hatch for early departures or overtime.
-const ATTENDANCE_MODE: &str = "manualAndAuto";
-
-/// Midpoint that splits arrivals from departures for unattended markings.
+/// Attendance mode.
 ///
-/// Deliberately coarse and deliberately NOT the organisation's shift: see
-/// [`DeviceConnection::set_attendance_week_plan`]. Sites running night shifts
-/// will eventually need this per device rather than as a constant.
+/// `manual` makes the person select arrival or departure on the reader before
+/// authenticating, so the direction stored is the one they declared rather than
+/// one inferred from a clock. Chosen deliberately over `manualAndAuto`: an
+/// inferred direction is silently wrong whenever reality departs from the
+/// schedule — a shift swap, an early exit, a night worker — and a wrong
+/// direction is worse than a missing one, because it produces a plausible day
+/// that nobody flags.
+///
+/// The cost is that a person who authenticates without selecting gets whatever
+/// the firmware defaults to, which is not documented and which our hardware
+/// testing did not isolate. Watch `attendance_events.direction` against the
+/// anomalies queue after rollout; if forgotten selections turn out to be common,
+/// `manualAndAuto` trades this failure for schedule-shaped guesses instead.
+const ATTENDANCE_MODE: &str = "manual";
+
+/// Midpoint that splits arrivals from departures when the reader infers them.
+///
+/// Unused while [`ATTENDANCE_MODE`] is `manual` — the person selects instead —
+/// but still provisioned so switching modes needs no visit to the device. Kept
+/// deliberately coarse and deliberately NOT the organisation's shift: see
+/// [`DeviceConnection::set_attendance_week_plan`].
 const ATTENDANCE_DAY_SPLIT: &str = "13:00:00";
 
 const ATTENDANCE_WEEK_PLAN_NO: u8 = 1;
