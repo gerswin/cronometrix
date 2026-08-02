@@ -40,13 +40,28 @@ pub async fn ingest_alert(
     raw_payload: String,
     jpeg_bytes: Option<Bytes>,
 ) -> anyhow::Result<IngestOutcome> {
+    // The verbatim payload, at TRACE. Firmware in this family disagrees with its
+    // own documentation often enough that "what did the reader actually send"
+    // is the first question in every investigation, and reconstructing it from
+    // a packet capture means taking the device offline. Truncated because a
+    // pushed event carries an ~80 KB JPEG that would bury the log.
+    tracing::trace!(
+        device_id = %device_id,
+        content_type = %content_type,
+        payload = %raw_payload.chars().take(2000).collect::<String>(),
+        "alert payload received"
+    );
+
     let alert: EventNotificationAlert = match parse_alert(bytes, content_type) {
         Ok(alert) => alert,
         Err(error) => {
+            // Include the payload here regardless of level: a parse failure is
+            // useless without the bytes that caused it.
             tracing::warn!(
                 device_id = %device_id,
                 content_type = %content_type,
                 err = %error,
+                payload = %raw_payload.chars().take(2000).collect::<String>(),
                 "failed to parse alert payload — skipping"
             );
             return Ok(IngestOutcome::Skipped);
@@ -68,10 +83,18 @@ pub async fn ingest_alert(
     // with real markings but name nobody. Persisting them would invent an
     // unknown-face row every time the door moved.
     if !ace.has_identity() {
+        // The decoded fields go in alongside the codes: knowing an event was
+        // `sub=76` says nothing without knowing it carried a picture, a verify
+        // mode and no name — which is exactly what distinguishes "somebody
+        // unrecognised walked past" from "the reader is misconfigured".
         tracing::debug!(
             device_id = %device_id,
             major = ?ace.major_event_type,
             sub = ?ace.sub_event_type,
+            device_time = %alert.date_time,
+            verify_mode = %ace.current_verify_mode,
+            attendance_status = %ace.attendance_status,
+            has_photo = jpeg_bytes.is_some(),
             "access-control event without an identity — skipped"
         );
         return Ok(IngestOutcome::Skipped);
