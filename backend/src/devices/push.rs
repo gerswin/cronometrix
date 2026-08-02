@@ -154,11 +154,11 @@ fn split_payload(content_type: &str, body: &Bytes) -> Vec<(String, Bytes, Option
     let mut jpeg: Option<Bytes> = None;
 
     for segment in split_on(body, delimiter.as_bytes()) {
-        let Some(header_end) = find(&segment, b"\r\n\r\n") else {
+        let Some(header_end) = part_headers_end(&segment) else {
             continue;
         };
         let headers = String::from_utf8_lossy(&segment[..header_end]).to_lowercase();
-        let mut content = segment.slice(header_end + 4..);
+        let mut content = segment.slice(body_start_after(&segment, header_end)..);
         while content
             .last()
             .is_some_and(|byte| matches!(byte, b'\r' | b'\n' | b'-'))
@@ -185,6 +185,65 @@ fn split_payload(content_type: &str, body: &Bytes) -> Vec<(String, Bytes, Option
         Some((part_type, bytes)) => vec![(part_type, bytes, jpeg)],
         None => Vec::new(),
     }
+}
+
+/// Offset where a part's headers stop.
+///
+/// RFC 7578 separates headers from body with a blank line, but DS-K1T341CMFW
+/// omits it — it emits
+/// `Content-Disposition: form-data; name="event_log"\r\n` followed IMMEDIATELY
+/// by the JSON. Requiring the blank line dropped every pushed event while the
+/// handler still answered 204, so the device saw success, our logs saw nothing,
+/// and the markings simply never existed.
+///
+/// The fallback walks CRLF-separated lines and stops at the first one that does
+/// not look like a header, which is where the payload starts.
+fn part_headers_end(segment: &[u8]) -> Option<usize> {
+    if let Some(index) = find(segment, b"\r\n\r\n") {
+        return Some(index);
+    }
+
+    let mut cursor = 0usize;
+    // Skip the CRLF that follows the boundary delimiter itself.
+    while segment[cursor..].starts_with(b"\r\n") {
+        cursor += 2;
+    }
+    let mut last_header_end = None;
+    while cursor < segment.len() {
+        let line_end = find(&segment[cursor..], b"\r\n").map(|n| cursor + n)?;
+        let line = &segment[cursor..line_end];
+        if !is_header_line(line) {
+            return last_header_end;
+        }
+        last_header_end = Some(line_end);
+        cursor = line_end + 2;
+    }
+    last_header_end
+}
+
+/// Where the body begins, given where the headers ended.
+fn body_start_after(segment: &[u8], header_end: usize) -> usize {
+    if segment[header_end..].starts_with(b"\r\n\r\n") {
+        header_end + 4
+    } else {
+        header_end + 2
+    }
+}
+
+/// Whether a line is a MIME header rather than the start of a payload.
+///
+/// Deliberately strict about the colon coming before any `{` or `<`: a JSON
+/// body contains plenty of colons, and treating its first line as a header
+/// would swallow part of the event.
+fn is_header_line(line: &[u8]) -> bool {
+    let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+        return false;
+    };
+    let name = &line[..colon];
+    !name.is_empty()
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
 }
 
 fn boundary_of(content_type: &str) -> Option<String> {
@@ -242,6 +301,37 @@ mod tests {
         let parts = split_payload("application/json", &body);
         assert_eq!(parts.len(), 1);
         assert!(parts[0].2.is_none(), "no JPEG in a bare body");
+    }
+
+    /// Verbatim framing from DS-K1T341CMFW: `Content-Disposition` with no
+    /// `Content-Type`, and NO blank line before the body. Requiring the RFC 7578
+    /// blank line silently dropped every pushed marking while still answering
+    /// 204, so the device saw success and the events simply never existed.
+    #[test]
+    fn split_payload_accepts_a_part_with_no_blank_line_before_the_body() {
+        let body = Bytes::from(
+            [
+                b"--MIME_boundary\r\n".as_slice(),
+                b"Content-Disposition: form-data; name=\"event_log\"\r\n",
+                br#"{"eventType":"AccessControllerEvent","AccessControllerEvent":{"employeeNoString":"123"}}"#,
+                b"\r\n--MIME_boundary--\r\n",
+            ]
+            .concat(),
+        );
+        let parts = split_payload("multipart/form-data; boundary=MIME_boundary", &body);
+        assert_eq!(parts.len(), 1, "the part must not be discarded");
+        let (part_type, alert, _) = &parts[0];
+        assert!(
+            alert.starts_with(b"{") && alert.ends_with(b"}"),
+            "body must be extracted whole, got {:?}",
+            String::from_utf8_lossy(alert)
+        );
+        assert!(
+            !alert.windows(19).any(|w| w == b"Content-Disposition"),
+            "the header must not leak into the payload"
+        );
+        // No Content-Type on the part; `parse_alert` sniffs the leading brace.
+        assert_eq!(part_type, "application/xml");
     }
 
     #[test]
