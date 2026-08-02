@@ -77,66 +77,24 @@ pub fn posix_time_zone(utc_offset_seconds: i32) -> String {
     )
 }
 
-/// Locate `needle` inside `haystack`, returning its start offset.
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
 /// Pull the `FaceData` JPEG out of a successful `CaptureFaceData` response.
 ///
 /// The device does NOT advertise the boundary in the HTTP `Content-Type` header:
 /// the body itself opens with its own `Content-Type: multipart/form-data;
-/// boundary=...` line, so the boundary must be read out of the payload. Returns
-/// `None` for the plain-XML `captureProgress < 100` response, which carries no
-/// image part.
+/// boundary=...` line, so the boundary must be read out of the payload.
+///
+/// Splitting is delegated to `isapi::parser`, which is also what the event
+/// webhook uses — the same firmware omits header/body separators in both places,
+/// and having one tolerant implementation means the next quirk is fixed once.
+///
+/// Returns `None` for the plain-XML `captureProgress < 100` response, which
+/// carries no image part.
 fn extract_face_jpeg(body: &[u8]) -> Option<Vec<u8>> {
-    // The boundary declaration lives in the first line; bound the scan so a large
-    // JPEG never gets lossily converted just to find it.
-    let head = String::from_utf8_lossy(&body[..body.len().min(512)]);
-    let boundary = head
-        .find("boundary=")
-        .map(|idx| &head[idx + "boundary=".len()..])?
-        .split(['\r', '\n', ';'])
-        .next()?
-        .trim()
-        .trim_matches('"')
-        .to_string();
-    if boundary.is_empty() {
-        return None;
-    }
-
-    let delimiter = format!("--{boundary}");
-    let mut cursor = 0usize;
-    while let Some(offset) = find_subslice(&body[cursor..], delimiter.as_bytes()) {
-        let part_start = cursor + offset + delimiter.len();
-        cursor = part_start;
-        let rest = &body[part_start..];
-        // Part headers end at the first blank line.
-        let Some(header_end) = find_subslice(rest, b"\r\n\r\n") else {
-            break;
-        };
-        let headers = String::from_utf8_lossy(&rest[..header_end]);
-        let content_start = header_end + 4;
-        let Some(next) = find_subslice(&rest[content_start..], delimiter.as_bytes()) else {
-            continue;
-        };
-        if !headers.contains("FaceData") && !headers.contains("image/jpeg") {
-            continue;
-        }
-        // The delimiter is preceded by the CRLF that terminates the part body.
-        let mut content_end = content_start + next;
-        while content_end > content_start && matches!(body[part_start + content_end - 1], b'\r' | b'\n')
-        {
-            content_end -= 1;
-        }
-        return Some(rest[content_start..content_end].to_vec());
-    }
-    None
+    let boundary = super::parser::boundary_in_body(body)?;
+    super::parser::split_multipart(body, &boundary)
+        .into_iter()
+        .find(|part| part.headers.contains("facedata") || part.is_jpeg())
+        .map(|part| part.body.to_vec())
 }
 
 fn accepted_response(status: reqwest::StatusCode, body: String) -> Result<String> {

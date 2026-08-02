@@ -1,98 +1,268 @@
-//! Multipart alertStream parser (Plan 02-03 Task 1).
+//! Multipart parsing for every buffered payload a Hikvision reader sends.
 //!
-//! Hikvision's `/ISAPI/Event/notification/alertStream` serves
-//! `multipart/mixed` with XML and JPEG parts interleaved. `multer` handles the
-//! common case (RFC 7578 parts with `Content-Type` headers); if a device
-//! firmware emits non-standard parts (seen on some K1T342 units — RESEARCH
-//! § Pitfall 2) we fall back to a byte-level scan for the
-//! `<EventNotificationAlert>` / `</EventNotificationAlert>` markers.
+//! The device family emits `multipart/*` in three places — the alertStream, the
+//! event webhook, and the `CaptureFaceData` response — and is inconsistent about
+//! honouring RFC 7578 in each. Observed on DS-K1T341CMFW firmware V3.3.8:
 //!
-//! The parser MUST preserve pair ordering: XML is always emitted before its
-//! JPEG attachment, and an XML part without a following JPEG must still yield
-//! an EventPair (jpeg=None) rather than buffering indefinitely.
+//! - the webhook omits the blank line between a part's headers and its body,
+//!   and gives the event part no `Content-Type` at all;
+//! - `CaptureFaceData` declares its boundary INSIDE the payload rather than in
+//!   the HTTP `Content-Type` header;
+//! - some units emit parts with no headers whatsoever (RESEARCH § Pitfall 2).
+//!
+//! A strict parser answers each of these by silently discarding the part, which
+//! is how a reader can appear healthy while delivering nothing. This module is
+//! therefore deliberately permissive, and is the single place to add the next
+//! firmware quirk.
+//!
+//! `stream.rs` still drives `multer` directly: it consumes a live connection
+//! rather than a buffer, and its parts have always been well formed.
 
 use bytes::Bytes;
 
-/// One parsed event: the XML block and its optional JPEG attachment.
+/// One part of a multipart body.
+pub struct Part {
+    /// Raw header block, lowercased for matching. Empty when the part had none.
+    pub headers: String,
+    pub body: Bytes,
+}
+
+impl Part {
+    /// Whether this part carries a JPEG, by declared type or by magic bytes.
+    ///
+    /// The magic-byte check is not redundant: the webhook labels its image part
+    /// correctly, but parts with no headers at all have been observed, and an
+    /// image identified only by `Content-Disposition` would otherwise be taken
+    /// for the event payload.
+    pub fn is_jpeg(&self) -> bool {
+        self.headers.contains("image/jpeg") || self.body.starts_with(&[0xFF, 0xD8, 0xFF])
+    }
+
+    /// Whether this part looks like an event payload rather than an attachment.
+    pub fn is_alert(&self) -> bool {
+        !self.is_jpeg()
+            && self
+                .body
+                .iter()
+                .find(|byte| !byte.is_ascii_whitespace())
+                .is_some_and(|byte| matches!(byte, b'{' | b'<'))
+    }
+
+    /// The content type to hand a deserializer, sniffed when the device did not
+    /// declare one.
+    pub fn alert_content_type(&self) -> &'static str {
+        if self.headers.contains("json") {
+            return "application/json";
+        }
+        if self.headers.contains("xml") {
+            return "application/xml";
+        }
+        match self.body.iter().find(|byte| !byte.is_ascii_whitespace()) {
+            Some(b'{') => "application/json",
+            _ => "application/xml",
+        }
+    }
+}
+
+/// One parsed event: the alert payload and its optional JPEG attachment.
+///
+/// Named `xml` for schema compatibility; on current firmware it holds JSON.
 #[derive(Debug)]
 pub struct EventPair {
     pub xml: Bytes,
     pub jpeg: Option<Bytes>,
 }
 
-/// T-2-19 mitigation — bound per-part and whole-stream memory so a hostile
-/// device (or MITM tampering pre-TLS) cannot force unbounded allocation.
-/// Per-field 10 MB is well above realistic JPEG sizes from K1T341/K1T342
-/// (typical capture ≤150 KB). Whole-stream 64 MB is only applied when
-/// parsing a single buffered body; the live stream path in `stream.rs` sets
-/// `whole_stream = 1 GiB` because the connection is long-lived.
-const PER_FIELD_LIMIT: u64 = 10 * 1024 * 1024;
-const BUFFER_WHOLE_LIMIT: u64 = 64 * 1024 * 1024;
-
-/// Parse a complete buffered body into `EventPair`s using `multer`.
+/// Read the `boundary=` parameter out of a `multipart/*` content type.
 ///
-/// Used by unit tests driving fixture bytes through the parser. For live
-/// streams we instantiate `multer::Multipart` directly against
-/// `reqwest::Response::bytes_stream()` inside `stream::connect_and_stream`.
-pub async fn parse_buffer(body: &[u8], boundary: &str) -> anyhow::Result<Vec<EventPair>> {
-    let owned = Bytes::copy_from_slice(body);
-    // `multer` needs a Stream of Result<Bytes, E>; we hand it one chunk.
-    let stream = futures::stream::once(async move { Ok::<_, std::io::Error>(owned) });
+/// `multer::parse_boundary` only accepts `multipart/form-data`; readers use both
+/// that and `multipart/mixed`, so any `multipart/*` subtype is accepted here.
+pub fn boundary_of(content_type: &str) -> Option<String> {
+    let lower = content_type.to_ascii_lowercase();
+    if !lower.starts_with("multipart/") {
+        return None;
+    }
+    let index = lower.find("boundary=")?;
+    let value = content_type[index + "boundary=".len()..]
+        .split(';')
+        .next()?
+        .trim()
+        .trim_matches('"')
+        .to_string();
+    (!value.is_empty()).then_some(value)
+}
 
-    let constraints = multer::Constraints::new().size_limit(
-        multer::SizeLimit::new()
-            .per_field(PER_FIELD_LIMIT)
-            .whole_stream(BUFFER_WHOLE_LIMIT),
-    );
-    let mut mp = multer::Multipart::with_constraints(stream, boundary, constraints);
+/// Read a boundary that the device declared inside the payload itself.
+///
+/// `CaptureFaceData` responds with the multipart framing in the body's opening
+/// lines rather than in the HTTP header, so the boundary has to be recovered
+/// from the bytes. Bounded to the first 512 bytes so a large JPEG is never
+/// lossily converted just to find it.
+pub fn boundary_in_body(body: &[u8]) -> Option<String> {
+    let head = String::from_utf8_lossy(&body[..body.len().min(512)]);
+    boundary_of(head.lines().next()?.trim_start_matches("Content-Type:").trim())
+        .or_else(|| {
+            let index = head.find("boundary=")?;
+            let value = head[index + "boundary=".len()..]
+                .split(['\r', '\n', ';'])
+                .next()?
+                .trim()
+                .trim_matches('"')
+                .to_string();
+            (!value.is_empty()).then_some(value)
+        })
+}
 
-    let mut out = Vec::new();
-    let mut pending_xml: Option<Bytes> = None;
+/// Split a buffered multipart body into its parts.
+///
+/// Tolerant by design — see the module docs for what each firmware omits.
+pub fn split_multipart(body: &[u8], boundary: &str) -> Vec<Part> {
+    let delimiter = format!("--{boundary}");
+    let mut parts = Vec::new();
+    let mut cursor = 0usize;
 
-    while let Some(field) = mp.next_field().await? {
-        let ct = field
-            .content_type()
-            .map(|m| m.to_string())
-            .unwrap_or_default();
-        let bytes = field.bytes().await?;
+    while let Some(offset) = find_subslice(&body[cursor..], delimiter.as_bytes()) {
+        let start = cursor + offset + delimiter.len();
+        let end = find_subslice(&body[start..], delimiter.as_bytes())
+            .map(|next| start + next)
+            .unwrap_or(body.len());
+        cursor = end;
 
-        if ct.starts_with("application/xml") || bytes.starts_with(b"<EventNotificationAlert") {
-            // Commit any pending XML with no JPEG (Pitfall 2 — some streams
-            // omit the JPEG part entirely).
-            if let Some(prev) = pending_xml.take() {
-                out.push(EventPair {
-                    xml: prev,
-                    jpeg: None,
-                });
-            }
-            pending_xml = Some(bytes);
-        } else if ct.starts_with("image/jpeg") || bytes.starts_with(b"\xFF\xD8\xFF") {
-            if let Some(prev) = pending_xml.take() {
-                out.push(EventPair {
-                    xml: prev,
-                    jpeg: Some(bytes),
-                });
-            }
-            // else: orphan image with no preceding XML — drop it.
+        let segment = &body[start..end];
+        let (headers, content_start) = split_headers(segment);
+        let mut content = &segment[content_start..];
+        // Trim the CRLF that terminates a part body, and the `--` of a closing
+        // delimiter when this was the final part.
+        while content
+            .last()
+            .is_some_and(|byte| matches!(byte, b'\r' | b'\n' | b'-'))
+        {
+            content = &content[..content.len() - 1];
+        }
+        if content.is_empty() {
+            continue;
+        }
+        parts.push(Part {
+            headers: headers.to_ascii_lowercase(),
+            body: Bytes::copy_from_slice(content),
+        });
+
+        if end == body.len() {
+            break;
         }
     }
 
-    if let Some(prev) = pending_xml.take() {
+    parts
+}
+
+/// Pair each alert part with the JPEG that follows it.
+///
+/// An alert with no attachment still yields a pair rather than being buffered
+/// indefinitely: firmware that sends no picture is the common case, not an
+/// error. An orphan image with no preceding alert is dropped.
+pub fn pair_events(parts: Vec<Part>) -> Vec<EventPair> {
+    let mut out = Vec::new();
+    let mut pending: Option<Bytes> = None;
+
+    for part in parts {
+        if part.is_jpeg() {
+            if let Some(alert) = pending.take() {
+                out.push(EventPair {
+                    xml: alert,
+                    jpeg: Some(part.body),
+                });
+            }
+        } else if part.is_alert() {
+            if let Some(alert) = pending.take() {
+                out.push(EventPair {
+                    xml: alert,
+                    jpeg: None,
+                });
+            }
+            pending = Some(part.body);
+        }
+    }
+
+    if let Some(alert) = pending {
         out.push(EventPair {
-            xml: prev,
+            xml: alert,
             jpeg: None,
         });
     }
-    Ok(out)
+    out
 }
 
-/// Fallback parser for payloads that lack standard multipart part headers.
+/// Parse a complete buffered body into `EventPair`s.
+pub fn parse_buffer(body: &[u8], boundary: &str) -> Vec<EventPair> {
+    pair_events(split_multipart(body, boundary))
+}
+
+/// Where a part's headers end and its body begins.
 ///
-/// Scans the whole buffer for `<EventNotificationAlert>` /
-/// `</EventNotificationAlert>` marker pairs and, immediately after each close
-/// tag, searches for a JPEG SOI marker (`FF D8 FF`) up to the next
-/// `<EventNotificationAlert` (or end-of-buffer). This is deliberately
-/// permissive — we prefer "one extra JPEG byte" to "drop the whole event".
+/// Returns `("", 0)` when the part has no headers at all. The fallback walks
+/// CRLF-separated lines and stops at the first that is not `Name: value`,
+/// because the webhook writes its `Content-Disposition` immediately before the
+/// JSON with no blank line between them.
+fn split_headers(segment: &[u8]) -> (&str, usize) {
+    let mut cursor = 0usize;
+    while segment[cursor..].starts_with(b"\r\n") {
+        cursor += 2;
+    }
+    if cursor >= segment.len() {
+        return ("", segment.len());
+    }
+
+    // A part that opens straight into a payload has no headers.
+    if matches!(segment[cursor], b'{' | b'<' | 0xFF) {
+        return ("", cursor);
+    }
+
+    if let Some(index) = find_subslice(&segment[cursor..], b"\r\n\r\n") {
+        let end = cursor + index;
+        return (
+            std::str::from_utf8(&segment[cursor..end]).unwrap_or_default(),
+            end + 4,
+        );
+    }
+
+    let mut scan = cursor;
+    while scan < segment.len() {
+        let Some(relative) = find_subslice(&segment[scan..], b"\r\n") else {
+            break;
+        };
+        let line_end = scan + relative;
+        if !is_header_line(&segment[scan..line_end]) {
+            return (
+                std::str::from_utf8(&segment[cursor..scan.saturating_sub(2)]).unwrap_or_default(),
+                scan,
+            );
+        }
+        scan = line_end + 2;
+    }
+    ("", cursor)
+}
+
+/// Whether a line is a MIME header rather than the start of a payload.
+///
+/// The name must be alphanumeric-or-dash: a JSON body is full of colons, and
+/// mistaking its first line for a header would swallow part of the event.
+fn is_header_line(line: &[u8]) -> bool {
+    let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+        return false;
+    };
+    let name = &line[..colon];
+    !name.is_empty()
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+}
+
+/// Last-resort parser for payloads with no usable multipart framing at all.
+///
+/// Scans for `<EventNotificationAlert>` marker pairs and, after each close tag,
+/// for a JPEG SOI up to the next opening tag. XML-only by construction — it
+/// predates the JSON firmware and does NOT recover JSON payloads. Deliberately
+/// permissive: one extra trailing byte on an image beats dropping an event.
 pub fn parse_line_scan_fallback(body: &[u8]) -> Vec<EventPair> {
     const OPEN: &[u8] = b"<EventNotificationAlert";
     const CLOSE: &[u8] = b"</EventNotificationAlert>";
@@ -108,7 +278,6 @@ pub fn parse_line_scan_fallback(body: &[u8]) -> Vec<EventPair> {
         let abs_c = abs_o + c_rel + CLOSE.len();
         let xml_bytes = Bytes::copy_from_slice(&body[abs_o..abs_c]);
 
-        // Look for a JPEG SOI between the close tag and the next opening tag (or EOF).
         let tail_start = abs_c;
         let tail_end = find_subslice(&body[tail_start..], OPEN)
             .map(|n| tail_start + n)
@@ -127,114 +296,147 @@ pub fn parse_line_scan_fallback(body: &[u8]) -> Vec<EventPair> {
     out
 }
 
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+/// Locate `needle` inside `haystack`, returning its start offset.
+pub fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack.windows(needle.len()).position(|w| w == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
-// =============================================================================
-// Unit tests
-// =============================================================================
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
-    fn fixture_path(name: &str) -> String {
-        format!("tests/fixtures/{}", name)
+    fn part(headers: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!("--B\r\n{headers}\r\n\r\n").into_bytes();
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\r\n");
+        out
     }
 
-    #[tokio::test]
-    async fn parses_k1t341_fixture_into_one_event_pair() {
-        let body = fs::read(fixture_path("alertstream_k1t341.bin")).expect("fixture missing");
-        let pairs = parse_buffer(&body, "MIME_boundary").await.expect("parse");
-        assert_eq!(pairs.len(), 1, "k1t341 fixture must yield exactly one pair");
-        let pair = &pairs[0];
-        let xml = std::str::from_utf8(&pair.xml).expect("xml utf8");
-        assert!(xml.contains("<EventNotificationAlert"));
-        assert!(pair.jpeg.is_some(), "k1t341 fixture has an attached JPEG");
-        let jpeg = pair.jpeg.as_ref().unwrap();
-        assert!(
-            jpeg.starts_with(b"\xFF\xD8\xFF"),
-            "JPEG must start with SOI"
-        );
-    }
+    const ALERT_XML: &[u8] = b"<EventNotificationAlert><eventType>x</eventType></EventNotificationAlert>";
+    const ALERT_JSON: &[u8] = br#"{"eventType":"AccessControllerEvent"}"#;
+    const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0x00, 0xFF, 0xD9];
 
-    #[tokio::test]
-    async fn parses_heartbeat_fixture_into_xml_only_pair() {
-        let body = fs::read(fixture_path("alertstream_heartbeat.bin")).expect("fixture missing");
-        let pairs = parse_buffer(&body, "MIME_boundary").await.expect("parse");
+    #[test]
+    fn pairs_an_alert_with_the_image_that_follows_it() {
+        let mut body = part("Content-Type: application/xml", ALERT_XML);
+        body.extend(part("Content-Type: image/jpeg", JPEG));
+        body.extend_from_slice(b"--B--\r\n");
+
+        let pairs = parse_buffer(&body, "B");
         assert_eq!(pairs.len(), 1);
-        assert!(pairs[0].jpeg.is_none(), "heartbeat fixture has no JPEG");
+        assert_eq!(pairs[0].xml, Bytes::from_static(ALERT_XML));
+        assert_eq!(pairs[0].jpeg.as_deref(), Some(JPEG));
     }
 
-    #[tokio::test]
-    async fn parses_unknown_face_fixture_into_one_event_pair() {
-        let body = fs::read(fixture_path("alertstream_unknown_face.bin")).expect("fixture missing");
-        let pairs = parse_buffer(&body, "MIME_boundary").await.expect("parse");
+    /// The webhook writes `Content-Disposition` immediately before the JSON with
+    /// no blank line. Requiring one discarded every pushed marking while the
+    /// handler still answered success.
+    #[test]
+    fn accepts_a_part_with_no_blank_line_before_the_body() {
+        let mut body = b"--B\r\nContent-Disposition: form-data; name=\"event_log\"\r\n".to_vec();
+        body.extend_from_slice(ALERT_JSON);
+        body.extend_from_slice(b"\r\n--B--\r\n");
+
+        let pairs = parse_buffer(&body, "B");
+        assert_eq!(pairs.len(), 1, "the part must not be discarded");
+        assert_eq!(pairs[0].xml, Bytes::from_static(ALERT_JSON));
+    }
+
+    /// Parts with no headers at all have been seen in the field.
+    #[test]
+    fn accepts_a_part_with_no_headers_at_all() {
+        let mut body = b"--B\r\n".to_vec();
+        body.extend_from_slice(ALERT_JSON);
+        body.extend_from_slice(b"\r\n--B\r\n");
+        body.extend_from_slice(JPEG);
+        body.extend_from_slice(b"\r\n--B--\r\n");
+
+        let pairs = parse_buffer(&body, "B");
         assert_eq!(pairs.len(), 1);
-        let xml = std::str::from_utf8(&pairs[0].xml).expect("xml utf8");
-        assert!(xml.contains("<faceID>"));
-    }
-
-    #[tokio::test]
-    async fn ignores_bytes_before_first_boundary() {
-        let fixture = fs::read(fixture_path("alertstream_k1t341.bin")).expect("fixture missing");
-        let mut body = vec![0u8; 128];
-        body.extend_from_slice(&fixture);
-        let pairs = parse_buffer(&body, "MIME_boundary").await.expect("parse");
-        assert_eq!(pairs.len(), 1, "junk prefix must not change pair count");
-    }
-
-    #[tokio::test]
-    async fn fallback_line_scan_if_multer_fails() {
-        // Build a body with the XML and JPEG but WITHOUT Content-Disposition /
-        // Content-Type headers — just raw bytes separated by the boundary.
-        // multer should yield zero parts (missing headers), while the line-scan
-        // fallback should recover one EventPair.
-        let xml = r#"<EventNotificationAlert version="2.0"><eventType>AccessControllerEvent</eventType></EventNotificationAlert>"#;
-        let jpeg: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, b'J', b'F', b'I', b'F', 0xFF, 0xD9];
-
-        let mut body = Vec::new();
-        body.extend_from_slice(b"--MIME_boundary\r\n\r\n");
-        body.extend_from_slice(xml.as_bytes());
-        body.extend_from_slice(b"\r\n--MIME_boundary\r\n\r\n");
-        body.extend_from_slice(jpeg);
-        body.extend_from_slice(b"\r\n--MIME_boundary--\r\n");
-
-        // Primary parser may still succeed here because multer sometimes tolerates
-        // missing Content-Type. What we actually pin is that the fallback alone
-        // can reconstruct the pair.
-        let fallback_pairs = parse_line_scan_fallback(&body);
-        assert_eq!(fallback_pairs.len(), 1, "fallback must recover one pair");
-        let pair = &fallback_pairs[0];
-        let recovered_xml = std::str::from_utf8(&pair.xml).unwrap();
-        assert!(recovered_xml.contains("<EventNotificationAlert"));
-        assert!(recovered_xml.contains("</EventNotificationAlert>"));
-        assert!(pair.jpeg.is_some(), "fallback must find the JPEG SOI");
+        assert_eq!(pairs[0].jpeg.as_deref(), Some(JPEG));
     }
 
     #[test]
-    fn fallback_handles_multiple_events_in_same_buffer() {
-        let xml1 = b"<EventNotificationAlert><a>1</a></EventNotificationAlert>";
-        let xml2 = b"<EventNotificationAlert><a>2</a></EventNotificationAlert>";
-        let mut body = Vec::new();
-        body.extend_from_slice(xml1);
-        body.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0x01]);
-        body.extend_from_slice(xml2);
-        body.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0x02]);
+    fn an_alert_without_an_image_still_yields_a_pair() {
+        let mut body = part("Content-Type: application/xml", ALERT_XML);
+        body.extend(part("Content-Type: application/xml", ALERT_XML));
+        body.extend_from_slice(b"--B--\r\n");
+
+        let pairs = parse_buffer(&body, "B");
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.iter().all(|pair| pair.jpeg.is_none()));
+    }
+
+    #[test]
+    fn drops_an_image_with_no_preceding_alert() {
+        let mut body = part("Content-Type: image/jpeg", JPEG);
+        body.extend_from_slice(b"--B--\r\n");
+        assert!(parse_buffer(&body, "B").is_empty());
+    }
+
+    #[test]
+    fn ignores_bytes_before_the_first_boundary() {
+        let mut body = b"preamble junk\r\n".to_vec();
+        body.extend(part("Content-Type: application/xml", ALERT_XML));
+        body.extend_from_slice(b"--B--\r\n");
+        assert_eq!(parse_buffer(&body, "B").len(), 1);
+    }
+
+    #[test]
+    fn sniffs_the_payload_format_when_the_part_declares_none() {
+        let parts = split_multipart(
+            &[
+                b"--B\r\nContent-Disposition: form-data\r\n".as_slice(),
+                ALERT_JSON,
+                b"\r\n--B--\r\n",
+            ]
+            .concat(),
+            "B",
+        );
+        assert_eq!(parts[0].alert_content_type(), "application/json");
+    }
+
+    #[test]
+    fn boundary_of_accepts_any_multipart_subtype() {
+        assert_eq!(
+            boundary_of("multipart/mixed; boundary=MIME_boundary").as_deref(),
+            Some("MIME_boundary")
+        );
+        assert_eq!(
+            boundary_of("multipart/form-data; boundary=\"quoted\"").as_deref(),
+            Some("quoted")
+        );
+        assert_eq!(boundary_of("application/json"), None);
+        assert_eq!(boundary_of("multipart/mixed"), None);
+    }
+
+    /// `CaptureFaceData` declares its boundary in the payload, not the header.
+    #[test]
+    fn boundary_in_body_reads_the_payloads_own_declaration() {
+        let body = b"Content-Type:multipart/form-data;boundary=MIME_boundary\r\nContent-Length:12\r\n\r\n--MIME_boundary\r\n";
+        assert_eq!(boundary_in_body(body).as_deref(), Some("MIME_boundary"));
+    }
+
+    #[test]
+    fn line_scan_fallback_recovers_events_without_any_framing() {
+        let mut body = ALERT_XML.to_vec();
+        body.extend_from_slice(JPEG);
+        body.extend_from_slice(ALERT_XML);
 
         let pairs = parse_line_scan_fallback(&body);
         assert_eq!(pairs.len(), 2);
-        assert!(pairs[0].jpeg.is_some());
-        assert!(pairs[1].jpeg.is_some());
+        assert!(pairs[0].jpeg.is_some(), "first event keeps its image");
+        assert!(pairs[1].jpeg.is_none(), "second has none to claim");
     }
 
     #[test]
-    fn fallback_returns_empty_for_garbage() {
-        let pairs = parse_line_scan_fallback(b"no alerts here at all");
-        assert!(pairs.is_empty());
+    fn line_scan_fallback_stops_at_an_unclosed_alert() {
+        assert!(parse_line_scan_fallback(b"<EventNotificationAlert>truncated").is_empty());
+        assert!(parse_line_scan_fallback(b"garbage").is_empty());
     }
 }
