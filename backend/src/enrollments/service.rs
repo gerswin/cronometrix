@@ -370,7 +370,17 @@ pub async fn start_enrollment(
 ) -> Result<StartedEnrollment, AppError> {
     let face_enrollment_id = Uuid::new_v4().to_string();
     let enrollment_id = Uuid::new_v4().to_string();
-    let new_face_id = Uuid::new_v4().to_string();
+    // Hyphen-less (32 hex chars), NOT the 36-char hyphenated form: `face_id` is
+    // pushed to the device as ISAPI `UserInfo.employeeNo`, whose capabilities
+    // declare `@max: 32`. A 36-char value is rejected with
+    // `statusCode 6 / badJsonContent / errorMsg "employeeNo"`, verified against
+    // DS-K1T341CMFW firmware V3.3.8 — every hardware enrollment failed.
+    //
+    // Shortening must happen HERE, not at the ISAPI boundary: the device echoes
+    // this value back as `employeeNoString` on attendance events, and
+    // `events::service::lookup_employee_for_event` resolves it against the
+    // stored `device_face_mappings.face_id`. Stored and pushed must be byte-identical.
+    let new_face_id = Uuid::new_v4().simple().to_string();
     let photo_relpath = format!("{}/{}.jpg", employee_id, enrollment_id);
     let guard = AtomicFileGuard::write(
         &state.paths.enrollments_root,

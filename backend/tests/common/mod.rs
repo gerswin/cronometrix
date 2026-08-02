@@ -402,22 +402,14 @@ pub async fn mock_hikvision_server() -> wiremock::MockServer {
         .mount(&server)
         .await;
 
-    // CaptureFaceData — enter enrollment mode
+    // CaptureFaceData — opens the capture window AND returns the JPEG inline in a
+    // multipart body. There is no second request: real DS-K1T341CMFW firmware
+    // answers `GET CapturedFacePicture` with 404 `notSupport`.
     Mock::given(method("POST"))
         .and(path("/ISAPI/AccessControl/CaptureFaceData"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#),
-        )
-        .mount(&server)
-        .await;
-
-    // CapturedFacePicture — return a sample JPEG
-    Mock::given(method("GET"))
-        .and(path("/ISAPI/AccessControl/CapturedFacePicture"))
-        .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("Content-Type", "image/jpeg")
-                .set_body_bytes(sample_face_jpeg_50kb()),
+                .set_body_bytes(include_bytes!("../fixtures/capture_face_data_multipart.bin").to_vec()),
         )
         .mount(&server)
         .await;

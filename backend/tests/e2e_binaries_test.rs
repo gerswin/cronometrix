@@ -610,7 +610,6 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
             "<door>open</door>",
         ),
         ("PUT", "/ISAPI/System/reboot", "<reboot>true</reboot>"),
-        ("POST", "/ISAPI/AccessControl/CaptureFaceData", "<capture/>"),
         (
             "PUT",
             "/ISAPI/AccessControl/UserInfoDetail/Delete",
@@ -636,6 +635,32 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
         assert!(body.contains("<statusCode>1</statusCode>"));
         assert!(body.contains("<statusString>OK</statusString>"));
     }
+
+    // CaptureFaceData is NOT a generic OK command: real DS-K1T341CMFW firmware
+    // returns the captured JPEG inline in a multipart body whose boundary is
+    // declared inside the payload. The mock must reproduce that shape or a client
+    // regression to the old two-step flow would sail through E2E.
+    let capture_response = client
+        .post(format!(
+            "{public_url}/ISAPI/AccessControl/CaptureFaceData"
+        ))
+        .body(r#"<CaptureFaceDataCond><dataType>binary</dataType></CaptureFaceDataCond>"#)
+        .send()
+        .await
+        .expect("CaptureFaceData");
+    assert_eq!(capture_response.status(), StatusCode::OK);
+    let capture_body = capture_response.bytes().await.expect("capture body");
+    let capture_head = String::from_utf8_lossy(&capture_body[..capture_body.len().min(512)]);
+    assert!(
+        capture_head.contains("boundary=MIME_boundary"),
+        "boundary must be declared in the body, not the HTTP header"
+    );
+    assert!(capture_head.contains("<captureProgress>100</captureProgress>"));
+    assert!(capture_head.contains(r#"name="FaceData""#));
+    assert!(
+        capture_body.windows(3).any(|w| w == [0xFF, 0xD8, 0xFF]),
+        "multipart must carry the JPEG inline"
+    );
 
     let enrollment_commands = [
         (
@@ -680,11 +705,17 @@ async fn mock_hikvision_serves_and_records_real_public_and_admin_interfaces() {
                 "<door>open</door>"
             ),
             ("PUT", "/ISAPI/System/reboot", "<reboot>true</reboot>"),
-            ("POST", "/ISAPI/AccessControl/CaptureFaceData", "<capture/>"),
             (
                 "PUT",
                 "/ISAPI/AccessControl/UserInfoDetail/Delete",
                 "<delete>EMP999</delete>"
+            ),
+            // Issued after the generic-XML loop because its response shape is
+            // multipart, not <ResponseStatus>.
+            (
+                "POST",
+                "/ISAPI/AccessControl/CaptureFaceData",
+                r#"<CaptureFaceDataCond><dataType>binary</dataType></CaptureFaceDataCond>"#
             ),
             (
                 "POST",

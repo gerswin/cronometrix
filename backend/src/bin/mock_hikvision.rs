@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ISAPI/System/reboot", put(handle_recorded_ok))
         .route(
             "/ISAPI/AccessControl/CaptureFaceData",
-            post(handle_recorded_ok),
+            post(handle_capture_face_data),
         )
         .route(
             "/ISAPI/AccessControl/CapturedFacePicture",
@@ -190,7 +190,49 @@ async fn handle_status() -> Json<serde_json::Value> {
     }))
 }
 
+/// POST /ISAPI/AccessControl/CaptureFaceData — the real kiosk capture response.
+///
+/// DS-K1T341CMFW V3.3.8 returns the JPEG inline in a multipart body whose
+/// boundary is declared inside the payload, NOT in the HTTP Content-Type header.
+/// Serving a bare `<ResponseStatus>` here would let a client regression to the
+/// old (nonexistent) `GET CapturedFacePicture` two-step flow pass E2E.
+async fn handle_capture_face_data(State(state): State<MockState>, req: Request<Body>) -> Response {
+    record_request(&state, req).await;
+
+    let jpeg = B64
+        .decode(CAPTURE_FACE_JPEG_B64)
+        .expect("embedded capture JPEG must be valid base64");
+    let xml_part = "<CaptureFaceData version=\"2.0\" xmlns=\"http://www.isapi.org/ver20/XMLSchema\">\
+                    <captureProgress>100</captureProgress></CaptureFaceData>";
+
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(
+        b"Content-Type:multipart/form-data;boundary=MIME_boundary\r\nContent-Length:0\r\n\r\n",
+    );
+    body.extend_from_slice(b"--MIME_boundary\r\nContent-Type:application/xml;charset=\"UTF-8\"\r\n");
+    body.extend_from_slice(format!("Content-Length:{}\r\n\r\n", xml_part.len()).as_bytes());
+    body.extend_from_slice(xml_part.as_bytes());
+    body.extend_from_slice(b"\r\n--MIME_boundary\r\n");
+    body.extend_from_slice(
+        b"Content-Disposition: form-data;name=\"FaceData\";filename=\"FaceData.jpg\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type:image/jpeg\r\n");
+    body.extend_from_slice(format!("Content-Length:{}\r\n\r\n", jpeg.len()).as_bytes());
+    body.extend_from_slice(&jpeg);
+    body.extend_from_slice(b"\r\n--MIME_boundary--\r\n");
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/xml")
+        .body(Body::from(body))
+        .unwrap()
+}
+
 /// GET /ISAPI/AccessControl/CapturedFacePicture — deterministic test JPEG.
+///
+/// Retained only so the existing binary smoke test keeps a stable surface: real
+/// DS-K1T341CMFW firmware answers this path with 404 `notSupport`, and the
+/// production client no longer calls it.
 async fn handle_captured_face_picture() -> Response {
     let jpeg = B64
         .decode(CAPTURE_FACE_JPEG_B64)

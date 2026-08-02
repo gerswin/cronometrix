@@ -1143,20 +1143,15 @@ async fn capture_from_device_returns_202_with_capture_id() {
 
 #[tokio::test]
 async fn capture_from_device_success_path_writes_jpeg_under_captures_tmp_root() {
-    // Spawn wiremock that successfully serves the 2-step capture flow.
+    // Single-step capture: the device returns the JPEG inline on the same POST.
+    // `GET /ISAPI/AccessControl/CapturedFacePicture` — which this test used to
+    // mock — answers 404/notSupport on DS-K1T341CMFW V3.3.8 and is never called.
     let server = MockServer::start().await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/ISAPI/AccessControl/CaptureFaceData"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
-        .mount(&server)
-        .await;
-    Mock::given(wm_method("GET"))
-        .and(wm_path("/ISAPI/AccessControl/CapturedFacePicture"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Type", "image/jpeg")
-                .set_body_bytes(MINI_JPEG.to_vec()),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(
+            include_bytes!("fixtures/capture_face_data_multipart.bin").to_vec(),
+        ))
         .mount(&server)
         .await;
 

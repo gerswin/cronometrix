@@ -45,8 +45,12 @@ use super::service;
 /// Maximum size of a photo upload field (2 MB, per D-04 frontend cap).
 const MAX_UPLOAD_BYTES: usize = 2 * 1024 * 1024;
 
-/// Kiosk capture timeout — 30 seconds to match the device-side capture window.
-const CAPTURE_TIMEOUT_SECS: u64 = 30;
+/// Kiosk capture timeout. `capture_face_image` retries the device-side capture
+/// window (~6s each) up to 8 times spaced 3s apart, so a full run is ~70s — the
+/// previous 30s ceiling cut the retry loop off after roughly three windows. On
+/// hardware a cooperating subject already needed three. 90s leaves headroom
+/// without letting a stuck session hold the slot indefinitely.
+const CAPTURE_TIMEOUT_SECS: u64 = 90;
 
 // =============================================================================
 // In-memory capture state (D-02 LOCKED — kiosk capture session)

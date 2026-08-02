@@ -25,6 +25,85 @@ pub(crate) struct DeviceResponseError {
     body: String,
 }
 
+/// Request body shared by `enrollment_mode` and `capture_face_image` — both open
+/// the same device-side capture window. `dataType` is required and `binary` is
+/// its only accepted value (see `CaptureFaceData/capabilities`).
+const CAPTURE_FACE_DATA_BODY: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+    r#"<CaptureFaceDataCond version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema">"#,
+    r#"<captureInfrared>true</captureInfrared><dataType>binary</dataType>"#,
+    r#"</CaptureFaceDataCond>"#
+);
+
+/// One capture window is ~6s; a cooperating subject needed 3 windows on hardware.
+/// Eight attempts spaced 3s apart bound the wait at roughly 70s.
+const CAPTURE_MAX_ATTEMPTS: usize = 8;
+/// Spacing between windows. Firing sooner collides with the still-closing window
+/// and earns `400 / deviceBusy` — measured: 2s still collides, 3s does not.
+const CAPTURE_RETRY_DELAY: Duration = Duration::from_secs(3);
+
+/// Locate `needle` inside `haystack`, returning its start offset.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Pull the `FaceData` JPEG out of a successful `CaptureFaceData` response.
+///
+/// The device does NOT advertise the boundary in the HTTP `Content-Type` header:
+/// the body itself opens with its own `Content-Type: multipart/form-data;
+/// boundary=...` line, so the boundary must be read out of the payload. Returns
+/// `None` for the plain-XML `captureProgress < 100` response, which carries no
+/// image part.
+fn extract_face_jpeg(body: &[u8]) -> Option<Vec<u8>> {
+    // The boundary declaration lives in the first line; bound the scan so a large
+    // JPEG never gets lossily converted just to find it.
+    let head = String::from_utf8_lossy(&body[..body.len().min(512)]);
+    let boundary = head
+        .find("boundary=")
+        .map(|idx| &head[idx + "boundary=".len()..])?
+        .split(['\r', '\n', ';'])
+        .next()?
+        .trim()
+        .trim_matches('"')
+        .to_string();
+    if boundary.is_empty() {
+        return None;
+    }
+
+    let delimiter = format!("--{boundary}");
+    let mut cursor = 0usize;
+    while let Some(offset) = find_subslice(&body[cursor..], delimiter.as_bytes()) {
+        let part_start = cursor + offset + delimiter.len();
+        cursor = part_start;
+        let rest = &body[part_start..];
+        // Part headers end at the first blank line.
+        let Some(header_end) = find_subslice(rest, b"\r\n\r\n") else {
+            break;
+        };
+        let headers = String::from_utf8_lossy(&rest[..header_end]);
+        let content_start = header_end + 4;
+        let Some(next) = find_subslice(&rest[content_start..], delimiter.as_bytes()) else {
+            continue;
+        };
+        if !headers.contains("FaceData") && !headers.contains("image/jpeg") {
+            continue;
+        }
+        // The delimiter is preceded by the CRLF that terminates the part body.
+        let mut content_end = content_start + next;
+        while content_end > content_start && matches!(body[part_start + content_end - 1], b'\r' | b'\n')
+        {
+            content_end -= 1;
+        }
+        return Some(rest[content_start..content_end].to_vec());
+    }
+    None
+}
+
 fn accepted_response(status: reqwest::StatusCode, body: String) -> Result<String> {
     if status.is_success() {
         Ok(body)
@@ -104,11 +183,18 @@ impl DeviceConnection {
     }
 
     /// `POST /ISAPI/AccessControl/CaptureFaceData` — enter enrollment mode.
-    /// JSON body per Hikvision docs; the device replies with `<ResponseStatus>`.
+    ///
+    /// XML body, verified against DS-K1T341CMFW firmware V3.3.8. The device's
+    /// `CaptureFaceData/capabilities` advertises a `<CaptureFaceDataCond>` root
+    /// with `captureInfrared` (`true,false`) and a REQUIRED `dataType` whose
+    /// only accepted value is `binary`. A JSON body is rejected with
+    /// `statusCode 6 / Invalid Content / badParameters` — with or without
+    /// `?format=json`, which this endpoint ignores. On success the device
+    /// replies `<CaptureFaceData><captureProgress>0</captureProgress></CaptureFaceData>`.
     pub async fn enrollment_mode(&self) -> Result<String> {
         let url = format!("{}/ISAPI/AccessControl/CaptureFaceData", self.base_url);
-        let body = r#"{"CaptureInfo":{"captureInfrared":true}}"#;
-        self.send_json(&url, reqwest::Method::POST, body).await
+        self.send_xml(&url, reqwest::Method::POST, CAPTURE_FACE_DATA_BODY)
+            .await
     }
 
     // =========================================================================
@@ -253,36 +339,64 @@ impl DeviceConnection {
     /// Trigger a device-side face capture and retrieve the captured JPEG bytes
     /// (D-02 LOCKED — kiosk mode step).
     ///
-    /// Step 1: `POST /ISAPI/AccessControl/CaptureFaceData` (existing `enrollment_mode`)
-    ///          puts the device into live-capture mode.
-    /// Step 2: `GET /ISAPI/AccessControl/CapturedFacePicture` retrieves the JPEG.
+    /// There is NO second endpoint. `GET /ISAPI/AccessControl/CapturedFacePicture`
+    /// — the path this used to call — answers `404 / statusCode 4 / notSupport` on
+    /// DS-K1T341CMFW firmware V3.3.8. With `dataType=binary` the image comes back
+    /// inline on the same `CaptureFaceData` POST that opens the capture window.
     ///
-    /// NOTE: RESEARCH assumption A1 — the GET path is the most-cited convention
-    /// for this device family. Adjust if hardware smoke tests reveal a different path.
+    /// Each POST opens a capture window of roughly 6 seconds and then answers:
+    ///
+    /// - `200` + a 131-byte `<captureProgress>0</captureProgress>` — nobody was in
+    ///   front of the reader; retry.
+    /// - `200` + a multipart payload whose XML part reads `captureProgress=100` and
+    ///   whose `FaceData` part is the JPEG — done.
+    /// - `400` + `subStatusCode deviceBusy` — a previous window is still open;
+    ///   back off and retry, do NOT treat as fatal.
+    ///
+    /// Observed on hardware: a cooperating subject took 3 attempts (~27s).
     pub async fn capture_face_image(&self) -> Result<Vec<u8>> {
-        // Step 1: enter enrollment (capture) mode.
-        self.enrollment_mode().await?;
-
-        // Step 2: retrieve the captured picture bytes.
-        let url = format!("{}/ISAPI/AccessControl/CapturedFacePicture", self.base_url);
         use diqwest::WithDigestAuth;
-        let resp = self
-            .client
-            .get(&url)
-            .send_digest_auth((self.username.as_str(), self.password.as_str()))
-            .await
-            .context("ISAPI CapturedFacePicture request failed")?;
 
-        let status = resp.status();
-        anyhow::ensure!(
-            status.is_success(),
-            "device returned non-success status {status} on CapturedFacePicture"
-        );
-        let bytes = resp
-            .bytes()
-            .await
-            .context("read CapturedFacePicture body")?;
-        Ok(bytes.to_vec())
+        let url = format!("{}/ISAPI/AccessControl/CaptureFaceData", self.base_url);
+        let mut last_progress: Option<String> = None;
+
+        for attempt in 1..=CAPTURE_MAX_ATTEMPTS {
+            let resp = self
+                .client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/xml")
+                .body(CAPTURE_FACE_DATA_BODY)
+                .send_digest_auth((self.username.as_str(), self.password.as_str()))
+                .await
+                .context("ISAPI CaptureFaceData request failed")?;
+
+            let status = resp.status();
+            let bytes = resp.bytes().await.context("read CaptureFaceData body")?;
+
+            if status.is_success() {
+                if let Some(jpeg) = extract_face_jpeg(&bytes) {
+                    return Ok(jpeg);
+                }
+                // 200 without an image part means captureProgress < 100.
+                last_progress = Some(String::from_utf8_lossy(&bytes).trim().to_string());
+            } else {
+                let body = String::from_utf8_lossy(&bytes).to_string();
+                // `deviceBusy` is our own previous window still closing — transient.
+                if !body.contains("deviceBusy") {
+                    return Err(DeviceResponseError { status, body }.into());
+                }
+            }
+
+            if attempt < CAPTURE_MAX_ATTEMPTS {
+                tokio::time::sleep(CAPTURE_RETRY_DELAY).await;
+            }
+        }
+
+        anyhow::bail!(
+            "no face captured after {} attempts; last device response: {}",
+            CAPTURE_MAX_ATTEMPTS,
+            last_progress.as_deref().unwrap_or("device busy on every attempt")
+        )
     }
 
     async fn send_xml(&self, url: &str, method: reqwest::Method, body: &str) -> Result<String> {

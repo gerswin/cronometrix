@@ -2200,3 +2200,52 @@ async fn get_enrollment_push_params_404_when_missing() {
         other => panic!("expected NotFound, got {other:?}"),
     }
 }
+
+/// Hardware regression guard (DS-K1T341CMFW firmware V3.3.8).
+///
+/// `face_id` is pushed to the device as ISAPI `UserInfo.employeeNo`, whose
+/// `capabilities` declare `@max: 32`. The original 36-char hyphenated UUID was
+/// rejected with `statusCode 6 / badJsonContent / errorMsg "employeeNo"`, so
+/// every enrollment against real hardware failed while the wiremock suite —
+/// which accepts any `employeeNo` — stayed green.
+///
+/// The stored value must also be byte-identical to what is pushed: the device
+/// echoes it back as `employeeNoString` on attendance events and
+/// `lookup_employee_for_event` resolves it against `device_face_mappings.face_id`.
+#[tokio::test]
+async fn start_enrollment_face_id_fits_isapi_employee_no_limit() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    let (_dept, emp_id, user_id) = seed_dept_emp_user(&state.db).await;
+
+    let resp =
+        service::start_enrollment(&state, &user_id, &emp_id, "upload", None, None, MINI_JPEG)
+            .await
+            .expect("start_enrollment");
+
+    assert!(
+        resp.face_id.len() <= 32,
+        "face_id must fit ISAPI employeeNo (@max 32), got {} chars: {}",
+        resp.face_id.len(),
+        resp.face_id
+    );
+    assert!(
+        !resp.face_id.contains('-'),
+        "face_id must be the hyphen-less UUID form, got {}",
+        resp.face_id
+    );
+
+    // The persisted employees.face_id must equal what gets pushed — a mismatch
+    // would silently break employee resolution on inbound attendance events.
+    let conn = state.db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT face_id FROM employees WHERE id = ?1",
+            params![emp_id.clone()],
+        )
+        .await
+        .unwrap();
+    let stored: String = rows.next().await.unwrap().expect("row").get(0).unwrap();
+    assert_eq!(stored, resp.face_id, "stored face_id must match pushed value");
+}
