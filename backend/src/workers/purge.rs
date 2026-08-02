@@ -10,9 +10,9 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
+use crate::devices::reader::reader_for;
 use crate::devices::service as devices_service;
 use crate::enrollments::service as enrollment_service;
-use crate::isapi::client::DeviceConnection;
 use crate::state::AppState;
 
 /// Request to purge all device face mappings for a deactivated employee (D-15).
@@ -28,7 +28,7 @@ pub struct PurgeRequest {
 ///   2. For each unique employee_id:
 ///      a. Re-read employee status (Pitfall 10 — abort if re-activated).
 ///      b. Fetch all device_face_mappings rows.
-///      c. For each row: fetch DeviceWithPlaintext, call delete_user with 30s timeout.
+///      c. For each row: fetch DeviceWithPlaintext, call revoke with 30s timeout.
 ///      On Ok → DELETE mapping row.
 ///      On Err → UPDATE state='pending_delete' (retry on next purge trigger).
 pub struct PurgeWorker {
@@ -233,7 +233,7 @@ impl PurgeWorker {
                 continue;
             }
 
-            let isapi = match DeviceConnection::new(
+            let isapi = match reader_for(
                 &device.base_url,
                 &device.username,
                 &device.password,
@@ -259,11 +259,8 @@ impl PurgeWorker {
 
             let fid = face_id.clone();
             let result =
-                tokio::time::timeout(
-                    self.call_timeout,
-                    async move { isapi.delete_user(&fid).await },
-                )
-                .await;
+                tokio::time::timeout(self.call_timeout, async move { isapi.revoke(&fid).await })
+                    .await;
 
             match result {
                 Ok(Ok(_)) => {
@@ -309,7 +306,7 @@ impl PurgeWorker {
                     }
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!(device_id = %device_id, err = %e, "PurgeWorker: delete_user failed");
+                    tracing::warn!(device_id = %device_id, err = %e, "PurgeWorker: revoke failed");
                     if let Err(ue) = enrollment_service::mark_mapping_pending_delete_queued(
                         &self.state,
                         &mapping_id,
@@ -326,7 +323,7 @@ impl PurgeWorker {
                     .await;
                 }
                 Err(_timeout) => {
-                    tracing::warn!(device_id = %device_id, "PurgeWorker: delete_user timeout");
+                    tracing::warn!(device_id = %device_id, "PurgeWorker: revoke timeout");
                     if let Err(ue) = enrollment_service::mark_mapping_pending_delete_queued(
                         &self.state,
                         &mapping_id,

@@ -69,3 +69,22 @@ pub trait BiometricReader: Send + Sync {
     async fn capture_face(&self) -> anyhow::Result<Vec<u8>>;
     async fn execute(&self, command: DeviceCommand) -> anyhow::Result<String>;
 }
+
+/// Build the adapter for a device.
+///
+/// The only place outside `isapi/` that names a manufacturer. When
+/// `devices.vendor` exists this dispatches on it; until then every reader is
+/// Hikvision, and saying so in one function beats saying it in seven.
+pub fn reader_for(
+    base_url: &str,
+    username: &str,
+    password: &str,
+    allow_insecure_tls: bool,
+) -> anyhow::Result<Box<dyn BiometricReader>> {
+    Ok(Box::new(crate::isapi::client::DeviceConnection::new(
+        base_url,
+        username,
+        password,
+        allow_insecure_tls,
+    )?))
+}
