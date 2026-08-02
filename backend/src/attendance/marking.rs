@@ -34,6 +34,9 @@ impl RawMarking {
         self.external_person_id
             .as_deref()
             .is_some_and(|value| !value.is_empty())
-            || self.face_id.as_deref().is_some_and(|value| !value.is_empty())
+            || self
+                .face_id
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
     }
 }
