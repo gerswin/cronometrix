@@ -216,3 +216,87 @@ async fn run_migrations_pragma_foreign_keys_is_settable() {
         "FK violation should error when foreign_keys pragma is on"
     );
 }
+
+/// Migration 021 repairs `face_id` values left over from before the ISAPI
+/// length limit was respected.
+///
+/// A 36-char hyphenated UUID overruns Hikvision's `UserInfo.employeeNo`
+/// (`@max: 32`), so every hardware push failed. Rewriting is done in place —
+/// `replace(uuid, '-', '')` keeps the same 128 bits — because nulling the
+/// column would strand employees that still have a pending enrollment
+/// checkpoint, which startup recovery refuses to load.
+#[tokio::test]
+async fn migration_021_shortens_oversized_face_ids_in_both_tables() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("face_id_migration.db");
+    let db = libsql::Builder::new_local(path.to_str().unwrap())
+        .build()
+        .await
+        .unwrap();
+    let conn = db.connect().unwrap();
+    conn.execute("PRAGMA foreign_keys = OFF;", ()).await.unwrap();
+    run_migrations(&conn).await.expect("migrate");
+
+    let legacy = "1de62987-6ea0-42f5-a410-a19cd7af12d3"; // 36 chars
+    let expected = "1de629876ea042f5a410a19cd7af12d3"; // 32 chars
+    let already_ok = "d4c6112e831e4070a3ac0fbf88575709";
+
+    conn.execute(
+        "INSERT INTO departments (id, name, base_salary_cents, shift_start_time, shift_end_time, \
+         lunch_mode, lunch_duration_min, status, version, created_at, updated_at) \
+         VALUES ('d1', 'Dept', 0, '08:00', '17:00', 'fixed', 60, 'active', 1, unixepoch(), unixepoch())",
+        (),
+    )
+    .await
+    .unwrap();
+    for (id, code, face) in [("e-old", "E-1", legacy), ("e-new", "E-2", already_ok)] {
+        conn.execute(
+            "INSERT INTO employees (id, employee_code, name, department_id, face_id, status, \
+             version, created_at, updated_at) \
+             VALUES (?1, ?2, 'X', 'd1', ?3, 'active', 1, unixepoch(), unixepoch())",
+            libsql::params![id, code, face],
+        )
+        .await
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO device_face_mappings (id, device_id, employee_id, face_id, created_at, updated_at) \
+         VALUES ('m1', 'dev-1', 'e-old', ?1, unixepoch(), unixepoch())",
+        libsql::params![legacy],
+    )
+    .await
+    .unwrap();
+
+    // Re-running the suite must apply 021 to rows inserted afterwards, so drop
+    // its ledger entry to force a replay over the seeded data.
+    conn.execute(
+        "DELETE FROM _migrations WHERE name = '021_face_id_isapi_length'",
+        (),
+    )
+    .await
+    .unwrap();
+    run_migrations(&conn).await.expect("replay 021");
+
+    let read = |sql: &'static str, id: &'static str| {
+        let conn = conn.clone();
+        async move {
+            let mut rows = conn.query(sql, libsql::params![id]).await.unwrap();
+            let value: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+            value
+        }
+    };
+
+    let migrated = read("SELECT face_id FROM employees WHERE id = ?1", "e-old").await;
+    assert_eq!(migrated, expected, "hyphens must be stripped, bits preserved");
+    assert_eq!(migrated.len(), 32, "must fit ISAPI employeeNo @max 32");
+
+    let untouched = read("SELECT face_id FROM employees WHERE id = ?1", "e-new").await;
+    assert_eq!(untouched, already_ok, "already-valid ids must not change");
+
+    // A mismatch here would make inbound attendance events resolve to nobody.
+    let mapping = read("SELECT face_id FROM device_face_mappings WHERE id = ?1", "m1").await;
+    assert_eq!(
+        mapping, expected,
+        "device_face_mappings must stay in lockstep with employees.face_id"
+    );
+}

@@ -83,6 +83,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "020_audit_immutability",
         include_str!("migrations/020_audit_immutability.sql"),
     ),
+    (
+        "021_face_id_isapi_length",
+        include_str!("migrations/021_face_id_isapi_length.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded
