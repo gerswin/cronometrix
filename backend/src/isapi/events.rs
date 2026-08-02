@@ -140,9 +140,16 @@ impl EventNotificationAlert {
 /// never silently dropped. Phase 3 calculation treats spurious "entry" rows as
 /// noise; a dropped event is unrecoverable.
 pub fn direction_for_attendance_status(s: &str) -> &'static str {
-    match s {
-        "checkIn" | "breakIn" | "overtimeIn" => "entry",
-        "checkOut" | "breakOut" | "overTimeOut" => "exit",
+    // Matched case-insensitively because the documented spelling and the wire
+    // spelling disagree: DS-K1T341CMFW reports `overtimeOut`, while this arm was
+    // originally written `overTimeOut`. The mismatch fell through to the
+    // catch-all and filed every overtime departure as an ARRIVAL — silent data
+    // corruption, not a dropped event. Confirmed against the device's own
+    // `keyCfg/6/attendance` readback.
+    let lowered = s.to_ascii_lowercase();
+    match lowered.as_str() {
+        "checkin" | "breakin" | "overtimein" => "entry",
+        "checkout" | "breakout" | "overtimeout" => "exit",
         _ => "entry",
     }
 }
@@ -419,6 +426,30 @@ mod tests {
         assert_eq!(direction_for_attendance_status("breakOut"), "exit");
         assert_eq!(direction_for_attendance_status("overtimeIn"), "entry");
         assert_eq!(direction_for_attendance_status("overTimeOut"), "exit");
+        // The spelling the hardware actually sends — this is the one that was
+        // silently mapped to "entry" before.
+        assert_eq!(direction_for_attendance_status("overtimeOut"), "exit");
+    }
+
+    /// Every status the device can emit, taken from its own `keyCfg/N/attendance`
+    /// readback after the six function keys were configured. Casing must not
+    /// decide whether a departure is recorded as an arrival.
+    #[test]
+    fn every_hardware_attendance_status_maps_to_the_right_direction() {
+        for (status, expected) in [
+            ("checkIn", "entry"),
+            ("checkOut", "exit"),
+            ("breakOut", "exit"),
+            ("breakIn", "entry"),
+            ("overtimeIn", "entry"),
+            ("overtimeOut", "exit"),
+        ] {
+            assert_eq!(
+                direction_for_attendance_status(status),
+                expected,
+                "{status} must map to {expected}"
+            );
+        }
         // Undefined / empty / unknown → "entry" (conservative default per A1)
         assert_eq!(direction_for_attendance_status(""), "entry");
         assert_eq!(direction_for_attendance_status("undefined"), "entry");
