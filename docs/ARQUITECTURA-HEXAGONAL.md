@@ -146,27 +146,53 @@ dominio puro. **Este es el movimiento que más desacopla** de todo lo propuesto.
 
 Ordenado por dependencia, no por importancia.
 
-1. **Renombrar `attendance_events.raw_xml` → `raw_payload`.**
-   Ya guarda JSON desde el soporte de firmware V3.3.8; el nombre miente.
-   Migración de una línea.
+1. **[HECHO] Renombrar `attendance_events.raw_xml` → `raw_payload`.**
+   Ya guarda JSON desde el soporte de firmware V3.3.8; el nombre mentía.
+   Migración de una línea. Commit `f78a28f`.
 
-2. **Extraer `RawMarking` y mover resolución + persistencia a
+2. **[HECHO] Extraer `RawMarking` y mover resolución + persistencia a
    `attendance::ingest`.**
-   `isapi::ingest` se queda solo con la traducción. Sin cambio de comportamiento
-   observable, cubierto por la suite actual.
+   `isapi::ingest` se quedó solo con la traducción. Sin cambio de
+   comportamiento observable, cubierto por la suite existente. Commit
+   `1fd36d3`.
 
-3. **Definir `BiometricReader` e implementarlo sobre `DeviceConnection`.**
-   Los siete llamadores pasan a depender del trait. Sigue habiendo un único
-   adaptador, pero ya nadie lo nombra directamente.
+3. **[HECHO] Definir `BiometricReader` e implementarlo sobre `DeviceConnection`;
+   migrar los siete llamadores.**
+   Definición del trait y del `ProvisionReport`/`ProvisioningIntent`:
+   commits `12cdcf5`, `91246e3`. Migración de cada llamador, un commit por
+   sitio (todos validados con la suite completa — 1057 tests, 0 fallos —
+   entre cada uno):
+   - `workers/purge.rs` (`delete_user` → `revoke`): `b947cff`
+   - `devices/handlers.rs` (`door_open`/`reboot`/`enrollment_mode` →
+     `execute(DeviceCommand)`): `a6afb41`
+   - `enrollments/handlers.rs` (`capture_face_image` → `capture_face`):
+     `69c58f5`
+   - `enrollments/pusher.rs` (`upsert_user`+`upload_face` → `enroll`):
+     `f10e6da`. Este era el llamador señalado como posible punto de parada
+     (podía cambiar qué queda dentro del timeout de 30s o cuándo se escribe
+     el checkpoint); tras leer el checkpoint y el propio `enroll` del
+     adaptador se confirmó que hacen la misma secuencia en el mismo orden,
+     así que se migró en vez de dejarlo en `DeviceConnection`.
+   - `enrollments/service.rs` (validación de conectividad antes de escribir
+     filas): `2e740f2`
+   - `isapi/stream.rs::provision_device` (delega en `BiometricReader::provision`,
+     `sync_device_clock` y `provision_webhook` absorbidos en la construcción
+     del `ProvisioningIntent`): commit siguiente a este documento
 
-4. **Columna `devices.vendor`** con default `hikvision`, más una fábrica
-   `reader_for(&device) -> Box<dyn BiometricReader>`.
+   Ya no queda ni una referencia a `DeviceConnection` fuera de `isapi/` y de
+   la fábrica `reader_for` en `devices/reader.rs`.
+
+## Todavía abierto
+
+4. **Columna `devices.vendor`** con default `hikvision`, más un `match` en
+   `reader_for` que despache por marca. Hoy `reader_for` ya tiene la forma
+   correcta (`base_url, username, password, allow_insecure_tls) -> Box<dyn
+   BiometricReader>`) pero solo construye `DeviceConnection` — es una
+   migración de una línea, mejor hacerla cuando exista una segunda marca real
+   con la que probar el `match`, no antes.
 
 5. **Generalizar el modelo de conexión** cuando llegue el primer lector no-HTTP.
    No antes: hacerlo ahora sería especular sobre un protocolo desconocido.
-
-Los pasos 1-3 son refactor puro y los valida la suite existente. El 4 habilita
-la segunda marca. El 5 solo si hace falta.
 
 ---
 

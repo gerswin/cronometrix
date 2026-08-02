@@ -241,7 +241,7 @@ impl PurgeWorker {
             ) {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!(device_id = %device_id, err = %e, "PurgeWorker: failed to build DeviceConnection");
+                    tracing::warn!(device_id = %device_id, err = %e, "PurgeWorker: failed to build device reader");
                     if let Err(ue) = enrollment_service::mark_mapping_pending_delete_queued(
                         &self.state,
                         &mapping_id,
