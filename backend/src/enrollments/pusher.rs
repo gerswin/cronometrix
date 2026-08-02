@@ -19,7 +19,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::devices::models::DeviceWithPlaintext;
-use crate::isapi::client::DeviceConnection;
+use crate::devices::reader::reader_for;
 use crate::state::AppState;
 
 use super::dispatcher::{AuthorizedAttempt, AuthorizedDispatchCommand};
@@ -347,10 +347,11 @@ pub(super) async fn spawn_authorized_enrollment_pushes(
 ///
 /// Steps:
 ///   1. UPDATE enrollment_device_pushes SET status='in_progress', started_at=now
-///   2. Build DeviceConnection (password already plaintext — decrypted by caller).
-///   3. timeout(30s) wraps both ISAPI calls:
-///      a. upsert_user(face_id, full_name)
-///      b. upload_face(face_id, jpeg_bytes)
+///   2. Build the reader through the port (password already plaintext — decrypted by caller).
+///   3. timeout(30s) wraps `enroll(face_id, full_name, jpeg_bytes)`, which performs
+///      the same two ISAPI calls in the same order as before the port existed
+///      (`upsert_user` then `upload_face`) — see the doc comment on
+///      `BiometricReader::enroll`'s impl for why collapsing them is safe here.
 ///      4a. On success: UPDATE push row to status='success', upsert device_face_mappings.
 ///      4b. On failure: UPDATE push row to status='failed', error_message (scrubbed).
 ///
@@ -524,8 +525,8 @@ async fn push_enrollment_device(
         return Err(anyhow::anyhow!("admit device push state: {error}"));
     }
 
-    // Build ISAPI client.
-    let isapi = match DeviceConnection::new(
+    // Build the reader through the port.
+    let isapi = match reader_for(
         &device.base_url,
         &device.username,
         &device.password,
@@ -547,12 +548,11 @@ async fn push_enrollment_device(
     let fid = face_id.to_string();
     let fname = full_name.to_string();
 
-    // Both ISAPI calls wrapped in a 30-second timeout.
-    let result = tokio::time::timeout(call_timeout, async {
-        isapi.upsert_user(&fid, &fname).await?;
-        isapi.upload_face(&fid, jpeg_bytes).await
-    })
-    .await;
+    // enroll() performs upsert_user then upload_face, same order as before —
+    // still wrapped in the identical 30-second timeout, so the window and the
+    // checkpoint write below (which only cares about the combined outcome)
+    // are unchanged.
+    let result = tokio::time::timeout(call_timeout, isapi.enroll(&fid, &fname, &jpeg_bytes)).await;
 
     match result {
         Ok(Ok(_)) => {
@@ -702,7 +702,7 @@ pub async fn push_one_device_for_backfill_with_timeout(
         }
     }
 
-    let isapi = match DeviceConnection::new(
+    let isapi = match reader_for(
         &device.base_url,
         &device.username,
         &device.password,
@@ -719,11 +719,9 @@ pub async fn push_one_device_for_backfill_with_timeout(
     let fid = face_id.to_string();
     let fname = full_name.to_string();
 
-    let result = tokio::time::timeout(call_timeout, async {
-        isapi.upsert_user(&fid, &fname).await?;
-        isapi.upload_face(&fid, jpeg_bytes).await
-    })
-    .await;
+    // Same collapse as push_enrollment_device: enroll() is upsert_user then
+    // upload_face in the same order, inside the same 30-second timeout.
+    let result = tokio::time::timeout(call_timeout, isapi.enroll(&fid, &fname, &jpeg_bytes)).await;
 
     match result {
         Ok(Ok(_)) => {
