@@ -400,3 +400,95 @@ async fn set_time_surfaces_device_rejection() {
         .expect_err("403 must not be silently swallowed");
     assert!(err.to_string().contains("403"), "got: {err}");
 }
+
+// =============================================================================
+// Attendance provisioning
+// =============================================================================
+
+/// Factory default is `disable`, which makes the reader report
+/// `attendanceStatus: "undefined"` on every marking — leaving no way to tell an
+/// arrival from a departure, which `calc::aggregation` needs both of.
+#[tokio::test]
+async fn set_attendance_mode_requests_status_on_every_event() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Configuration/attendanceMode"))
+        .and(body_string_contains(r#""mode":"manualAndAuto""#))
+        .and(body_string_contains(r#""reqAttendanceStatus":true"#))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_attendance_mode("manualAndAuto")
+        .await
+        .expect("device accepts the mode");
+}
+
+#[tokio::test]
+async fn set_attendance_key_binds_status_and_label() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/keyCfg/6/attendance"))
+        .and(body_string_contains(r#""attendanceStatus":"overtimeOut""#))
+        .and(body_string_contains(r#""enable":true"#))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_attendance_key(6, "overtimeOut", "Overtime Out")
+        .await
+        .expect("device accepts the key binding");
+}
+
+/// The reader's capabilities cap `WeekPlanCfg` at one segment per day, so all
+/// seven days must be present in a single write — a partial plan silently leaves
+/// the missing days unlabelled.
+#[tokio::test]
+async fn set_attendance_week_plan_covers_every_day_of_the_week() {
+    let server = MockServer::start().await;
+    let mut mock = Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/weekPlan/1"))
+        .and(body_string_contains(r#""endTime":"13:00:00""#));
+    for day in [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ] {
+        mock = mock.and(body_string_contains(format!(r#""week":"{day}""#)));
+    }
+    mock.respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_attendance_week_plan(1, "13:00:00")
+        .await
+        .expect("device accepts the week plan");
+}
+
+#[tokio::test]
+async fn set_attendance_plan_template_binds_the_check_property() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/planTemplate/1"))
+        .and(body_string_contains(r#""property":"check""#))
+        .and(body_string_contains(r#""weekPlanNo":1"#))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    conn.set_attendance_plan_template(1, 1)
+        .await
+        .expect("device accepts the template");
+}

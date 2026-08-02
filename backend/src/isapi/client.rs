@@ -208,6 +208,105 @@ impl DeviceConnection {
         self.send_xml(&url, reqwest::Method::PUT, &body).await
     }
 
+    /// `PUT /ISAPI/AccessControl/Configuration/attendanceMode` — decide how the
+    /// reader labels a marking as arrival or departure.
+    ///
+    /// Ships as `disable` from the factory, which makes the device report
+    /// `attendanceStatus: "undefined"` on every event — leaving us unable to tell
+    /// an arrival from a departure, and `calc::aggregation` needs both to compute
+    /// a day (it takes the first `entry` and the last `exit`).
+    pub async fn set_attendance_mode(&self, mode: &str) -> Result<String> {
+        let url = format!(
+            "{}/ISAPI/AccessControl/Configuration/attendanceMode?format=json",
+            self.base_url
+        );
+        let body =
+            format!(r#"{{"AttendanceMode":{{"mode":"{mode}","reqAttendanceStatus":true}}}}"#);
+        self.send_json(&url, reqwest::Method::PUT, &body).await
+    }
+
+    /// `PUT /ISAPI/AccessControl/keyCfg/{key}/attendance` — bind one function key
+    /// on the reader to an attendance status, so a person can override the
+    /// schedule on an atypical day (leaving early, staying for overtime).
+    pub async fn set_attendance_key(
+        &self,
+        key: u8,
+        attendance_status: &str,
+        label: &str,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/ISAPI/AccessControl/keyCfg/{key}/attendance?format=json",
+            self.base_url
+        );
+        let body = format!(
+            r#"{{"Attendance":{{"enable":true,"attendanceStatus":"{attendance_status}","label":"{label}"}}}}"#
+        );
+        self.send_json(&url, reqwest::Method::PUT, &body).await
+    }
+
+    /// `PUT /ISAPI/AccessControl/Attendance/weekPlan/{plan_no}` — the daily split
+    /// that decides whether an unattended marking counts as arrival or departure.
+    ///
+    /// This is DELIBERATELY not the organisation's real shift. Shifts live per
+    /// department in `departments.shift_start_time`, vary between departments,
+    /// and can run overnight; a reader admits one segment per day and is shared
+    /// by everyone walking through that door. Encoding real shifts here would
+    /// create a second source of truth that drifts the moment somebody edits a
+    /// schedule in the app.
+    ///
+    /// A coarse split suffices because `calc::aggregation` only consumes the
+    /// first `entry` and the last `exit` of the day — intermediate markings are
+    /// inert. Hours, tolerances and lunch stay entirely in our rules engine.
+    pub async fn set_attendance_week_plan(
+        &self,
+        plan_no: u8,
+        split: &str,
+    ) -> Result<String> {
+        const DAYS: [&str; 7] = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ];
+        let segments: Vec<String> = DAYS
+            .iter()
+            .map(|day| {
+                format!(
+                    r#"{{"id":1,"week":"{day}","enable":true,"TimeSegment":{{"beginTime":"00:00:00","endTime":"{split}"}}}}"#
+                )
+            })
+            .collect();
+        let url = format!(
+            "{}/ISAPI/AccessControl/Attendance/weekPlan/{plan_no}?format=json",
+            self.base_url
+        );
+        let body = format!(
+            r#"{{"AttendanceWeekPlan":{{"enable":true,"WeekPlanCfg":[{}]}}}}"#,
+            segments.join(",")
+        );
+        self.send_json(&url, reqwest::Method::PUT, &body).await
+    }
+
+    /// `PUT /ISAPI/AccessControl/Attendance/planTemplate/{template_no}` — bind a
+    /// week plan to the `check` (arrival/departure) property.
+    pub async fn set_attendance_plan_template(
+        &self,
+        template_no: u8,
+        week_plan_no: u8,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/ISAPI/AccessControl/Attendance/planTemplate/{template_no}?format=json",
+            self.base_url
+        );
+        let body = format!(
+            r#"{{"AttendancePlanTemplate":{{"enable":true,"property":"check","templateName":"cronometrix","weekPlanNo":{week_plan_no}}}}}"#
+        );
+        self.send_json(&url, reqwest::Method::PUT, &body).await
+    }
+
     /// `PUT /ISAPI/System/reboot` — request a device reboot. Device typically
     /// 200s immediately then drops; the caller's 10s `tokio::time::timeout`
     /// absorbs any lag.

@@ -129,11 +129,12 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
     update_connection_state(state, &cfg.id, "online").await?;
     touch_last_seen(state, &cfg.id).await?;
 
-    // Push our clock onto the device before consuming any event. `captured_at`
-    // is read straight off the payload, so a drifted reader files every marking
-    // under the wrong date — hardware was found six months behind. Best effort:
-    // a device that refuses the write still streams usable events.
-    sync_device_clock(cfg, state).await;
+    // Bring the reader to the configuration this product needs before consuming
+    // any event. Done on every (re)connect rather than once at registration so a
+    // replaced or factory-reset unit converges without anyone touching its web
+    // UI. Best effort throughout: a device that refuses a write still streams
+    // usable events.
+    provision_device(cfg, state).await;
 
     let stream = resp.bytes_stream();
     let constraints = multer::Constraints::new().size_limit(
@@ -202,6 +203,97 @@ pub async fn connect_and_stream(cfg: &DeviceConfig, state: &AppState) -> anyhow:
         ingest_pair(state, cfg, pending, None).await?;
     }
     Ok(())
+}
+
+/// Attendance mode. `manualAndAuto` labels a marking from the week plan and lets
+/// a person override it with a function key on an atypical day. `manual` alone
+/// puts the burden on
+/// every employee twice a day and fails silently when somebody forgets; `auto`
+/// alone offers no escape hatch for early departures or overtime.
+const ATTENDANCE_MODE: &str = "manualAndAuto";
+
+/// Midpoint that splits arrivals from departures for unattended markings.
+///
+/// Deliberately coarse and deliberately NOT the organisation's shift: see
+/// [`DeviceConnection::set_attendance_week_plan`]. Sites running night shifts
+/// will eventually need this per device rather than as a constant.
+const ATTENDANCE_DAY_SPLIT: &str = "13:00:00";
+
+const ATTENDANCE_WEEK_PLAN_NO: u8 = 1;
+const ATTENDANCE_TEMPLATE_NO: u8 = 1;
+
+/// Function keys, in the order the reader displays them.
+const ATTENDANCE_KEYS: [(u8, &str, &str); 6] = [
+    (1, "checkIn", "Check In"),
+    (2, "checkOut", "Check Out"),
+    (3, "breakOut", "Break Out"),
+    (4, "breakIn", "Break In"),
+    (5, "overtimeIn", "Overtime In"),
+    (6, "overtimeOut", "Overtime Out"),
+];
+
+/// Apply every device-side setting this product depends on.
+///
+/// Each step is independent and non-fatal: losing the attendance config is bad
+/// (markings arrive without a direction) but losing the event stream is worse,
+/// so nothing here is allowed to abort the connection.
+async fn provision_device(cfg: &DeviceConfig, state: &AppState) {
+    sync_device_clock(cfg, state).await;
+
+    let conn = match DeviceConnection::new(
+        &cfg.base_url,
+        &cfg.username,
+        &cfg.password,
+        cfg.allow_insecure_tls,
+    ) {
+        Ok(conn) => conn,
+        Err(error) => {
+            tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: client build failed");
+            return;
+        }
+    };
+
+    let mut failures = 0usize;
+
+    if let Err(error) = conn.set_attendance_mode(ATTENDANCE_MODE).await {
+        failures += 1;
+        tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: attendance mode");
+    }
+    for (key, status, label) in ATTENDANCE_KEYS {
+        if let Err(error) = conn.set_attendance_key(key, status, label).await {
+            failures += 1;
+            tracing::warn!(device_id = %cfg.id, key, err = %error, "provisioning: attendance key");
+        }
+    }
+    if let Err(error) = conn
+        .set_attendance_week_plan(ATTENDANCE_WEEK_PLAN_NO, ATTENDANCE_DAY_SPLIT)
+        .await
+    {
+        failures += 1;
+        tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: week plan");
+    }
+    if let Err(error) = conn
+        .set_attendance_plan_template(ATTENDANCE_TEMPLATE_NO, ATTENDANCE_WEEK_PLAN_NO)
+        .await
+    {
+        failures += 1;
+        tracing::warn!(device_id = %cfg.id, err = %error, "provisioning: plan template");
+    }
+
+    if failures == 0 {
+        tracing::info!(
+            device_id = %cfg.id,
+            mode = ATTENDANCE_MODE,
+            split = ATTENDANCE_DAY_SPLIT,
+            "device attendance configuration applied"
+        );
+    } else {
+        tracing::warn!(
+            device_id = %cfg.id,
+            failures,
+            "device attendance configuration incomplete — markings may lack a direction"
+        );
+    }
 }
 
 /// Push the server's wall clock onto the device, in the operator's timezone.
