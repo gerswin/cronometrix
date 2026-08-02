@@ -401,6 +401,49 @@ mod tests {
         assert_eq!(parts[0].alert_content_type(), "application/json");
     }
 
+    /// `is_alert` must never fire for a part that is declared `image/jpeg`,
+    /// even when its body happens to start with `{` — `is_jpeg()` (true here
+    /// via the declared header, not the magic bytes) short-circuits the rest
+    /// of the check before the body is ever scanned.
+    #[test]
+    fn is_alert_is_false_for_a_jpeg_part_even_when_the_body_looks_like_json() {
+        let part = Part {
+            headers: "content-type: image/jpeg".to_string(),
+            body: Bytes::from_static(b"{\"not\":\"actually a jpeg body\"}"),
+        };
+        assert!(part.is_jpeg(), "declared image/jpeg must be enough on its own");
+        assert!(!part.is_alert());
+    }
+
+    /// A declared `application/xml` type must win over sniffing, even when
+    /// the body's first non-whitespace byte would sniff as JSON.
+    #[test]
+    fn alert_content_type_uses_the_declared_xml_type_over_sniffing() {
+        let part = Part {
+            headers: "content-type: application/xml".to_string(),
+            body: Bytes::from_static(b"{not actually json}"),
+        };
+        assert_eq!(part.alert_content_type(), "application/xml");
+    }
+
+    /// Some firmware drops the connection right after the last part's body
+    /// and never sends the terminating `--B--`. The part must still survive.
+    #[test]
+    fn split_multipart_recovers_the_last_part_when_the_stream_ends_without_a_closing_delimiter() {
+        let mut body = b"--B\r\nContent-Type: application/xml\r\n\r\n".to_vec();
+        body.extend_from_slice(ALERT_XML);
+        // Deliberately no trailing CRLF and no closing "--B--".
+
+        let parts = split_multipart(&body, "B");
+        assert_eq!(parts.len(), 1, "the unterminated final part must not be dropped");
+        assert_eq!(parts[0].body.as_ref(), ALERT_XML);
+    }
+
+    #[test]
+    fn boundary_of_rejects_an_empty_boundary_value() {
+        assert_eq!(boundary_of("multipart/mixed; boundary="), None);
+    }
+
     #[test]
     fn boundary_of_accepts_any_multipart_subtype() {
         assert_eq!(
@@ -438,5 +481,43 @@ mod tests {
     fn line_scan_fallback_stops_at_an_unclosed_alert() {
         assert!(parse_line_scan_fallback(b"<EventNotificationAlert>truncated").is_empty());
         assert!(parse_line_scan_fallback(b"garbage").is_empty());
+    }
+
+    #[test]
+    fn split_headers_of_an_empty_segment_yields_no_headers() {
+        assert_eq!(split_headers(b""), ("", 0));
+        assert_eq!(split_headers(b"\r\n"), ("", 2));
+    }
+
+    /// A segment whose bytes all look like header lines, right up to the end,
+    /// with no blank-line terminator anywhere. The parser must give up and
+    /// hand the bytes back as unparsed content instead of quietly treating
+    /// them as headers and losing them.
+    #[test]
+    fn split_headers_gives_up_when_every_line_looks_like_a_header_but_none_ends_the_block() {
+        let segment = b"X-Foo: bar\r\nX-Baz: qux\r\n";
+        let (headers, start) = split_headers(segment);
+        assert_eq!(headers, "");
+        assert_eq!(start, 0, "unterminated headers must fall back to treating the segment as body");
+    }
+
+    /// A line that never reaches a CRLF at all (the segment is cut off
+    /// mid-line). Same fallback as the fully-header-shaped case above.
+    #[test]
+    fn split_headers_gives_up_when_a_line_never_reaches_a_crlf() {
+        let segment = b"X-Foo: bar\r\nno-terminator-here";
+        let (headers, start) = split_headers(segment);
+        assert_eq!(headers, "");
+        assert_eq!(start, 0);
+    }
+
+    #[test]
+    fn is_header_line_rejects_a_bare_colon_with_no_name() {
+        assert!(!is_header_line(b":no-name"));
+    }
+
+    #[test]
+    fn find_subslice_with_an_empty_needle_returns_none() {
+        assert_eq!(find_subslice(b"anything", b""), None);
     }
 }
