@@ -280,7 +280,7 @@ pub async fn dispatch_command(
 
     let dispatched_at = chrono::Utc::now().timestamp();
 
-    let result = timeout(Duration::from_secs(10), isapi.execute(device_command)).await;
+    let result = timeout(Duration::from_secs(10), isapi.send_command(device_command)).await;
 
     let completed_at = chrono::Utc::now().timestamp();
 

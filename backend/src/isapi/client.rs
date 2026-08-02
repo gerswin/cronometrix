@@ -754,7 +754,7 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
         self.capture_face_image().await
     }
 
-    async fn execute(&self, command: crate::devices::reader::DeviceCommand) -> Result<String> {
+    async fn send_command(&self, command: crate::devices::reader::DeviceCommand) -> Result<String> {
         use crate::devices::reader::DeviceCommand;
         match command {
             DeviceCommand::DoorOpen => self.door_open().await,

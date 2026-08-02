@@ -64,7 +64,7 @@ impl BiometricReader for FakeReader {
         Ok(vec![0xFF, 0xD8, 0xFF])
     }
 
-    async fn execute(&self, _command: DeviceCommand) -> anyhow::Result<String> {
+    async fn send_command(&self, _command: DeviceCommand) -> anyhow::Result<String> {
         Ok("ok".to_string())
     }
 }

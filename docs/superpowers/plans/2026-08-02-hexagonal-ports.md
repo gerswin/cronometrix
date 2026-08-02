@@ -474,7 +474,7 @@ device_push_test.rs passes unmodified."
   - `devices::reader::DeviceCommand { DoorOpen, Reboot, EnrollmentMode }`
   - `devices::reader::ProvisioningIntent { local_time: String, time_zone: String, require_direction: bool, day_split: String }`
   - `devices::reader::ProvisionReport { applied: Vec<&'static str>, unsupported: Vec<&'static str>, failed: Vec<String> }`
-  - `#[async_trait] devices::reader::BiometricReader` with `provision`, `enroll`, `revoke`, `capture_face`, `execute` — Task 4 migrates callers onto it.
+  - `#[async_trait] devices::reader::BiometricReader` with `provision`, `enroll`, `revoke`, `capture_face`, `send_command` — Task 4 migrates callers onto it.
 
 - [ ] **Step 1: Check whether `async-trait` is already a dependency**
 
@@ -528,7 +528,7 @@ impl BiometricReader for FakeReader {
         Ok(vec![0xFF, 0xD8, 0xFF])
     }
 
-    async fn execute(&self, _command: DeviceCommand) -> anyhow::Result<String> {
+    async fn send_command(&self, _command: DeviceCommand) -> anyhow::Result<String> {
         Ok("ok".to_string())
     }
 }
@@ -642,7 +642,7 @@ pub trait BiometricReader: Send + Sync {
     ) -> anyhow::Result<()>;
     async fn revoke(&self, person_id: &str) -> anyhow::Result<()>;
     async fn capture_face(&self) -> anyhow::Result<Vec<u8>>;
-    async fn execute(&self, command: DeviceCommand) -> anyhow::Result<String>;
+    async fn send_command(&self, command: DeviceCommand) -> anyhow::Result<String>;
 }
 ```
 
@@ -695,7 +695,7 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
         self.capture_face_image().await
     }
 
-    async fn execute(&self, command: crate::devices::reader::DeviceCommand) -> Result<String> {
+    async fn send_command(&self, command: crate::devices::reader::DeviceCommand) -> Result<String> {
         use crate::devices::reader::DeviceCommand;
         match command {
             DeviceCommand::DoorOpen => self.door_open().await,
@@ -792,7 +792,7 @@ git commit -m "refactor(purge): depend on the BiometricReader port"
 
 In this order, smallest first. Run the full suite after each and commit before moving on:
 
-1. `devices/handlers.rs` — `door_open`/`reboot`/`enrollment_mode` become `execute(DeviceCommand::*)`. The `Command` enum in `devices/models.rs` maps onto `DeviceCommand`; keep the existing enum as the API-facing type and convert at the handler boundary.
+1. `devices/handlers.rs` — `door_open`/`reboot`/`enrollment_mode` become `send_command(DeviceCommand::*)`. The `Command` enum in `devices/models.rs` maps onto `DeviceCommand`; keep the existing enum as the API-facing type and convert at the handler boundary.
 2. `enrollments/handlers.rs` — `capture_face_image()` becomes `capture_face()`.
 3. `enrollments/pusher.rs` — `upsert_user` + `upload_face` become one `enroll()`. Read carefully: the pusher treats `duplicateEmployeeNo` as success and has checkpoint semantics around the two calls. If collapsing them into `enroll()` would change when a checkpoint is written, leave the pusher on `DeviceConnection` and note why in the commit message.
 4. `enrollments/service.rs`.

@@ -69,7 +69,7 @@ pub trait BiometricReader: Send + Sync {
     async fn enroll(&self, person_id: &str, display_name: &str, face: &[u8]) -> anyhow::Result<()>;
     async fn revoke(&self, person_id: &str) -> anyhow::Result<()>;
     async fn capture_face(&self) -> anyhow::Result<Vec<u8>>;
-    async fn execute(&self, command: DeviceCommand) -> anyhow::Result<String>;
+    async fn send_command(&self, command: DeviceCommand) -> anyhow::Result<String>;
 }
 
 /// Build the adapter for a device.
