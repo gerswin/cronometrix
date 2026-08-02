@@ -598,6 +598,18 @@ async fn push_enrollment_device(
         }
         Ok(Err(e)) => {
             let scrubbed = scrub_password(e.to_string(), &device.password);
+            // BLOCKER for a second `BiometricReader` adapter (see
+            // docs/ARQUITECTURA-HEXAGONAL.md "Todavía abierto"): this downcast
+            // only recognises Hikvision's `DeviceResponseError`. A different
+            // vendor's adapter returns its own error type, so `terminal` would
+            // be `false` for EVERY failure from that adapter — a flat 401, a
+            // 404, a rejected face — and each one would land in the manual
+            // reconciliation queue below instead of being filed as a clean
+            // terminal failure. Fixing this needs a port-level error kind that
+            // distinguishes a device REJECTION from an AMBIGUOUS outcome
+            // (transport failure, timeout); that is a design change to
+            // `BiometricReader`, out of scope for this cleanup pass, so the
+            // downcast stays as-is with this comment recording why.
             let terminal = e
                 .downcast_ref::<crate::isapi::client::DeviceResponseError>()
                 .is_some();
