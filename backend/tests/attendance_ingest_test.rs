@@ -152,3 +152,89 @@ async fn skips_a_marking_with_no_identity() {
     let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
     assert_eq!(count, 0);
 }
+
+/// A reader that does not report a direction (`RawMarking::direction: None`)
+/// falls back to the device's own configured default — never to some other
+/// implicit choice. `direction_default` decides whether the marking is filed
+/// as an arrival or a departure, so pinning this at the port's own test file
+/// (rather than only transitively, via a Hikvision-flavoured caller) matters.
+#[tokio::test]
+async fn falls_back_to_the_devices_direction_default_when_the_reader_did_not_report_one() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed(&conn).await;
+    drop(conn);
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    let outcome = ingest(
+        &state,
+        "dev-1",
+        "exit",
+        RawMarking {
+            external_person_id: Some("EMP-1".into()),
+            face_id: None,
+            occurred_at: 1_785_000_100,
+            direction: None,
+            photo: None,
+            raw_payload: "{}".into(),
+        },
+    )
+    .await
+    .expect("ingest");
+
+    assert_eq!(outcome, IngestOutcome::Persisted);
+
+    let conn = state.db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT direction FROM attendance_events WHERE device_id = 'dev-1'",
+            (),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().expect("marking persisted");
+    assert_eq!(row.get::<String>(0).unwrap(), "exit");
+}
+
+/// The device replaying an event, or both transports (stream + push)
+/// delivering the same marking, must not double-write the attendance row —
+/// `IngestOutcome::Deduplicated` is how the port reports that the write was
+/// skipped rather than silently accepted as a second, indistinguishable one.
+#[tokio::test]
+async fn a_repeated_marking_is_deduplicated_not_persisted_twice() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed(&conn).await;
+    drop(conn);
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    let marking = || RawMarking {
+        external_person_id: Some("EMP-1".into()),
+        face_id: None,
+        occurred_at: 1_785_000_200,
+        direction: Some("entry".into()),
+        photo: None,
+        raw_payload: "{}".into(),
+    };
+
+    let first = ingest(&state, "dev-1", "entry", marking())
+        .await
+        .expect("ingest");
+    assert_eq!(first, IngestOutcome::Persisted);
+
+    let second = ingest(&state, "dev-1", "entry", marking())
+        .await
+        .expect("ingest");
+    assert_eq!(second, IngestOutcome::Deduplicated);
+
+    let conn = state.db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM attendance_events WHERE device_id = 'dev-1'",
+            (),
+        )
+        .await
+        .unwrap();
+    let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(count, 1, "the replayed marking must not add a second row");
+}
