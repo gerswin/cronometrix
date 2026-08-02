@@ -9,6 +9,11 @@ use cronometrix_api::devices::reader::{
 
 struct FakeReader {
     enrolled: std::sync::Mutex<Vec<String>>,
+    /// Whether `provision` touched the reader's notification targets. Lets a
+    /// test assert that a `None` webhook leaves them alone rather than only
+    /// asserting on the report, which would miss a reader that clears its
+    /// slots and then reports nothing.
+    webhook_slots_touched: std::sync::Mutex<bool>,
 }
 
 #[async_trait]
@@ -19,6 +24,13 @@ impl BiometricReader for FakeReader {
         report.applied.push("clock");
         if intent.require_direction {
             report.unsupported.push("attendance_mode");
+        }
+        // A pull-mode device (`None`) must not have its notification targets
+        // touched — clearing a slot nobody asked to push would be destructive
+        // for no reason.
+        if intent.event_webhook.is_some() {
+            *self.webhook_slots_touched.lock().unwrap() = true;
+            report.applied.push("event_webhook");
         }
         Ok(report)
     }
@@ -46,6 +58,7 @@ impl BiometricReader for FakeReader {
 async fn a_reader_reports_what_it_could_not_apply_instead_of_failing_silently() {
     let reader = FakeReader {
         enrolled: std::sync::Mutex::new(Vec::new()),
+        webhook_slots_touched: std::sync::Mutex::new(false),
     };
     let report = reader
         .provision(&ProvisioningIntent {
@@ -53,6 +66,7 @@ async fn a_reader_reports_what_it_could_not_apply_instead_of_failing_silently() 
             time_zone: "CST+4:00:00".into(),
             require_direction: true,
             day_split: "13:00:00".into(),
+            event_webhook: None,
         })
         .await
         .expect("provision");
@@ -69,9 +83,38 @@ async fn a_reader_reports_what_it_could_not_apply_instead_of_failing_silently() 
 async fn enrol_and_revoke_round_trip_through_the_port() {
     let reader = FakeReader {
         enrolled: std::sync::Mutex::new(Vec::new()),
+        webhook_slots_touched: std::sync::Mutex::new(false),
     };
     reader.enroll("person-1", "Person One", &[0xFF, 0xD8, 0xFF]).await.unwrap();
     assert_eq!(reader.enrolled.lock().unwrap().len(), 1);
     reader.revoke("person-1").await.unwrap();
     assert!(reader.enrolled.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_none_webhook_leaves_the_readers_notification_targets_untouched() {
+    let reader = FakeReader {
+        enrolled: std::sync::Mutex::new(Vec::new()),
+        webhook_slots_touched: std::sync::Mutex::new(false),
+    };
+    let report = reader
+        .provision(&ProvisioningIntent {
+            local_time: "2026-08-02T13:00:00".into(),
+            time_zone: "CST+4:00:00".into(),
+            require_direction: false,
+            day_split: "13:00:00".into(),
+            event_webhook: None,
+        })
+        .await
+        .expect("provision");
+
+    assert!(
+        !*reader.webhook_slots_touched.lock().unwrap(),
+        "a pull-mode device (event_webhook: None) must not have its \
+         notification slots cleared or written"
+    );
+    assert!(
+        !report.applied.contains(&"event_webhook"),
+        "nothing should be reported for a capability that was never attempted"
+    );
 }

@@ -628,12 +628,9 @@ impl DeviceConnection {
 impl crate::devices::reader::BiometricReader for DeviceConnection {
     /// Same steps, same order as `isapi::stream::provision_device`: clock,
     /// attendance mode, function keys, week plan, plan template, picture
-    /// upload. The event-webhook step is deliberately NOT reproduced here —
-    /// it needs the device id, push token and the backend's public base URL,
-    /// none of which a vendor-neutral `ProvisioningIntent` carries, so it
-    /// stays on `provision_device` for now. Every step is independent and
-    /// best-effort, matching current behaviour: a reader that rejects one
-    /// setting still gets the rest applied.
+    /// upload, event webhook. Every step is independent and best-effort,
+    /// matching current behaviour: a reader that rejects one setting still
+    /// gets the rest applied.
     async fn provision(
         &self,
         intent: &crate::devices::reader::ProvisioningIntent,
@@ -691,6 +688,36 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
             Err(error) => report.failed.push(format!("picture_upload: {error}")),
         }
 
+        // `None` is a pull-mode device: touch neither slot, record nothing —
+        // clearing a slot on a reader nobody asked to push would be
+        // destructive for no reason.
+        if let Some(url) = intent.event_webhook.as_deref() {
+            match parse_webhook_target(url) {
+                Ok((host, port, path, use_https)) => {
+                    // ORDER IS LOAD-BEARING (see
+                    // `isapi::stream::provision_webhook`): clear the spare slot
+                    // BEFORE writing ours, or this firmware recompacts its host
+                    // list, silently emptying slot 1 and dropping the address
+                    // we just wrote. A failure to clear does not abandon the
+                    // write -- matching `provision_device`'s existing
+                    // behaviour -- but is still recorded.
+                    if let Err(error) = self.clear_event_http_host(2).await {
+                        report.failed.push(format!(
+                            "event_webhook: could not clear spare slot: {error}"
+                        ));
+                    }
+                    match self
+                        .set_event_http_host(&host, port, &path, use_https)
+                        .await
+                    {
+                        Ok(_) => report.applied.push("event_webhook"),
+                        Err(error) => report.failed.push(format!("event_webhook: {error}")),
+                    }
+                }
+                Err(error) => report.failed.push(format!("event_webhook: {error}")),
+            }
+        }
+
         Ok(report)
     }
 
@@ -721,4 +748,31 @@ impl crate::devices::reader::BiometricReader for DeviceConnection {
             DeviceCommand::EnrollmentMode => self.enrollment_mode().await,
         }
     }
+}
+
+/// Break a `ProvisioningIntent::event_webhook` URL into what
+/// `set_event_http_host` needs.
+///
+/// Unlike `isapi::stream::provision_webhook` (which builds the path itself
+/// from a device id and push token), the port's caller already supplies a
+/// complete URL — the port has no notion of "device id" or "push token", only
+/// "where to POST events" — so this only parses, it does not assemble.
+fn parse_webhook_target(url: &str) -> Result<(String, u16, String, bool)> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| anyhow::anyhow!("invalid URL '{url}': {error}"))?;
+    let use_https = parsed.scheme().eq_ignore_ascii_case("https");
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("URL '{url}' has no host"))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("URL '{url}' has no port"))?;
+    let path = parsed.path().to_string();
+    anyhow::ensure!(
+        path.len() <= 128,
+        "webhook path is {} chars; firmware caps `url` at 128",
+        path.len()
+    );
+    Ok((host, port, path, use_https))
 }

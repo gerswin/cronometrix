@@ -11,6 +11,7 @@
 //!   - Debug impl redacts password
 //!   - new() returns a Client successfully
 
+use cronometrix_api::devices::reader::{BiometricReader, ProvisioningIntent};
 use cronometrix_api::isapi::client::{posix_time_zone, DeviceConnection};
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -591,4 +592,184 @@ async fn clear_event_http_host_blanks_the_spare_slot() {
 
     let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
     conn.clear_event_http_host(2).await.expect("slot cleared");
+}
+
+// =============================================================================
+// BiometricReader port — DeviceConnection adapter (Task 3 amendment)
+// =============================================================================
+
+/// The load-bearing ordering documented on `isapi::stream::provision_webhook`:
+/// the spare slot must be cleared BEFORE the target slot is written, or this
+/// firmware recompacts its host list, silently empties slot 1, and drops the
+/// address that was just written — while still answering `statusCode 1`.
+///
+/// Exercises `DeviceConnection::provision` (the port impl), not
+/// `isapi::stream::provision_webhook` directly, so a regression in the
+/// adapter's own call sequence — not just in the trait's shape — fails this
+/// test.
+#[tokio::test]
+async fn provision_clears_the_spare_webhook_slot_before_writing_the_target_slot() {
+    let server = MockServer::start().await;
+    let ok_xml = || {
+        ResponseTemplate::new(200)
+            .set_body_string("<ResponseStatus><statusCode>1</statusCode></ResponseStatus>")
+    };
+    let ok_json = || ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#);
+
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/System/time"))
+        .respond_with(ok_xml())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Configuration/attendanceMode"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    for key in 1..=6u8 {
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/ISAPI/AccessControl/keyCfg/{key}/attendance"
+            )))
+            .respond_with(ok_json())
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/weekPlan/1"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/planTemplate/1"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/AcsCfg"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/Event/notification/httpHosts/2"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ResponseStatus/>"))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/Event/notification/httpHosts/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ResponseStatus/>"))
+        .mount(&server)
+        .await;
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    let report = conn
+        .provision(&ProvisioningIntent {
+            local_time: "2026-08-02T10:15:30".into(),
+            time_zone: "CST+4:00:00".into(),
+            require_direction: true,
+            day_split: "13:00:00".into(),
+            event_webhook: Some(format!("{}/api/v1/devices/dev-1/push/secret", server.uri())),
+        })
+        .await
+        .expect("provision");
+
+    assert!(
+        report.applied.contains(&"event_webhook"),
+        "webhook write must be reported applied, got: {report:?}"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let clear_index = requests
+        .iter()
+        .position(|r| r.url.path() == "/ISAPI/Event/notification/httpHosts/2")
+        .expect("spare slot must be cleared");
+    let write_index = requests
+        .iter()
+        .position(|r| r.url.path() == "/ISAPI/Event/notification/httpHosts/1")
+        .expect("target slot must be written");
+    assert!(
+        clear_index < write_index,
+        "spare slot 2 must be cleared BEFORE slot 1 is written, or this firmware \
+         recompacts its host list and silently drops the address just written"
+    );
+}
+
+/// A pull-mode device (`event_webhook: None`) must not have either
+/// notification slot touched — clearing a slot nobody asked to push would be
+/// destructive for no reason.
+#[tokio::test]
+async fn provision_with_no_webhook_touches_neither_notification_slot() {
+    let server = MockServer::start().await;
+    let ok_xml = || {
+        ResponseTemplate::new(200)
+            .set_body_string("<ResponseStatus><statusCode>1</statusCode></ResponseStatus>")
+    };
+    let ok_json = || ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1}"#);
+
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/System/time"))
+        .respond_with(ok_xml())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Configuration/attendanceMode"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    for key in 1..=6u8 {
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/ISAPI/AccessControl/keyCfg/{key}/attendance"
+            )))
+            .respond_with(ok_json())
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/weekPlan/1"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/Attendance/planTemplate/1"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/ISAPI/AccessControl/AcsCfg"))
+        .respond_with(ok_json())
+        .mount(&server)
+        .await;
+    // Deliberately NOT mounted: /ISAPI/Event/notification/httpHosts/{1,2}. If
+    // `provision` touches either slot despite `event_webhook: None`, wiremock
+    // has no matching mock and the request fails/panics, which fails this test.
+
+    let conn = DeviceConnection::new(&server.uri(), "admin", "pw", false).unwrap();
+    let report = conn
+        .provision(&ProvisioningIntent {
+            local_time: "2026-08-02T10:15:30".into(),
+            time_zone: "CST+4:00:00".into(),
+            require_direction: true,
+            day_split: "13:00:00".into(),
+            event_webhook: None,
+        })
+        .await
+        .expect("provision");
+
+    assert!(
+        !report.applied.contains(&"event_webhook")
+            && !report
+                .failed
+                .iter()
+                .any(|entry| entry.starts_with("event_webhook")),
+        "nothing should be reported for a capability that was never attempted, got: {report:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.iter().all(|r| !r
+            .url
+            .path()
+            .starts_with("/ISAPI/Event/notification/httpHosts")),
+        "a pull-mode device must not have its notification slots touched"
+    );
 }

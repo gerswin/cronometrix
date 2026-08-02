@@ -31,6 +31,14 @@ pub struct ProvisioningIntent {
     pub require_direction: bool,
     /// Midpoint splitting arrivals from departures when the reader infers them.
     pub day_split: String,
+    /// Where the reader should POST events, when it is configured to push.
+    ///
+    /// `None` means leave the reader's notification targets alone — that is a
+    /// pull-mode device, and clearing its slots would be destructive for no
+    /// reason. A URL is not a vendor detail: an adapter that cannot honour one
+    /// reports `event_webhook` unsupported rather than failing the whole
+    /// provisioning.
+    pub event_webhook: Option<String>,
 }
 
 /// What an adapter managed to apply.
