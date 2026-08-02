@@ -433,8 +433,7 @@ async fn sync_device_clock(cfg: &DeviceConfig, state: &AppState) {
 /// An alert part held back until we know whether a JPEG part follows it.
 struct PendingAlert {
     bytes: Bytes,
-    /// Verbatim payload, persisted for audit. Named `raw_xml` in the schema for
-    /// historical reasons; it may now hold JSON.
+    /// Verbatim payload, persisted for audit.
     raw: String,
     content_type: String,
 }

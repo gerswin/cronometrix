@@ -133,7 +133,7 @@ pub async fn ingest_alert(
         is_unknown,
         face_id,
         employee_no_string,
-        raw_xml: raw_payload,
+        raw_payload,
         photo_bytes: jpeg_bytes.map(|b| b.to_vec()),
     };
 
@@ -148,7 +148,7 @@ pub async fn ingest_alert(
         is_unknown: new_event.is_unknown,
         face_id: new_event.face_id.clone(),
         employee_no_string: new_event.employee_no_string.clone(),
-        raw_xml: String::new(),
+        raw_payload: String::new(),
         photo_bytes: None,
     };
 

@@ -68,7 +68,7 @@ fn event(id: &str, employee_id: Option<&str>, captured_at: i64) -> NewAttendance
         is_unknown: employee_id.is_none(),
         face_id: Some("face-events".to_string()),
         employee_no_string: Some("EMP-EVENTS".to_string()),
-        raw_xml: "<EventNotificationAlert/>".to_string(),
+        raw_payload: "<EventNotificationAlert/>".to_string(),
         photo_bytes: None,
     }
 }
@@ -176,7 +176,7 @@ async fn list_and_single_record_reads_cover_unknown_and_photo_edges() {
     conn.execute(
         "INSERT INTO attendance_events \
          (id, employee_id, device_id, direction, captured_at, bucket_30s, is_unknown, \
-          face_id, employee_no_string, raw_xml, photo_path, created_at) VALUES \
+          face_id, employee_no_string, raw_payload, photo_path, created_at) VALUES \
          ('known-event', 'emp-events', 'dev-events', 'entry', 1000, 33, 0, \
           'known-face', 'EMP-EVENTS', '<known/>', '2026/known.jpg', unixepoch()), \
          ('unknown-event', NULL, 'dev-events', 'exit', 2000, 66, 1, \
