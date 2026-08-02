@@ -118,7 +118,7 @@ async fn push_persists_a_marking_and_resolves_the_employee() {
 
     assert_eq!(
         post_event(&state, TOKEN, recognition_event()).await,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
 
     let conn = state.db.connect().unwrap();
@@ -220,7 +220,10 @@ async fn push_is_refused_when_the_device_has_no_token() {
 }
 
 /// Door and tamper notifications share the event envelope but name nobody.
-/// The device must still get a success, or it will retry the same event forever.
+///
+/// The device must still get 200 — not merely "not an error". DS-K1T341CMFW
+/// treats a 204 as non-delivery and re-sends the identical event forever, so the
+/// queue head never advances and the face recognitions behind it never arrive.
 #[tokio::test]
 async fn push_accepts_but_does_not_store_an_event_without_an_identity() {
     let db = common::test_db().await;
@@ -236,7 +239,7 @@ async fn push_accepts_but_does_not_store_an_event_without_an_identity() {
 
     assert_eq!(
         post_event(&state, TOKEN, door).await,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     assert_eq!(event_count(&state).await, 0);
 }
@@ -253,7 +256,7 @@ async fn push_swallows_an_unparseable_payload() {
 
     assert_eq!(
         post_event(&state, TOKEN, "{not json at all".to_string()).await,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     assert_eq!(event_count(&state).await, 0);
 }
@@ -284,7 +287,7 @@ async fn push_stores_the_captured_face_from_a_multipart_body() {
         .body(Body::from(body))
         .unwrap();
     let response = app(state.clone()).oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::OK);
 
     let conn = state.db.connect().unwrap();
     let mut rows = conn
@@ -300,4 +303,36 @@ async fn push_stores_the_captured_face_from_a_multipart_body() {
         state.paths.events_root.join(&photo).exists(),
         "photo must exist on disk at {photo}"
     );
+}
+
+/// The acknowledgement status is load-bearing, so it is asserted exactly rather
+/// than through `is_success()`.
+///
+/// DS-K1T341CMFW advances its send queue only on a 200. Measured on hardware:
+/// answering 204 produced the same `serialNo` on four consecutive pushes, while
+/// 200 advanced it every time. A 204 therefore does not merely look untidy — it
+/// wedges the device permanently on whatever event happens to be at the head.
+#[tokio::test]
+async fn push_acknowledges_with_200_so_the_device_queue_advances() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed(&conn, "push", Some(TOKEN)).await;
+    drop(conn);
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    // An accepted marking, an ignored door event and unparseable garbage must
+    // all acknowledge identically: any of them left unacknowledged stalls the
+    // queue just as effectively.
+    for body in [
+        recognition_event(),
+        r#"{"eventType":"AccessControllerEvent","AccessControllerEvent":{"subEventType":22}}"#
+            .to_string(),
+        "{not json at all".to_string(),
+    ] {
+        assert_eq!(
+            post_event(&state, TOKEN, body).await,
+            StatusCode::OK,
+            "every accepted or ignored push must answer exactly 200"
+        );
+    }
 }

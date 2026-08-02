@@ -85,9 +85,19 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// `POST /api/v1/devices/{device_id}/push/{token}`
 ///
-/// Answers 204 for anything it accepts or deliberately ignores, because a reader
-/// that receives an error re-queues the event and retries forever. Only an
-/// unauthorized caller gets a distinct status.
+/// Answers 200 — NOT 204 — for anything it accepts or deliberately ignores.
+///
+/// DS-K1T341CMFW treats only a 200 as delivery confirmation. Given a 204 it
+/// re-sends the identical event forever: the queue head never advances, so
+/// every later event, including the face recognitions attendance actually needs,
+/// sits behind it and is never delivered. Measured on hardware — under 204 the
+/// same `serialNo` arrived on four consecutive pushes; under 200 the counter
+/// moved on each one.
+///
+/// Errors are swallowed for the same reason: a reader that receives one
+/// re-queues and retries indefinitely.
+const ACK: StatusCode = StatusCode::OK;
+
 pub async fn receive_push(
     State(state): State<AppState>,
     Path((device_id, token)): Path<(String, String)>,
@@ -136,7 +146,7 @@ pub async fn receive_push(
         }
     }
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(ACK)
 }
 
 /// Split a webhook body into `(content_type, alert, jpeg)` tuples.
