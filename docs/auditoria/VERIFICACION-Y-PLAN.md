@@ -173,8 +173,15 @@ licencia se quiere, qué se promete comercialmente.
 ## 5. Advertencia sobre las pruebas
 
 La auditoría lo señala y se confirmó: **parte de la suite consolida la
-especificación equivocada**. `calc/overtime.rs:39-45` afirma la suma diaria
-errónea; la prueba QA E3 acepta el pago duplicado.
+especificación equivocada**. `calc/overtime.rs:39-45` afirmaba la suma diaria errónea.
+
+**Corrección (2026-08-03):** la auditoría añade que "la prueba QA E3 acepta el
+comportamiento duplicado". **Es falso** — `docs/QA-GUIDE.md:621` documenta
+`total = $50 + $18.75 = $68.75`, que es la composición correcta; el defecto
+habría dado $81.25. Al ejecutar la corrección resultó además que **solo un**
+test existente afirmaba lo erróneo. El problema real era lo contrario de lo
+descrito: ningún test asertaba el total del reporte para un día con horas
+extra, y por eso el defecto sobrevivió a 1096 pruebas.
 
 Consecuencia práctica: "las pruebas pasan" no es evidencia de corrección en el
 motor monetario. Cualquier arreglo del Bloque 1 debe empezar por un corpus de

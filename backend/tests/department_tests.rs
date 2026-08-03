@@ -293,7 +293,9 @@ async fn department_employee_one_to_one_enforced() {
             json!({
                 "employee_code": "HR001",
                 "name": "Frank HR",
-                "department_id": dept_id
+                "department_id": dept_id,
+                "base_salary_cents": 100000,
+                "salary_kind": "daily"
             })
             .to_string(),
         ))

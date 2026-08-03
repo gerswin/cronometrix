@@ -34,7 +34,30 @@ use super::{
     },
     money, periods,
 };
-use crate::{common::epoch_to_iso, errors::AppError, state::AppState};
+use crate::{
+    common::epoch_to_iso, employees::models::SalaryKind, errors::AppError, state::AppState,
+};
+
+/// H-08: a row cannot be monetized without a valid `salary_kind`. Callers use
+/// this only at the money-math call sites (the leave branches that never pay —
+/// medical/unpaid/manual — don't call it, since no monetization happens there).
+/// A missing/unrecognized unit surfaces as a data error; it is never assumed
+/// to be `Daily` — that assumption is exactly how the H-08 ambiguity came
+/// back in the first place.
+fn require_salary_kind(
+    raw: Option<&str>,
+    nombre: &str,
+    cedula: &str,
+) -> Result<SalaryKind, AppError> {
+    raw.and_then(SalaryKind::from_db_str)
+        .ok_or_else(|| AppError::CalcError {
+            code: "SALARY_KIND_MISSING",
+            message: format!(
+                "Employee '{nombre}' (cédula {cedula}) has no valid salary_kind \
+                 (hourly/daily/monthly) set; payroll cannot be computed until it is set."
+            ),
+        })
+}
 
 /// Internal accumulator: one entry per employee while we sweep daily_records
 /// rows + leaves rows. `worked_dates` and `leave_dates` drive the
@@ -56,6 +79,23 @@ struct AccRow {
     anomaly_codes_set: BTreeSet<String>,
     worked_dates: HashSet<NaiveDate>,
     leave_dates: HashSet<NaiveDate>,
+    /// C-05: employment window bounds for días_ausentes. `None` hire_date is
+    /// NOT treated as "no lower bound forever" silently — the días_ausentes
+    /// loop below flags it with an anomaly, since an employee with an
+    /// unknown start date cannot be computed exactly.
+    hire_date: Option<NaiveDate>,
+    /// `None` = still employed (migration 026: nullable = sigue activo).
+    terminated_on: Option<NaiveDate>,
+}
+
+/// Convert an optional epoch-seconds (UTC midnight) column to an optional
+/// `NaiveDate`. Mirrors `employees::service::epoch_to_iso_date_opt` but
+/// returns a `NaiveDate` since the días_ausentes loop compares dates
+/// directly, not ISO strings.
+fn epoch_to_naive_date(epoch: Option<i64>) -> Option<NaiveDate> {
+    epoch.and_then(|t| {
+        chrono::DateTime::<chrono::Utc>::from_timestamp(t, 0).map(|dt| dt.naive_utc().date())
+    })
 }
 
 pub async fn compute_report(
@@ -126,16 +166,31 @@ pub async fn compute_report(
     // 3. Build dynamic SQL with parameterized predicates for the daily_records
     //    JOIN. T-05-08 mitigation: every user-supplied value goes through
     //    libsql::Value + params_from_iter; zero string-concat of user input.
-    let mut predicates: Vec<String> = vec!["dr.anchor_date BETWEEN ?1 AND ?2".to_string()];
+    //
+    // C-05: the report's universe is now `employees`, not `daily_records`
+    // (see the FROM/JOIN below) — an employee is no longer required to have
+    // a matching daily_record to appear. The period bound therefore CANNOT
+    // live in this WHERE-built `predicates` list: a WHERE-side
+    // `dr.anchor_date BETWEEN ?1 AND ?2` filters out every row where dr.* is
+    // NULL (no record that day), which silently degrades the LEFT JOIN back
+    // into an INNER JOIN and brings the defect back with every test green.
+    // ?1/?2 are reserved for `from`/`to` and consumed inside the JOIN's ON
+    // clause in the SQL template below.
+    let mut predicates: Vec<String> = Vec::new();
     let mut values: Vec<libsql::Value> = vec![
         libsql::Value::Text(from.to_string()),
         libsql::Value::Text(to.to_string()),
     ];
 
-    // include_inactive: default false → only status='active'
-    if !params.include_inactive.unwrap_or(false) {
-        predicates.push("e.status = 'active'".to_string());
-    }
+    // C-05: `status` ('active'/'inactive') no longer gates the report.
+    // "Who gets paid for this period?" is an employment-validity question
+    // (hire_date/terminated_on vs. the period — see the días_ausentes loop
+    // below), not a current-state question: an inactive employee who worked
+    // days in the period must still be paid for them, and `status='active'`
+    // used to make that employee (and their pending pay) disappear entirely.
+    // `include_inactive` is kept on the request/audit payload for API
+    // compatibility but no longer participates in this predicate — `status`
+    // still governs employee-picker UI elsewhere, just not payroll validity.
 
     if let Some(dept_ids) = &params.department_ids {
         if !dept_ids.is_empty() {
@@ -159,13 +214,42 @@ pub async fn compute_report(
     // shift_type filter scopes the daily_records JOIN by daily_records.shift_type
     // (the per-day actual shift). Operators can request "show me only the night-
     // shift days in this period" by passing this filter.
+    //
+    // Important 1 fix: this predicate MUST NOT go into the WHERE-built
+    // `predicates` list above. `dr.shift_type` is a column of the LEFT-JOINed
+    // `daily_records` table; on a row where an employee has zero records that
+    // day (or in the whole period) `dr.*` is NULL, and `dr.shift_type = ?`
+    // evaluates to NULL (neither true nor false) there — WHERE then drops the
+    // row. That silently re-degrades the LEFT JOIN back into an INNER JOIN
+    // for exactly the rows C-05 exists to keep (an employee with no records
+    // in the period vanishes again, and once they vanish EVERY day of the
+    // *other* shift type gets counted as an absence, because `worked_dates`
+    // only ever collects days that survived the filter). The fix is to
+    // scope this predicate inside the JOIN's own ON clause instead, right
+    // beside the period bound — see the `sql` template below — so it only
+    // ever excludes real daily_records rows, never the employee's own
+    // NULL-filled placeholder row.
+    let mut shift_type_on_clause = String::new();
     if let Some(st) = &params.shift_type {
-        predicates.push(format!("dr.shift_type = ?{}", values.len() + 1));
+        shift_type_on_clause = format!(" AND dr.shift_type = ?{}", values.len() + 1);
         values.push(libsql::Value::Text(st.clone()));
     }
 
-    let where_clause = format!("WHERE {}", predicates.join(" AND "));
+    let where_clause = if predicates.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", predicates.join(" AND "))
+    };
 
+    // C-05: FROM inverted to `employees` — the report's universe is now
+    // "who is employed", not "who has a daily_record". `daily_records`
+    // (and everything hanging off it: overrides, leaves) moves to a LEFT
+    // JOIN scoped to the period INSIDE the ON clause, so an employee with
+    // zero records in [from..to] still produces exactly one row (all dr.*
+    // NULL) instead of vanishing. `e.hire_date` / `e.terminated_on` are
+    // selected so the días_ausentes loop below can bound absences to the
+    // employment window instead of the whole period.
+    //
     // W-6: SELECT dr.shift_type for night-premium gating, NOT d.shift_type.
     // d.shift_type is the policy/default; dr.shift_type is what the engine
     // recorded for the specific day (migration 007 line 12). Reading dr is
@@ -189,10 +273,16 @@ pub async fn compute_report(
             dr.leave_id, \
             l.leave_type, \
             dro.override_work_minutes, \
-            (SELECT GROUP_CONCAT(code) FROM daily_record_anomalies WHERE daily_record_id = dr.id) AS anomaly_codes \
-         FROM daily_records dr \
-         JOIN employees e   ON e.id = dr.employee_id \
-         JOIN departments d ON d.id = dr.department_id \
+            (SELECT GROUP_CONCAT(code) FROM daily_record_anomalies WHERE daily_record_id = dr.id) AS anomaly_codes, \
+            e.salary_kind, \
+            e.hire_date, \
+            e.terminated_on \
+         FROM employees e \
+         JOIN departments d ON d.id = e.department_id \
+         LEFT JOIN daily_records dr \
+                ON dr.employee_id = e.id \
+               AND dr.anchor_date BETWEEN ?1 AND ?2 \
+               {shift_type_on_clause} \
          LEFT JOIN daily_record_overrides dro ON dro.daily_record_id = dr.id AND dro.status = 'active' \
          LEFT JOIN leaves l ON l.id = dr.leave_id AND l.status = 'active' \
          {where_clause} \
@@ -222,27 +312,33 @@ pub async fn compute_report(
         let dept_name: String = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
         let base_salary_cents: i64 = row.get(6).map_err(|e| AppError::Internal(e.into()))?;
         let ordinary_daily_minutes: i64 = row.get(7).map_err(|e| AppError::Internal(e.into()))?;
-        let day_shift_type: String = row.get(8).map_err(|e| AppError::Internal(e.into()))?; // W-6
-        let anchor_date_str: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
-        let work_minutes: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
-        let overtime_minutes: i64 = row.get(11).map_err(|e| AppError::Internal(e.into()))?;
-        let late_minutes: i64 = row.get(12).map_err(|e| AppError::Internal(e.into()))?;
-        let is_rest_day_worked: i64 = row.get(13).map_err(|e| AppError::Internal(e.into()))?;
+        // C-05: everything below is a column of `daily_records` (directly or
+        // via a table joined off it), which is now a LEFT JOIN — every one
+        // of these reads Option instead of the bare type it used to be, and
+        // MUST be treated as "no record that day", not defaulted blindly
+        // to a type-appropriate zero at the read site (the anchor_date NULL
+        // case below is intentionally NOT defaulted — see the guard).
+        let day_shift_type_opt: Option<String> = row.get(8).ok(); // W-6
+        let anchor_date_str_opt: Option<String> = row.get(9).ok();
+        let work_minutes_opt: Option<i64> = row.get(10).ok();
+        let overtime_minutes_opt: Option<i64> = row.get(11).ok();
+        let late_minutes_opt: Option<i64> = row.get(12).ok();
+        let is_rest_day_worked_opt: Option<i64> = row.get(13).ok();
         let _leave_id_opt: Option<String> = row.get(14).ok();
         let leave_type_opt: Option<String> = row.get(15).ok();
         let override_work_min_opt: Option<i64> = row.get(16).ok();
         let anomaly_codes_str_opt: Option<String> = row.get(17).ok();
-
-        let anchor_date = NaiveDate::parse_from_str(&anchor_date_str, "%Y-%m-%d")
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-
-        // Override merge — operator edits invisible if skipped (Pitfall 3).
-        let effective_work_min = override_work_min_opt.unwrap_or(work_minutes);
+        let salary_kind_str_opt: Option<String> = row.get(18).ok();
+        let hire_date_opt = epoch_to_naive_date(row.get(19).ok());
+        let terminated_on_opt = epoch_to_naive_date(row.get(20).ok());
 
         dept_seen
             .entry(dept_id.clone())
             .or_insert(dept_name.clone());
 
+        // C-05: the entry is created unconditionally, BEFORE the anchor_date
+        // guard below — an employee with zero daily_records in the period
+        // must still appear (that is the whole point of the FROM inversion).
         let entry = acc.entry(employee_id.clone()).or_insert_with(|| AccRow {
             employee_id: employee_id.clone(),
             dept_id: dept_id.clone(),
@@ -250,12 +346,34 @@ pub async fn compute_report(
             nombre: nombre.clone(),
             departamento: dept_name.clone(),
             cargo: cargo.clone(),
-            shift_type: day_shift_type.clone(),
+            shift_type: day_shift_type_opt.clone().unwrap_or_default(),
             agg: Aggregates::default(),
             anomaly_codes_set: BTreeSet::new(),
             worked_dates: HashSet::new(),
             leave_dates: HashSet::new(),
+            hire_date: hire_date_opt,
+            terminated_on: terminated_on_opt,
         });
+
+        // C-05: `dr.anchor_date` NULL means "no daily_record this day" — the
+        // LEFT JOIN produced this row purely to carry the employee into the
+        // report. There is no work/leave/anomaly data to accumulate; paying
+        // for or attaching a leave overlay to a day nobody clocked would pay
+        // for a day nobody worked. días_ausentes for this employee is
+        // computed later from `worked_dates`/`leave_dates` staying empty.
+        let Some(anchor_date_str) = anchor_date_str_opt else {
+            continue;
+        };
+        let anchor_date = NaiveDate::parse_from_str(&anchor_date_str, "%Y-%m-%d")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        let day_shift_type = day_shift_type_opt.unwrap_or_default();
+        let work_minutes = work_minutes_opt.unwrap_or(0);
+        let overtime_minutes = overtime_minutes_opt.unwrap_or(0);
+        let late_minutes = late_minutes_opt.unwrap_or(0);
+        let is_rest_day_worked = is_rest_day_worked_opt.unwrap_or(0);
+
+        // Override merge — operator edits invisible if skipped (Pitfall 3).
+        let effective_work_min = override_work_min_opt.unwrap_or(work_minutes);
 
         // Money treatment per leave_type when an active overlay is attached
         // to this daily_record (D-07). Leave-day COUNTS are NOT incremented
@@ -273,10 +391,13 @@ pub async fn compute_report(
                 // without an overlay are documented as a v1 limitation —
                 // they produce only counter increments (see W-5 block below).
                 entry.leave_dates.insert(anchor_date);
+                let salary_kind =
+                    require_salary_kind(salary_kind_str_opt.as_deref(), &nombre, &cedula)?;
                 let work_pay = money::work_pay_cents(
                     ordinary_daily_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
                 );
                 entry.agg.work_pay_cents = entry.agg.work_pay_cents.saturating_add(work_pay);
                 entry.agg.total_a_pagar_cents =
@@ -290,43 +411,90 @@ pub async fn compute_report(
             }
             _ => {
                 // Standard work day money math.
+                let salary_kind =
+                    require_salary_kind(salary_kind_str_opt.as_deref(), &nombre, &cedula)?;
+                // C-01: `overtime_minutes` is a SUBSET of the worked minutes
+                // (calc/engine.rs:82). Paying the full total at the ordinary
+                // rate and ALSO adding the overtime slice at 150% charges every
+                // overtime minute at 250%. The ordinary base excludes the
+                // overtime slice; the premium is contributed by ot_pay_cents.
+                // `effective_work_min` may come from an override while
+                // `overtime_minutes` is the original engine value — hence the
+                // `.max(0)`. The override not recomputing the overtime slice
+                // is H-07, out of scope here; this comment is for the next
+                // reader who wonders why the two can disagree.
+                let ordinary_min = (effective_work_min - overtime_minutes).max(0);
                 let work_pay = money::work_pay_cents(
-                    effective_work_min,
+                    ordinary_min,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
                 );
+                // Important 2: an overtime minute on a premium day earns the
+                // Art. 118 overtime surcharge (+50%) on top of the
+                // ALREADY-LOADED hour (night +30% / rest day +50%), not a
+                // flat 1.5x plus a separately-added day premium. `day_premium_pct`
+                // is the day's own rate (100/130/150/180 — see
+                // `night`/`rest` gating just below, which decide it) and is
+                // multiplied into `ot_pay_cents`'s single division, never
+                // summed on top afterward.
+                let day_premium_pct = 100
+                    + if day_shift_type == "night" { 30 } else { 0 }
+                    + if is_rest_day_worked == 1 { 50 } else { 0 };
                 let ot_pay = money::ot_pay_cents(
                     overtime_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
+                    day_premium_pct,
                 );
                 // W-6: night premium gates on dr.shift_type (per-day actual
                 // shift), NOT departments.shift_type. The engine's per-day
                 // output is authoritative for what actually happened.
+                //
+                // Important 2: uses `ordinary_min`, NOT `effective_work_min`
+                // — the overtime slice's night premium is already folded
+                // into `ot_pay` above (multiplicatively via `day_premium_pct`).
+                // Passing the full effective minutes here would additively
+                // double-apply the night premium to the overtime slice on
+                // top of that. When there is no overtime, `ordinary_min ==
+                // effective_work_min`, so the ordinary-hours case (no OT) is
+                // byte-for-byte unchanged.
                 let night = if day_shift_type == "night" {
                     money::night_premium_cents(
-                        effective_work_min,
+                        ordinary_min,
                         base_salary_cents,
                         ordinary_daily_minutes,
+                        salary_kind,
                     )
                 } else {
                     0
                 };
                 let rest = if is_rest_day_worked == 1 {
                     money::rest_day_surcharge_cents(
-                        effective_work_min,
+                        ordinary_min,
                         base_salary_cents,
                         ordinary_daily_minutes,
+                        salary_kind,
                     )
                 } else {
                     0
                 };
+                // C-02: `work_minutes` is measured between the real entry and
+                // exit (calc/engine.rs:70-76), so arriving late already
+                // shrinks the paid minutes. `late` is kept as an informational
+                // metric — reports/excel.rs no longer renders it as its own
+                // money column (Critical 2 removed that column entirely; the
+                // "Min Retraso" minutes column carries this metric instead)
+                // — but it must NOT be subtracted from the total again; that
+                // would charge the same lateness twice.
                 let late = money::late_deduction_cents(
                     late_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
                 );
-                let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, late);
+                let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, 0);
 
                 entry.agg.work_min = entry.agg.work_min.saturating_add(effective_work_min);
                 entry.agg.ot_min = entry.agg.ot_min.saturating_add(overtime_minutes);
@@ -383,9 +551,9 @@ pub async fn compute_report(
         libsql::Value::Text(to.to_string()),
         libsql::Value::Text(from.to_string()),
     ];
-    if !params.include_inactive.unwrap_or(false) {
-        leave_predicates.push("e.status = 'active'".to_string());
-    }
+    // C-05: `e.status` removed as a gate here too, symmetric with the main
+    // query above — employment validity for leave-day counts is decided by
+    // hire_date/terminated_on, not the current status flag.
     if let Some(dept_ids) = &params.department_ids {
         if !dept_ids.is_empty() {
             let placeholders: Vec<String> = dept_ids
@@ -410,7 +578,8 @@ pub async fn compute_report(
                 e.employee_code, e.name, e.position, \
                 d.id AS dept_id, d.name AS dept_name, \
                 e.base_salary_cents, d.ordinary_daily_minutes, \
-                d.shift_type AS dept_shift_type \
+                d.shift_type AS dept_shift_type, \
+                e.hire_date, e.terminated_on \
            FROM leaves l \
            JOIN employees e   ON e.id = l.employee_id \
            JOIN departments d ON d.id = e.department_id \
@@ -439,6 +608,8 @@ pub async fn compute_report(
         let _l_base: i64 = lr.get(9).map_err(|e| AppError::Internal(e.into()))?;
         let _l_ord: i64 = lr.get(10).map_err(|e| AppError::Internal(e.into()))?;
         let l_dept_shift: String = lr.get(11).map_err(|e| AppError::Internal(e.into()))?;
+        let l_hire_date = epoch_to_naive_date(lr.get(12).ok());
+        let l_terminated_on = epoch_to_naive_date(lr.get(13).ok());
 
         let l_from = NaiveDate::parse_from_str(&l_from_str, "%Y-%m-%d")
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
@@ -467,6 +638,8 @@ pub async fn compute_report(
             anomaly_codes_set: BTreeSet::new(),
             worked_dates: HashSet::new(),
             leave_dates: HashSet::new(),
+            hire_date: l_hire_date,
+            terminated_on: l_terminated_on,
         });
 
         let mut d = overlap_from;
@@ -493,8 +666,22 @@ pub async fn compute_report(
         .collect();
 
     for entry in acc.values_mut() {
+        // C-05: an employee with no hire_date cannot be bounded — silently
+        // assuming the period start would understate or overstate absences
+        // without any signal that the number is unreliable. Surface it as a
+        // visible anomaly instead (never silently absorbed into the period
+        // bound).
+        if entry.hire_date.is_none() {
+            entry.anomaly_codes_set.insert("HIRE_DATE_MISSING".to_string());
+        }
+        // C-05: absences only accrue while the employment relationship
+        // existed. Without this bound, someone hired yesterday shows a full
+        // period of absences, and someone terminated mid-period keeps
+        // accruing absences for days after they left.
         let absent = weekdays_in_period
             .iter()
+            .filter(|d| entry.hire_date.is_none_or(|h| **d >= h))
+            .filter(|d| entry.terminated_on.is_none_or(|t| **d <= t))
             .filter(|d| !entry.worked_dates.contains(d) && !entry.leave_dates.contains(d))
             .count() as i64;
         entry.agg.days_absent = absent;

@@ -5,7 +5,9 @@ use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::errors::AppError;
 use crate::state::AppState;
 
-use super::models::{CreateEmployeeRequest, Employee, EmployeeListQuery, UpdateEmployeeRequest};
+use super::models::{
+    CreateEmployeeRequest, Employee, EmployeeListQuery, SalaryKind, UpdateEmployeeRequest,
+};
 
 /// Convert an optional epoch-seconds (UTC midnight) to an ISO YYYY-MM-DD string.
 /// Returns None if the input is None.
@@ -45,8 +47,16 @@ fn parse_hire_date(input: Option<&str>) -> Result<Option<i64>, AppError> {
 /// Map a libSQL row to an Employee struct.
 /// Column order is fixed by the SELECT statements below:
 ///   id, employee_code, name, department_id, status, position, hire_date,
-///   base_salary_cents, deleted_at, version, created_at, updated_at
+///   base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on,
+///   salary_kind
 fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
+    // H-08 (Critical 1 follow-up): GET /employees must round-trip salary_kind
+    // so the edit form can prefill its unit selector — before this, the
+    // column existed in the DB but was never SELECTed here, so every edit
+    // re-picked the unit blind. A NULL/unrecognized column value maps to
+    // `None`, never guessed as a default (same rule as `SalaryKind::from_db_str`).
+    let salary_kind_raw: Option<String> =
+        row.get(13).map_err(|e| AppError::Internal(e.into()))?;
     Ok(Employee {
         id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
         employee_code: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
@@ -60,6 +70,10 @@ fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
         version: row.get(9).map_err(|e| AppError::Internal(e.into()))?,
         created_at: epoch_to_iso(row.get(10).map_err(|e| AppError::Internal(e.into()))?),
         updated_at: epoch_to_iso(row.get(11).map_err(|e| AppError::Internal(e.into()))?),
+        terminated_on: epoch_to_iso_date_opt(
+            row.get(12).map_err(|e| AppError::Internal(e.into()))?,
+        ),
+        salary_kind: salary_kind_raw.as_deref().and_then(SalaryKind::from_db_str),
     })
 }
 
@@ -102,13 +116,31 @@ pub async fn create_queued(
         None => libsql::Value::Null,
     };
 
-    let salary = req.base_salary_cents.unwrap_or(0);
+    // C-03: an absent salary is NOT zero. The UI promised a department-level
+    // inheritance the backend never implemented, so the old default silently
+    // produced zero-pay payroll.
+    let salary = req.base_salary_cents.ok_or_else(|| AppError::Validation {
+        code: "SALARY_REQUIRED",
+        message: "base_salary_cents is required and must be greater than zero".to_string(),
+    })?;
+    if salary <= 0 {
+        return Err(AppError::Validation {
+            code: "SALARY_INVALID",
+            message: "base_salary_cents must be greater than zero".to_string(),
+        });
+    }
+    // H-08: without an explicit unit the amount is uninterpretable.
+    let salary_kind = req.salary_kind.ok_or_else(|| AppError::Validation {
+        code: "SALARY_KIND_REQUIRED",
+        message: "salary_kind is required: one of hourly, daily, monthly".to_string(),
+    })?;
+
     let result = state
         .db_write
         .statement(
             "employees.create",
-            "INSERT INTO employees (id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, version, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, 1, unixepoch(), unixepoch())",
+            "INSERT INTO employees (id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, salary_kind, version, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, ?8, 1, unixepoch(), unixepoch())",
             vec![
                 libsql::Value::Text(id.clone()),
                 libsql::Value::Text(req.employee_code.clone()),
@@ -117,6 +149,7 @@ pub async fn create_queued(
                 libsql::Value::Text(position),
                 hire_date_value,
                 libsql::Value::Integer(salary),
+                libsql::Value::Text(salary_kind.as_db_str().to_string()),
             ],
         )
         .await;
@@ -193,7 +226,7 @@ pub async fn list(
 
     // Fetch page
     let fetch_sql = format!(
-        "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at \
+        "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on, salary_kind \
          FROM employees {} ORDER BY name ASC LIMIT ?{} OFFSET ?{}",
         where_clause,
         fetch_values.len() + 1,
@@ -229,7 +262,7 @@ pub async fn list(
 pub async fn get_by_id(conn: &Connection, id: &str) -> Result<Employee, AppError> {
     let row = conn
         .query(
-            "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at \
+            "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on, salary_kind \
              FROM employees WHERE id = ?1",
             params![id.to_string()],
         )
@@ -304,8 +337,21 @@ pub async fn update_queued(
         values.push(val);
     }
     if let Some(salary) = req.base_salary_cents {
+        // C-03: a `Some(salary)` with salary <= 0 is rejected, not silently
+        // accepted — a zero/negative salary is exactly the ambiguous "no
+        // salary" state this task closes off.
+        if salary <= 0 {
+            return Err(AppError::Validation {
+                code: "SALARY_INVALID",
+                message: "base_salary_cents must be greater than zero".to_string(),
+            });
+        }
         sets.push(format!("base_salary_cents = ?{}", values.len() + 1));
         values.push(libsql::Value::Integer(salary));
+    }
+    if let Some(kind) = req.salary_kind {
+        sets.push(format!("salary_kind = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(kind.as_db_str().to_string()));
     }
 
     if sets.is_empty() {
@@ -367,13 +413,19 @@ pub async fn update_queued(
 
 /// Soft-delete an employee by setting status=inactive and deleted_at per D-03.
 /// Returns NotFound with EMPLOYEE_NOT_FOUND if not found or already inactive.
+///
+/// C-05: also stamps `terminated_on = unixepoch()` — this is the one place
+/// in the app where an employee's employment actually ends, so it is the
+/// authoritative source for the payroll report's employment-window bound
+/// (not user-settable via UpdateEmployeeRequest, same treatment as
+/// `deleted_at`).
 pub async fn deactivate_queued(state: &AppState, id: &str) -> Result<(), AppError> {
     let rows_affected = state
         .db_write
         .statement(
             "employees.deactivate",
             "UPDATE employees SET status = 'inactive', deleted_at = unixepoch(), \
-             updated_at = unixepoch(), version = version + 1 \
+             terminated_on = unixepoch(), updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND status = 'active'",
             vec![libsql::Value::Text(id.to_string())],
         )

@@ -14,6 +14,12 @@ function fmtCents(cents: number): string {
 // Builds a CSV file from the in-memory ReportPayload — Pencil design (M48QM)
 // shows a CSV button alongside Excel/PDF. The backend has no /reports/csv
 // endpoint; this renders client-side from the same JSON the UI is showing.
+//
+// Critical 2 fix: 'Descuento Retraso' (late_deduction_cents) was removed.
+// C-02 stopped subtracting it from 'Total a Pagar', so a positive-magnitude
+// column sitting right before the total no longer summed correctly — a
+// clerk keying this into a spreadsheet would net it out by hand and
+// reintroduce C-02. 'Min Retraso' still carries the discipline metric.
 export function renderReportCsv(payload: ReportPayload): void {
   const headers = [
     'Cédula',
@@ -29,7 +35,6 @@ export function renderReportCsv(payload: ReportPayload): void {
     'Pago Extra',
     'Prima Nocturna',
     'Recargo Domingo',
-    'Descuento Retraso',
     'Total a Pagar',
     'Días IVSS',
     'Días Vacación',
@@ -53,7 +58,6 @@ export function renderReportCsv(payload: ReportPayload): void {
       fmtCents(r.ot_pay_cents),
       fmtCents(r.night_premium_cents),
       fmtCents(r.rest_day_surcharge_cents),
-      fmtCents(r.late_deduction_cents),
       fmtCents(r.total_a_pagar_cents),
       r.days_ivss,
       r.days_vacation,
@@ -77,7 +81,6 @@ export function renderReportCsv(payload: ReportPayload): void {
     fmtCents(payload.grand_total.ot_pay_cents),
     fmtCents(payload.grand_total.night_premium_cents),
     fmtCents(payload.grand_total.rest_day_surcharge_cents),
-    fmtCents(payload.grand_total.late_deduction_cents),
     fmtCents(payload.grand_total.total_a_pagar_cents),
     payload.grand_total.days_ivss,
     payload.grand_total.days_vacation,

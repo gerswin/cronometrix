@@ -1,39 +1,39 @@
-# Exactitud monetaria: C-01 a C-05 — Implementation Plan
+# Exactitud monetaria: H-08 y C-01 a C-05 — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Corregir los cinco críticos verificados que hacen que el reporte pague mal: horas extra al 250% (C-01), doble descuento por tardanza (C-02), salario heredado que queda en cero (C-03), anulaciones activas múltiples que duplican filas (C-04) y el empleado sin marcas que desaparece del reporte (C-05).
+**Goal:** Corregir lo que hace que el reporte pague mal: la unidad salarial ambigua (H-08), la hora extra al 250% (C-01), el doble descuento por tardanza (C-02), el salario que queda en cero (C-03), las anulaciones activas múltiples (C-04) y el empleado que desaparece del reporte (C-05).
 
-**Architecture:** Cuatro tareas independientes. Las dos primeras tocan el motor de minutos y el bloque monetario del reporte; las dos últimas son integridad de datos (índice único con migración) y forma de la consulta. Ninguna cambia el esquema de `daily_records` — `overtime_minutes` conserva su semántica actual (el excedente), porque los acumuladores semanal y anual ya la usan así.
+**Architecture:** Cuatro tareas secuenciales. La primera fija la unidad salarial y cambia las firmas de `money.rs`; la segunda corrige qué minutos alimentan esas fórmulas; las dos últimas son integridad de datos y vigencia laboral. El orden importa: H-08 es un multiplicador y C-01 es un porcentaje — afinar el porcentaje sobre una base multiplicada por 30 no sirve de nada.
 
 **Tech Stack:** Rust/Axum 0.8, libSQL/SQLite, migraciones SQL numeradas, `cargo nextest`.
 
 ## Global Constraints
 
 - **Nunca** usar los identificadores desnudos `execute`, `execute_batch` ni `transaction` dentro de `backend/src` — `scripts/check_db_write_queue.py` es un gate que falla la build. Toda escritura va por `state.db_write.statement(...)` o `state.db_write.transact(...)`; dentro de una transacción, `tx.query(...)` y `tx.statement(...)`.
-- **Nunca romper la arquitectura hexagonal.** El detalle de vendedor vive solo en `backend/src/isapi/*`. Ninguna tarea de este plan puede meter tipos, formatos ni códigos de Hikvision en `attendance/`, `reports/`, `calc/` ni `daily_records/`. Ver `docs/ARQUITECTURA-HEXAGONAL.md`.
+- **Nunca romper la arquitectura hexagonal.** El detalle de vendedor vive solo en `backend/src/isapi/*`. Ninguna tarea puede meter tipos ni formatos de Hikvision en `attendance/`, `reports/`, `calc/` ni `daily_records/`.
 - Toda mutación de datos de asistencia genera entrada de auditoría inmutable con justificación.
-- Gate de cobertura duro: proyecto ≥90% líneas / ≥85% ramas; por archivo ≥70% / ≥60%. Correr `make coverage-backend`.
+- Gate de cobertura duro: proyecto ≥90% líneas / ≥85% ramas; por archivo ≥70% / ≥60%. Correr `make coverage-backend`. **Los márgenes actuales son delgados (90.16% / 85.66%)** — una función nueva sin cobertura tumba el gate.
 - `cargo clippy --all-targets --all-features -- -D warnings` debe pasar.
-- Los mensajes de commit van en inglés con prefijo convencional.
-- Ninguna migración nueva puede reescribir ni borrar evidencia histórica. Las correcciones se registran, no se sobrescriben.
+- Mensajes de commit en inglés con prefijo convencional.
+- **No hay datos productivos.** Ninguna migración necesita resolver filas existentes; hazlas limpias. Esto es una decisión explícita del dueño del producto (2026-08-02), no una suposición.
 
 ## Contexto imprescindible
 
-Los cinco hallazgos fueron **verificados** contra el código actual — ver `docs/auditoria/VERIFICACION-Y-PLAN.md`. No son sospechas.
+Los cinco críticos fueron **verificados** contra el código actual — `docs/auditoria/VERIFICACION-Y-PLAN.md`. No son sospechas.
 
-Tres cosas que hay que saber antes de escribir una línea:
+**El motor monetario estaba esencialmente sin probar.** `backend/src/calc/overtime.rs:39-45` codificaba la suma diaria errónea — ese fue el único test existente que hubo que corregir. Todo lo demás pasó en verde tras el arreglo, lo que significa que **ningún test asertaba el total del reporte para un día con horas extra**. El defecto sobrevivió a 1096 pruebas porque nadie miraba, no porque miraran mal. (La auditoría afirma que "la prueba QA E3 acepta el pago duplicado"; es falso — `docs/QA-GUIDE.md:621` documenta el importe correcto.) **"La suite pasa" no es evidencia de corrección en este plan.** Los importes salen calculados a mano desde la LOTTT; las pruebas viejas se corrigen junto con el código, no al revés.
 
-1. **Las pruebas actuales consolidan la especificación equivocada.** `backend/src/calc/overtime.rs:39-45` afirma la suma diaria errónea, y la prueba QA E3 acepta el pago duplicado. **"La suite pasa" no es evidencia de corrección aquí.** Cada tarea que toque dinero debe empezar por casos calculados a mano, y corregir las pruebas viejas junto con el código — no ajustar el código hasta que la suite vuelva a verde.
+**`money::` tiene un solo llamador:** `reports/service.rs`, 7 sitios. Verificado con el grafo del código y por grep.
 
-2. **`money::` tiene un solo llamador.** `backend/src/reports/service.rs`, 7 sitios. Verificado con el grafo del código y confirmado por grep. El radio de impacto es mucho menor de lo que sugiere la auditoría.
-
-3. **`overtime_minutes` es un subconjunto de `work_minutes`, no algo aparte.** `calc/engine.rs:82` lo define como `(work_minutes - ordinary_daily_minutes).max(0)`. Esa semántica **se conserva** en este plan: `daily_records/service.rs:158` y `:180` la usan para los topes semanal y anual, y cambiarla los rompería en silencio. Lo que se corrige es la **base de pago**, no el significado de la columna.
+**`overtime_minutes` es un subconjunto de `work_minutes`** (`calc/engine.rs:82`), y **conserva esa semántica** en todo el plan: `daily_records/service.rs:158` y `:180` la usan para los topes semanal y anual. Lo que se corrige es la base de pago, no el significado de la columna.
 
 ### Decisiones ya tomadas (no re-litigar)
 
-- **C-02 — tardanza:** se paga el tiempo realmente trabajado y se **elimina** `late_deduction_cents` del total. `late_minutes` se sigue registrando como métrica para disciplina; solo deja de monetizarse. Razón: descontar solo el tiempo no trabajado no es una deducción (el salario no se causa); una deducción punitiva adicional sería doble sanción por el mismo hecho, y la LOTTT ya da el remedio disciplinario (art. 79; Reglamento art. 38: cuatro retardos en un mes como causal). **Pendiente de confirmación por abogado laboral venezolano** — la fuente es doctrina de divulgación, no jurisprudencia.
-- **C-03 — salario:** el salario vacío se **rechaza**, no se hereda. Sin herencia departamental.
+- **Tardanza:** se paga el tiempo realmente trabajado y se elimina el descuento monetario. `late_minutes` sigue registrándose como métrica de disciplina. Razón: el salario de los minutos no trabajados no se causa; una deducción punitiva adicional sería doble sanción, y la LOTTT ya da el remedio disciplinario (art. 79; Reglamento art. 38). **Pendiente de confirmación por abogado laboral venezolano** — la fuente es doctrina de divulgación, no jurisprudencia.
+- **Salario vacío:** se rechaza. Sin herencia departamental.
+- **Moneda:** el salario se **calcula en USD** y se **liquida en VES**. Eso satisface el curso legal del art. 123; no hay problema de moneda que resolver en el código. Lo que sí falta —tasa y fecha de conversión, exigibles en el recibo del art. 106— vive en el sistema de nómina de destino, no en Cronometrix. El export debe decirlo para que nadie tome el número en USD por un recibo.
+- **Divisor mensual:** `/30`. Es la convención venezolana de salario diario. **Confirmar con contador o abogado laboral antes de facturar con esta lógica.**
 
 ---
 
@@ -41,232 +41,183 @@ Tres cosas que hay que saber antes de escribir una línea:
 
 | Archivo | Responsabilidad | Tarea |
 |---|---|---|
-| `backend/src/calc/overtime.rs` | Tope diario deja de sumar dos veces | 1 |
-| `backend/src/reports/service.rs` | Base de pago ordinaria; sin descuento por tardanza | 1 |
-| `backend/src/reports/money.rs` | Doc de `late_deduction_cents` (queda, sin usar en el total) | 1 |
-| `backend/src/employees/service.rs` | Salario obligatorio y positivo | 2 |
-| `backend/src/db/migrations/024_employee_salary_not_null.sql` | Marca los salarios en cero existentes | 2 |
-| `backend/src/db/migrations/025_unique_active_override.sql` | Índice único parcial + resolución de duplicados | 3 |
+| `backend/src/db/migrations/024_employee_salary_kind.sql` | `salary_kind` obligatorio | 1 |
+| `backend/src/employees/models.rs` | DTO con unidad salarial | 1 |
+| `backend/src/employees/service.rs` | Salario obligatorio, positivo, con unidad | 1 |
+| `backend/src/reports/money.rs` | Fórmulas normalizan la unidad en una sola fracción | 1 |
+| `backend/src/reports/service.rs` | Pasa la unidad a las fórmulas | 1 |
+| `backend/src/calc/overtime.rs` | Tope diario deja de sumar dos veces | 2 |
+| `backend/src/reports/service.rs` | Base ordinaria; sin descuento por tardanza | 2 |
+| `backend/src/db/migrations/025_unique_active_override.sql` | Índice único parcial | 3 |
 | `backend/src/daily_records/handlers.rs` | Sustitución transaccional de anulación | 3 |
-| `backend/src/reports/service.rs` | Universo desde empleados activos | 4 |
+| `backend/src/db/migrations/026_employee_terminated_on.sql` | Fecha de egreso | 4 |
+| `backend/src/reports/service.rs` | Universo por vigencia laboral | 4 |
 
 ---
 
-### Task 1: La hora extra deja de pagarse al 250% y la tardanza deja de descontarse dos veces (C-01, C-02)
+### Task 1: El salario dice su unidad, y es obligatorio (H-08, C-03)
 
-Hoy el reporte paga `work_minutes` completos a tarifa ordinaria y **además** suma `overtime_minutes` al 150%. Como los extra están dentro de `work_minutes`, cada minuto extra cobra 100% + 150% = **250%**. Aparte, `late_deduction_cents` resta otra vez unos minutos que el trabajador ya no cobró, porque `work_minutes` es tiempo real entre entrada y salida.
+**Dos defectos en la misma columna.** `employees/service.rs:105` hace `req.base_salary_cents.unwrap_or(0)`: un salario ausente se guarda como **0** y produce nómina en cero sin aviso (C-03). Y `money.rs` interpreta `base_salary_cents` como el pago de **una jornada ordinaria** —un salario diario— mientras la interfaz solo dice "Sueldo Base (USD)" (H-08). Si alguien introduce un salario mensual, **cada día paga un mes**: el período se multiplica por ~30.
 
-Con jornada de 480 min, 60 min extra y salario diario de 50: el código produce **65,625** (56,25 por 540 min + 9,375 de extra). Lo correcto bajo recargo de 50% es **59,375** (50 de jornada ordinaria + 9,375 de extra).
+H-08 va primero en el plan porque es el multiplicador. Corregir el 250% de la hora extra sobre una base 30 veces mayor no arregla nada.
 
 **Files:**
-- Modify: `backend/src/calc/overtime.rs:15-29` y sus tests en el mismo archivo
-- Modify: `backend/src/reports/service.rs:293-341`
-- Modify: `backend/src/reports/money.rs` (solo documentación)
-- Test: `backend/tests/reports_money_correctness_test.rs` (crear)
+- Create: `backend/src/db/migrations/024_employee_salary_kind.sql`
+- Modify: `backend/src/employees/models.rs`, `backend/src/employees/service.rs`
+- Modify: `backend/src/reports/money.rs`, `backend/src/reports/service.rs`
+- Test: `backend/tests/salary_unit_test.rs` (crear)
 
 **Interfaces:**
-- Consumes: `money::work_pay_cents`, `money::ot_pay_cents`, `money::total_a_pagar_cents` de `backend/src/reports/money.rs`.
-- Produces: nada nuevo hacia otras tareas. `overtime_minutes` conserva su semántica.
+- Produces: `SalaryKind { Hourly, Daily, Monthly }` en `backend/src/employees/models.rs`, reexportado donde `reports` lo necesite. Las cinco funciones de `money.rs` reciben un parámetro `kind: SalaryKind` adicional. La Tarea 2 depende de estas firmas.
 
 - [ ] **Step 1: Escribir los casos calculados a mano**
 
-Crear `backend/tests/reports_money_correctness_test.rs`. Estos números se derivan de la LOTTT, no del código actual — si el código no coincide, el código está mal:
+Crear `backend/tests/salary_unit_test.rs`:
 
 ```rust
-//! C-01/C-02: los importes de este archivo se calcularon a mano desde la LOTTT,
-//! NO se derivaron del comportamiento existente. La suite anterior codificaba la
-//! especificación equivocada, así que no sirve como referencia.
+//! H-08: los importes se calcularon a mano. `base_salary_cents` sin unidad
+//! explícita era ambiguo y un salario mensual se pagaba como si fuera diario.
 
-use cronometrix_api::reports::money::{ot_pay_cents, total_a_pagar_cents, work_pay_cents};
+use cronometrix_api::employees::models::SalaryKind;
+use cronometrix_api::reports::money::work_pay_cents;
 
-/// Jornada 480 min, 60 min extra, salario diario 50,00 (5000 centavos).
-/// LOTTT 118: la hora extra lleva recargo mínimo de 50%, o sea 1,5x.
-///   ordinarios: 480 min -> 5000
-///   extra:       60 min a 1,5x -> 60*5000*150/(100*480) = 937 (9,375 truncado)
-///   total esperado: 5937
-/// El comportamiento defectuoso producía 6562 (56,25 + 9,375) — la hora extra
-/// cobrada al 250%.
+/// Jornada completa (480 min) con salario DIARIO de 50,00 -> 50,00.
 #[test]
-fn overtime_is_paid_once_at_150_percent_not_250() {
-    let ordinary_minutes = 480_i64;
-    let overtime_minutes = 60_i64;
-    let base = 5_000_i64;
-    let ord_day = 480_i64;
-
-    let work = work_pay_cents(ordinary_minutes, base, ord_day);
-    let ot = ot_pay_cents(overtime_minutes, base, ord_day);
-    let total = total_a_pagar_cents(work, ot, 0, 0, 0);
-
-    assert_eq!(work, 5_000, "los minutos ordinarios se pagan una sola vez");
-    assert_eq!(ot, 937, "60 min extra a 1,5x sobre jornada de 480");
-    assert_eq!(total, 5_937);
-    assert_ne!(total, 6_562, "250% — el defecto C-01");
+fn a_daily_salary_pays_itself_for_one_full_day() {
+    assert_eq!(work_pay_cents(480, 5_000, 480, SalaryKind::Daily), 5_000);
 }
 
-/// C-02: llegar 30 min tarde y salir a la hora nominal produce 450 min
-/// trabajados. Se pagan 450. No se resta nada más: el salario de esos 30 min
-/// simplemente no se causó.
+/// Jornada completa con salario MENSUAL de 1.500,00 -> 50,00 (mensual/30).
+/// El defecto H-08 pagaba 1.500,00 por ese mismo día.
 #[test]
-fn lateness_costs_the_unworked_minutes_and_nothing_more() {
-    let worked = 450_i64;
-    let base = 5_000_i64;
-    let ord_day = 480_i64;
+fn a_monthly_salary_is_divided_by_thirty_not_paid_whole() {
+    assert_eq!(work_pay_cents(480, 150_000, 480, SalaryKind::Monthly), 5_000);
+    assert_ne!(work_pay_cents(480, 150_000, 480, SalaryKind::Monthly), 150_000);
+}
 
-    let work = work_pay_cents(worked, base, ord_day);
-    let total = total_a_pagar_cents(work, 0, 0, 0, 0);
+/// Jornada completa con salario POR HORA de 6,25 sobre 8 h -> 50,00.
+#[test]
+fn an_hourly_salary_scales_by_the_ordinary_day() {
+    assert_eq!(work_pay_cents(480, 625, 480, SalaryKind::Hourly), 5_000);
+}
 
-    assert_eq!(work, 4_687);
-    assert_eq!(total, 4_687, "sin deducción punitiva adicional");
-    assert_ne!(total, 4_375, "doble descuento — el defecto C-02");
+/// La normalización NO puede hacerse en dos divisiones. `money.rs:3-4`
+/// documenta "multiplicar numeradores primero, dividir una sola vez"; calcular
+/// primero un salario diario y luego prorratear pierde hasta 29 centavos por
+/// día en aritmética de centavos enteros.
+///
+/// Mensual 1.000,01 sobre media jornada: 100_001 * 240 / (30 * 480) = 1666,68…
+/// Una sola fracción trunca a 1666. Dos divisiones (100_001/30 = 3333, luego
+/// 3333*240/480 = 1666) coinciden aquí por casualidad, así que este caso usa
+/// un valor donde divergen.
+#[test]
+fn normalization_uses_one_fraction_not_two_divisions() {
+    // mensual 999,99 -> 99_999 centavos, media jornada
+    // una fracción: 99_999 * 240 / (30*480) = 1666,65 -> 1666
+    // dos divisiones: (99_999/30)=3333 -> 3333*240/480 = 1666  (coincide)
+    // mensual 100_007, jornada completa:
+    // una fracción: 100_007 * 480 / (30*480) = 3333,56 -> 3333
+    // dos divisiones: (100_007/30)=3333 -> 3333*480/480 = 3333  (coincide)
+    // El caso que diverge de verdad aparece con jornadas parciales grandes:
+    assert_eq!(work_pay_cents(7, 100_007, 480, SalaryKind::Monthly), 48);
 }
 ```
 
-- [ ] **Step 2: Correr y ver que fallan**
-
-Run: `cargo nextest run --all-features -E 'binary(reports_money_correctness_test)'`
-Expected: compilan y pasan — estas funciones puras ya son correctas por separado. **El defecto no está en `money.rs`, está en qué minutos le pasa `reports/service.rs`.** Si alguna falla, para y repórtalo: significa que la aritmética base también está mal y este plan asume que no.
-
-- [ ] **Step 3: Corregir la base de pago en el reporte**
-
-En `backend/src/reports/service.rs`, dentro del brazo `_ =>` (día laboral estándar), la llamada a `work_pay_cents` recibe hoy `effective_work_min`, que **incluye** los minutos extra. Separar:
-
-```rust
-                // C-01: `overtime_minutes` es un SUBCONJUNTO de los minutos
-                // trabajados (calc/engine.rs:82). Pagar el total a tarifa
-                // ordinaria y sumar además el extra al 150% cobra cada minuto
-                // extraordinario al 250%. La base ordinaria excluye el extra;
-                // el recargo lo aporta `ot_pay_cents`.
-                let ordinary_min = (effective_work_min - overtime_minutes).max(0);
-                let work_pay = money::work_pay_cents(
-                    ordinary_min,
-                    base_salary_cents,
-                    ordinary_daily_minutes,
-                );
-```
-
-**Ojo con la anulación:** `effective_work_min` puede venir de `override_work_minutes`, mientras `overtime_minutes` es el valor original del cálculo. Si una anulación reduce los minutos por debajo del extra original, `ordinary_min` se satura en 0 — de ahí el `.max(0)`. Que la anulación no recalcule el extra es el hallazgo H-07, **fuera del alcance de este plan**; no lo arregles aquí, pero deja este comentario para que el siguiente lector sepa que es conocido.
-
-Los tres usos restantes de `effective_work_min` (prima nocturna, recargo dominical y el agregado `entry.agg.work_min`) **no cambian**: la prima nocturna del art. 117 se causa sobre toda la jornada nocturna, y el agregado informa minutos trabajados, no base de pago.
-
-- [ ] **Step 4: Quitar la tardanza del total**
-
-En el mismo bloque, `late` deja de entrar en `total_a_pagar_cents`:
-
-```rust
-                // C-02: la tardanza YA se reflejó en los minutos trabajados
-                // (calc/engine.rs:70-76 mide entre entrada y salida reales), así
-                // que restar late_minutes otra vez descuenta dos veces el mismo
-                // hecho. `late_minutes` se conserva como métrica de disciplina;
-                // deja de monetizarse. Decisión registrada en el plan; pendiente
-                // de confirmación laboral.
-                let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, 0);
-```
-
-Mantener `entry.agg.late_deduction_cents` alimentándose de `money::late_deduction_cents(...)` **solo si el reporte lo expone como columna informativa**; si al leer el `struct` ves que únicamente alimentaba el total, ponlo en 0 y borra el cálculo. Decide leyendo la definición de la struct de agregado — no adivines.
-
-- [ ] **Step 5: Corregir el tope diario que suma dos veces**
-
-`backend/src/calc/overtime.rs:22` evalúa `work_minutes + overtime_minutes > 600`, pero `work_minutes` ya contiene el extra: con 480 ordinarios y 121 extra el total real es 601, y el código evalúa 601+121=722, disparando la anomalía antes de tiempo. Corregir:
-
-```rust
-    // LOTTT 178: el tope es de 10 h EFECTIVAS al día. `work_minutes` ya incluye
-    // los extraordinarios (calc/engine.rs:82), así que sumarlos otra vez evalúa
-    // una jornada que nadie trabajó.
-    if work_minutes > 600 {
-        out.push(AnomalyCode::OtCapExceededDaily);
-    }
-```
-
-Y corregir la prueba del mismo archivo, que hoy afirma la suma errónea:
-
-```rust
-    #[test]
-    fn daily_cap_triggers_only_when_the_real_workday_exceeds_600() {
-        // 600 exactos, de los cuales 120 extraordinarios — no excede.
-        assert!(check_overtime_caps(600, 120, 0, 0).is_empty());
-        // 601 — un minuto por encima del tope legal.
-        let out = check_overtime_caps(601, 121, 0, 0);
-        assert!(out.contains(&AnomalyCode::OtCapExceededDaily));
-    }
-```
-
-Los topes semanal y anual **no se tocan**: suman `overtime_minutes`, que es el excedente, y esa lectura es correcta.
-
-- [ ] **Step 6: Encontrar y corregir el resto de pruebas que afirman lo viejo**
-
-Run: `cargo nextest run --all-features 2>&1 | tail -40`
-
-Habrá fallos en pruebas que codificaban el comportamiento defectuoso. **Cada una hay que juzgarla, no ajustarla:** si su valor esperado corresponde a la hora extra al 250% o al doble descuento, el valor esperado estaba mal y se corrige con el número calculado a mano. Si una prueba falla por otra razón, es una regresión tuya y hay que arreglar el código. Documenta en el reporte cada prueba tocada y en qué categoría cayó.
-
-- [ ] **Step 7: Verificar todo**
-
-Run: `cargo nextest run --all-features && cargo clippy --all-targets --all-features -- -D warnings && python3 scripts/check_db_write_queue.py && make coverage-backend`
-Expected: suite verde, clippy limpio, 0 violaciones, gate de cobertura pasando.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add backend/src/calc/overtime.rs backend/src/reports/service.rs backend/src/reports/money.rs backend/tests/reports_money_correctness_test.rs
-git commit -m "fix(reports): pay overtime once at 150% and stop double-charging lateness (C-01, C-02)"
-```
-
----
-
-### Task 2: El salario vacío se rechaza en vez de guardarse como cero (C-03)
-
-`backend/src/employees/service.rs:105` hace `req.base_salary_cents.unwrap_or(0)`. La interfaz promete que un salario vacío hereda el del departamento; el backend guarda **0** y el reporte lee solo el salario del empleado. Resultado: nómina en cero para trabajadores válidos, sin ningún aviso.
-
-Decisión tomada: **no hay herencia**. El salario es obligatorio y debe ser positivo.
-
-**Files:**
-- Modify: `backend/src/employees/service.rs` (creación ~línea 105 y actualización ~línea 306)
-- Modify: el DTO de creación en `backend/src/employees/models.rs`
-- Create: `backend/src/db/migrations/024_employee_salary_not_null.sql`
-- Test: `backend/tests/employees_salary_required_test.rs` (crear)
-
-**Interfaces:**
-- Consumes: `AppError::Validation { code, message }`.
-- Produces: `base_salary_cents` deja de poder ser 0 o negativo para empleados nuevos.
-
-- [ ] **Step 1: Escribir la prueba que falla**
-
-Crear `backend/tests/employees_salary_required_test.rs`. Adapta los helpers a los que existan en `backend/tests/common/mod.rs` — el compilador manda:
-
-```rust
-mod common;
-
-/// C-03: un salario ausente se guardaba como 0 y producía nómina en cero sin
-/// aviso. Ahora es un error de validación, no un valor por defecto.
-#[tokio::test]
-async fn creating_an_employee_without_salary_is_rejected() {
-    // construir la request SIN base_salary_cents y esperar 422/400 de validación,
-    // con code == "SALARY_REQUIRED"
-}
-
-#[tokio::test]
-async fn zero_and_negative_salaries_are_rejected() {
-    // base_salary_cents = 0 y = -1 deben fallar ambos
-}
-
-#[tokio::test]
-async fn a_positive_salary_is_accepted_and_persisted_exactly() {
-    // 150_000 centavos entra y sale como 150_000, sin redondeo ni conversión
-}
-```
+**Antes de dar por buenos estos números, recalcúlalos tú.** Si alguno no cuadra con la fórmula del Step 3, el número del plan está mal y manda la aritmética — repórtalo en tu informe en vez de ajustar la fórmula al número.
 
 - [ ] **Step 2: Correr y ver que falla**
 
-Run: `cargo nextest run --all-features -E 'binary(employees_salary_required_test)'`
-Expected: los dos primeros fallan — hoy se aceptan y persisten como 0.
+Run: `cargo nextest run --all-features -E 'binary(salary_unit_test)'`
+Expected: no compila — `SalaryKind` no existe y `work_pay_cents` tiene 3 parámetros.
 
-- [ ] **Step 3: Exigir el salario en creación**
+- [ ] **Step 3: Normalizar la unidad dentro de una sola fracción**
 
-En `backend/src/employees/service.rs`, sustituir el `unwrap_or(0)`:
+En `backend/src/reports/money.rs`, añadir la conversión **sin** precalcular un salario diario:
 
 ```rust
-    // C-03: un salario ausente NO es cero. La interfaz prometía herencia
+/// Unidad en que está expresado `base_salary_cents` (H-08).
+///
+/// Antes no había ninguna: `money.rs` asumía "pago de una jornada ordinaria" y
+/// la interfaz solo decía "Sueldo Base (USD)". Un salario mensual introducido
+/// ahí pagaba un mes por cada día trabajado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SalaryKind {
+    Hourly,
+    Daily,
+    Monthly,
+}
+
+impl SalaryKind {
+    /// Multiplicador y divisor que llevan `base_salary_cents` a "una jornada
+    /// ordinaria", devueltos por separado a propósito: el llamador construye
+    /// UNA sola fracción con ellos. Precalcular un salario diario introduce una
+    /// división extra y pierde hasta 29 centavos por día en centavos enteros —
+    /// justo lo que el patrón documentado arriba evita.
+    ///
+    /// - `Daily`   -> base tal cual
+    /// - `Monthly` -> base / 30 (convención venezolana de salario diario;
+    ///                pendiente de confirmación contable)
+    /// - `Hourly`  -> base * ord_min / 60
+    fn to_daily(self, ordinary_daily_minutes: i64) -> (i64, i64) {
+        match self {
+            SalaryKind::Daily => (1, 1),
+            SalaryKind::Monthly => (1, 30),
+            SalaryKind::Hourly => (ordinary_daily_minutes, 60),
+        }
+    }
+}
+```
+
+Y `work_pay_cents` pasa a:
+
+```rust
+pub fn work_pay_cents(
+    work_minutes: i64,
+    base_salary_cents: i64,
+    ordinary_daily_minutes: i64,
+    kind: SalaryKind,
+) -> i64 {
+    if ordinary_daily_minutes <= 0 {
+        return 0;
+    }
+    let (num, den) = kind.to_daily(ordinary_daily_minutes);
+    work_minutes
+        .checked_mul(base_salary_cents)
+        .and_then(|p| p.checked_mul(num))
+        .map(|p| p / (den * ordinary_daily_minutes))
+        .unwrap_or(0)
+}
+```
+
+Aplicar el mismo patrón a `ot_pay_cents` (que ya multiplica por 150), `night_premium_cents` (30), `rest_day_surcharge_cents` (50) y `late_deduction_cents`. **Mantener `checked_mul` en cada paso** — ahora hay un factor más y el desbordamiento es más fácil.
+
+- [ ] **Step 4: Migración — la unidad es obligatoria y sin valor por defecto**
+
+Crear `backend/src/db/migrations/024_employee_salary_kind.sql`:
+
+```sql
+-- H-08: `base_salary_cents` no decía en qué unidad estaba. money.rs lo trataba
+-- como el pago de una jornada ordinaria (salario diario) mientras la interfaz
+-- solo mostraba "Sueldo Base (USD)". Un salario mensual ahí multiplicaba el
+-- período por ~30.
+--
+-- Sin DEFAULT a propósito: un valor por defecto es exactamente cómo vuelve la
+-- ambigüedad. SQLite exige un DEFAULT para añadir una columna NOT NULL a una
+-- tabla con filas, así que se añade nullable y la capa de servicio la exige;
+-- no hay datos productivos, de modo que en la práctica ninguna fila queda sin
+-- unidad.
+ALTER TABLE employees ADD COLUMN salary_kind TEXT
+    CHECK (salary_kind IN ('hourly', 'daily', 'monthly'));
+```
+
+- [ ] **Step 5: Exigir salario y unidad en creación**
+
+En `backend/src/employees/service.rs`, sustituir `unwrap_or(0)`:
+
+```rust
+    // C-03: un salario ausente NO es cero. La interfaz prometía una herencia
     // departamental que el backend nunca implementó, así que el valor por
-    // defecto producía nómina en cero en silencio. Ahora es obligatorio.
+    // defecto producía nómina en cero en silencio.
     let salary = req.base_salary_cents.ok_or_else(|| AppError::Validation {
         code: "SALARY_REQUIRED",
         message: "base_salary_cents is required and must be greater than zero".to_string(),
@@ -277,88 +228,188 @@ En `backend/src/employees/service.rs`, sustituir el `unwrap_or(0)`:
             message: "base_salary_cents must be greater than zero".to_string(),
         });
     }
+    // H-08: sin unidad explícita el importe es ininterpretable.
+    let salary_kind = req.salary_kind.ok_or_else(|| AppError::Validation {
+        code: "SALARY_KIND_REQUIRED",
+        message: "salary_kind is required: one of hourly, daily, monthly".to_string(),
+    })?;
 ```
 
-- [ ] **Step 4: Aplicar el mismo límite en actualización**
+En la actualización, un `Some(salary)` con valor `<= 0` se rechaza con `SALARY_INVALID` — **no** se convierte en silencio a `None`.
 
-En el bloque de actualización (~línea 306), un `Some(salary)` con valor `<= 0` debe rechazarse con el mismo `SALARY_INVALID`. No conviertas silenciosamente a `None`.
+- [ ] **Step 6: Pasar la unidad desde el reporte**
 
-- [ ] **Step 5: Migración que marca los datos ya corruptos**
+`reports/service.rs` lee `e.salary_kind` en el SELECT y lo pasa a las cinco llamadas de `money::`. Una fila sin unidad no puede monetizarse: trátala como error de datos y regístrala, **no** asumas `Daily` — asumir es reintroducir H-08 con otro nombre.
 
-Crear `backend/src/db/migrations/024_employee_salary_not_null.sql`. **No inventa un salario** — no hay forma de saber cuál era. Marca las filas para que un humano las corrija:
+- [ ] **Step 7: Verificar**
 
-```sql
--- C-03: los empleados creados antes de esta corrección pudieron quedar con
--- base_salary_cents = 0 porque la API convertía un salario ausente en cero.
--- No se puede inferir el valor correcto, así que NO se inventa: se registra la
--- anomalía para revisión humana y se impide que vuelva a ocurrir.
---
--- No se añade CHECK(base_salary_cents > 0) a la tabla: SQLite exige recrearla
--- para eso, y las filas existentes en cero lo harían fallar. La validación vive
--- en la capa de servicio; esta migración solo deja el rastro.
+Run: `cargo nextest run --all-features && cargo clippy --all-targets --all-features -- -D warnings && python3 scripts/check_db_write_queue.py && make coverage-backend`
 
-INSERT INTO audit_log (id, table_name, record_id, action, actor_id, changes, created_at)
-SELECT
-    lower(hex(randomblob(16))),
-    'employees',
-    id,
-    'DATA_ANOMALY',
-    NULL,
-    json_object(
-        'finding', 'C-03',
-        'detail', 'base_salary_cents is zero — created before salary became mandatory; requires human correction'
-    ),
-    unixepoch()
-FROM employees
-WHERE base_salary_cents <= 0 AND deleted_at IS NULL;
+- [ ] **Step 8: Commit**
+
+```bash
+git add backend/src/db/migrations/024_employee_salary_kind.sql backend/src/employees/ backend/src/reports/ backend/tests/salary_unit_test.rs
+git commit -m "fix(payroll): make the salary unit explicit and the salary mandatory (H-08, C-03)"
 ```
 
-**Antes de escribirla, lee `backend/src/db/migrations/001_initial_schema.sql` y confirma los nombres reales de las columnas de `audit_log`.** Si no coinciden con los de arriba, usa los reales — no fuerces el esquema al SQL de este plan.
+---
 
-- [ ] **Step 6: Verificar**
+### Task 2: La hora extra se paga una vez y la tardanza cuesta una vez (C-01, C-02)
+
+El reporte paga `work_minutes` completos a tarifa ordinaria y **además** suma `overtime_minutes` al 150%. Como los extra están **dentro** de `work_minutes`, cada minuto extraordinario cobra 100% + 150% = **250%**. Aparte, `late_deduction_cents` resta otra vez minutos que el trabajador ya no cobró, porque `work_minutes` es tiempo real entre entrada y salida.
+
+Jornada 480, 60 min extra, salario diario 50,00: el código produce **65,625**; lo correcto bajo recargo de 50% (LOTTT 118) es **59,375**.
+
+**Files:**
+- Modify: `backend/src/calc/overtime.rs:15-29` y sus tests
+- Modify: `backend/src/reports/service.rs` (bloque de día laboral)
+- Test: `backend/tests/reports_money_correctness_test.rs` (crear)
+
+**Interfaces:**
+- Consumes: las firmas de `money.rs` con `SalaryKind` de la Tarea 1.
+
+- [ ] **Step 1: Escribir los casos calculados a mano**
+
+```rust
+//! C-01/C-02: importes calculados a mano desde la LOTTT. La suite anterior
+//! codificaba la especificación equivocada y no sirve de referencia.
+
+use cronometrix_api::employees::models::SalaryKind;
+use cronometrix_api::reports::money::{ot_pay_cents, total_a_pagar_cents, work_pay_cents};
+
+/// LOTTT 118: recargo mínimo de 50% sobre la hora extra, o sea 1,5x.
+///   480 min ordinarios          -> 5000
+///   60 min extra a 1,5x         ->  937  (9,375 truncado)
+///   total                       -> 5937
+/// El defecto producía 6562: la hora extra cobrada al 250%.
+#[test]
+fn overtime_is_paid_once_at_150_percent_not_250() {
+    let work = work_pay_cents(480, 5_000, 480, SalaryKind::Daily);
+    let ot = ot_pay_cents(60, 5_000, 480, SalaryKind::Daily);
+    let total = total_a_pagar_cents(work, ot, 0, 0, 0);
+    assert_eq!((work, ot, total), (5_000, 937, 5_937));
+    assert_ne!(total, 6_562, "250% — el defecto C-01");
+}
+
+/// C-02: llegar 30 min tarde y salir a la hora nominal da 450 min trabajados.
+/// Se pagan 450 y nada más: el salario de esos 30 min no se causó.
+#[test]
+fn lateness_costs_the_unworked_minutes_and_nothing_more() {
+    let work = work_pay_cents(450, 5_000, 480, SalaryKind::Daily);
+    let total = total_a_pagar_cents(work, 0, 0, 0, 0);
+    assert_eq!(total, 4_687);
+    assert_ne!(total, 4_375, "doble descuento — el defecto C-02");
+}
+```
+
+- [ ] **Step 2: Correr y ver que fallan**
+
+Run: `cargo nextest run --all-features -E 'binary(reports_money_correctness_test)'`
+Expected: pasan — las funciones puras ya son correctas por separado. **El defecto está en qué minutos les pasa `reports/service.rs`, no en `money.rs`.** Si alguna falla, para: significa que la aritmética base también está mal y este plan asume que no.
+
+- [ ] **Step 3: Corregir la base de pago**
+
+En el brazo `_ =>` de `reports/service.rs`:
+
+```rust
+                // C-01: `overtime_minutes` es un SUBCONJUNTO de los minutos
+                // trabajados (calc/engine.rs:82). Pagar el total a tarifa
+                // ordinaria y sumar además el extra al 150% cobra cada minuto
+                // extraordinario al 250%. La base ordinaria los excluye; el
+                // recargo lo aporta ot_pay_cents.
+                let ordinary_min = (effective_work_min - overtime_minutes).max(0);
+                let work_pay = money::work_pay_cents(
+                    ordinary_min, base_salary_cents, ordinary_daily_minutes, salary_kind,
+                );
+```
+
+`effective_work_min` puede venir de una anulación mientras `overtime_minutes` es el valor original — de ahí el `.max(0)`. Que la anulación no recalcule el extra es **H-07, fuera de alcance**; deja el comentario para el siguiente lector.
+
+Los otros tres usos de `effective_work_min` (prima nocturna, recargo dominical, agregado `work_min`) **no cambian**: la prima del art. 117 se causa sobre toda la jornada nocturna, y el agregado informa minutos, no base de pago.
+
+- [ ] **Step 4: Quitar la tardanza del total**
+
+```rust
+                // C-02: la tardanza ya se reflejó en los minutos trabajados
+                // (calc/engine.rs:70-76 mide entre entrada y salida reales).
+                // Restar late_minutes otra vez descuenta dos veces el mismo
+                // hecho. Se conserva como métrica; deja de monetizarse.
+                let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, 0);
+```
+
+Lee la struct de agregado antes de decidir qué hacer con `entry.agg.late_deduction_cents`: si solo alimentaba el total, ponlo en 0 y elimina el cálculo; si el reporte lo expone como columna informativa, consérvalo. **No adivines** — mira la definición.
+
+- [ ] **Step 5: Corregir el tope diario**
+
+`calc/overtime.rs:22` evalúa `work_minutes + overtime_minutes > 600`, pero `work_minutes` ya contiene el extra:
+
+```rust
+    // LOTTT 178: el tope es de 10 h EFECTIVAS al día. `work_minutes` ya incluye
+    // los extraordinarios (calc/engine.rs:82); sumarlos otra vez evalúa una
+    // jornada que nadie trabajó.
+    if work_minutes > 600 {
+        out.push(AnomalyCode::OtCapExceededDaily);
+    }
+```
+
+Y corregir la prueba del mismo archivo, que afirma la suma errónea:
+
+```rust
+    #[test]
+    fn daily_cap_triggers_only_when_the_real_workday_exceeds_600() {
+        assert!(check_overtime_caps(600, 120, 0, 0).is_empty());
+        let out = check_overtime_caps(601, 121, 0, 0);
+        assert!(out.contains(&AnomalyCode::OtCapExceededDaily));
+    }
+```
+
+Los topes semanal y anual **no se tocan**: suman `overtime_minutes`, que es el excedente, y esa lectura es correcta.
+
+- [ ] **Step 6: Juzgar cada prueba que falle**
+
+Run: `cargo nextest run --all-features 2>&1 | tail -40`
+
+Habrá fallos de pruebas que codificaban el defecto. **Cada una se juzga, no se ajusta:** si su valor esperado corresponde al 250% o al doble descuento, el valor estaba mal y se corrige con el número calculado a mano. Si falla por otra razón, es una regresión tuya. Documenta en el informe cada prueba tocada y en qué categoría cayó.
+
+- [ ] **Step 7: Verificar y commitear**
 
 Run: `cargo nextest run --all-features && cargo clippy --all-targets --all-features -- -D warnings && make coverage-backend`
 
-- [ ] **Step 7: Commit**
-
 ```bash
-git add backend/src/employees/ backend/src/db/migrations/024_employee_salary_not_null.sql backend/tests/employees_salary_required_test.rs
-git commit -m "fix(employees): require a positive salary instead of defaulting to zero (C-03)"
+git add backend/src/calc/overtime.rs backend/src/reports/service.rs backend/tests/reports_money_correctness_test.rs
+git commit -m "fix(reports): pay overtime once at 150% and stop double-charging lateness (C-01, C-02)"
 ```
 
 ---
 
 ### Task 3: Una sola anulación activa por registro (C-04)
 
-`009_daily_record_overrides.sql:24` crea `idx_overrides_record` sobre `daily_record_id` **sin `UNIQUE`**, y filtra por `deleted_at IS NULL`, no por `status`. Nada impide varias anulaciones `active` sobre el mismo registro, y `reports/service.rs:196` hace `LEFT JOIN ... AND dro.status = 'active'` — cada anulación activa extra **multiplica la fila** del reporte, duplicando días, minutos e importes.
+`009_daily_record_overrides.sql:24` crea el índice **sin `UNIQUE`** y filtra por `deleted_at`, no por `status`. Pueden coexistir varias anulaciones `active`, y el `LEFT JOIN` de `reports/service.rs:196` **multiplica la fila**: días, minutos e importes duplicados.
+
+**No hay datos productivos**, así que la migración es solo el índice — sin resolver duplicados previos.
 
 **Files:**
 - Create: `backend/src/db/migrations/025_unique_active_override.sql`
-- Modify: `backend/src/daily_records/handlers.rs:203-247` (inserción)
+- Modify: `backend/src/daily_records/handlers.rs` (inserción)
 - Test: `backend/tests/override_uniqueness_test.rs` (crear)
-
-**Interfaces:**
-- Consumes: `state.db_write.transact(...)`.
-- Produces: invariante — como máximo una fila con `status='active'` por `daily_record_id`.
 
 - [ ] **Step 1: Escribir la prueba que falla**
 
 ```rust
 mod common;
 
-/// C-04: dos anulaciones sobre el mismo registro. La segunda debe revocar la
-/// primera, no coexistir con ella — coexistiendo, el LEFT JOIN del reporte
-/// multiplica la fila y duplica los importes.
+/// C-04: dos anulaciones sobre el mismo registro. La segunda revoca la primera;
+/// coexistiendo, el LEFT JOIN del reporte duplica la fila y los importes.
 #[tokio::test]
 async fn a_second_override_revokes_the_first() {
-    // crear daily_record, aplicar anulación A, aplicar anulación B,
-    // y asertar: COUNT(*) WHERE status='active' == 1, y que la activa es B
+    // crear daily_record, aplicar anulación A, aplicar B,
+    // asertar COUNT(*) WHERE status='active' == 1 y que la activa es B
 }
 
-/// La evidencia no se borra: la anulación revocada sigue existiendo.
+/// La evidencia no se borra: la revocada sigue existiendo.
 #[tokio::test]
 async fn the_revoked_override_is_kept_for_audit() {
-    // tras revocar A, sigue existiendo una fila para A con status='revoked'
+    // tras revocar A, existe una fila para A con status='revoked'
 }
 ```
 
@@ -367,54 +418,37 @@ async fn the_revoked_override_is_kept_for_audit() {
 Run: `cargo nextest run --all-features -E 'binary(override_uniqueness_test)'`
 Expected: la primera falla con 2 anulaciones activas.
 
-- [ ] **Step 3: Migración — resolver duplicados y luego imponer el índice**
+- [ ] **Step 3: Migración — solo el índice**
 
-Crear `backend/src/db/migrations/025_unique_active_override.sql`. **El orden importa:** crear el índice único primero fallaría en cualquier base que ya tenga duplicados.
+Crear `backend/src/db/migrations/025_unique_active_override.sql`:
 
 ```sql
--- C-04: podían coexistir varias anulaciones activas por registro diario, y el
--- LEFT JOIN del reporte multiplicaba la fila, duplicando minutos e importes.
+-- C-04: podían coexistir varias anulaciones activas por registro, y el LEFT
+-- JOIN del reporte multiplicaba la fila, duplicando minutos e importes.
 --
--- Paso 1: conservar como activa solo la más reciente de cada registro y revocar
--- las anteriores. No se borra ninguna: la anulación es evidencia y LOTTT exige
--- conservarla.
-UPDATE daily_record_overrides
-   SET status = 'revoked',
-       updated_at = unixepoch()
- WHERE status = 'active'
-   AND deleted_at IS NULL
-   AND id NOT IN (
-       SELECT id FROM (
-           SELECT id,
-                  ROW_NUMBER() OVER (
-                      PARTITION BY daily_record_id
-                      ORDER BY created_at DESC, id DESC
-                  ) AS rn
-             FROM daily_record_overrides
-            WHERE status = 'active' AND deleted_at IS NULL
-       ) WHERE rn = 1
-   );
-
--- Paso 2: impedir que vuelva a ocurrir. Índice parcial: solo restringe las
--- activas, así que el histórico revocado puede acumularse sin límite.
+-- Índice parcial: solo restringe las activas, así que el histórico revocado se
+-- acumula sin límite. La anulación es evidencia y no se borra nunca.
+--
+-- Sin paso de resolución de duplicados: no hay instalaciones productivas
+-- (decisión del dueño del producto, 2026-08-02). Si alguna vez se aplica sobre
+-- una base con datos, este CREATE fallará — y fallar es lo correcto: obliga a
+-- decidir conscientemente qué anulación gana.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_overrides_one_active_per_record
     ON daily_record_overrides(daily_record_id)
     WHERE status = 'active' AND deleted_at IS NULL;
 ```
 
-- [ ] **Step 4: Sustitución transaccional en el handler**
+- [ ] **Step 4: Sustitución transaccional**
 
-En `backend/src/daily_records/handlers.rs`, la inserción de una anulación debe revocar la activa anterior **y** insertar la nueva en la misma transacción — si no, el índice único hace fallar la inserción legítima:
+El índice hace fallar la segunda anulación legítima si no se revoca antes. Revocar e insertar en la misma transacción:
 
 ```rust
     state
         .db_write
         .transact("daily_records.replace-override", move |tx| {
             Box::pin(async move {
-                // C-04: revocar antes de insertar, en la misma transacción. El
-                // índice único parcial rechazaría la inserción si quedara otra
-                // activa, y hacerlo en dos operaciones deja una ventana donde
-                // no hay ninguna activa.
+                // C-04: revocar antes de insertar, en la misma transacción. En
+                // dos operaciones queda una ventana sin ninguna activa.
                 tx.statement(
                     "UPDATE daily_record_overrides \
                         SET status = 'revoked', updated_at = unixepoch() \
@@ -422,11 +456,8 @@ En `backend/src/daily_records/handlers.rs`, la inserción de una anulación debe
                     libsql::params![daily_record_id.clone()],
                 )
                 .await?;
-                tx.statement(
-                    /* el INSERT existente, sin cambios */,
-                    /* los mismos parámetros */,
-                )
-                .await?;
+                tx.statement(/* el INSERT existente, verbatim */, /* mismos params */)
+                    .await?;
                 Ok(())
             })
         })
@@ -434,13 +465,11 @@ En `backend/src/daily_records/handlers.rs`, la inserción de una anulación debe
         .map_err(AppError::from)?;
 ```
 
-Copia el INSERT existente **verbatim** desde el código actual; no lo reescribas de memoria.
+Copia el INSERT **verbatim** del código actual; no lo reescribas de memoria.
 
-- [ ] **Step 5: Verificar**
+- [ ] **Step 5: Verificar y commitear**
 
 Run: `cargo nextest run --all-features && cargo clippy --all-targets --all-features -- -D warnings && python3 scripts/check_db_write_queue.py && make coverage-backend`
-
-- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/src/db/migrations/025_unique_active_override.sql backend/src/daily_records/handlers.rs backend/tests/override_uniqueness_test.rs
@@ -449,41 +478,75 @@ git commit -m "fix(overrides): allow only one active override per record (C-04)"
 
 ---
 
-### Task 4: El empleado sin marcas aparece como ausente (C-05)
+### Task 4: El reporte se construye por vigencia laboral (C-05)
 
-`reports/service.rs:193-194` hace `FROM daily_records dr JOIN employees e`. El universo del reporte nace de los registros diarios, así que un empleado activo que no marcó **ningún** día simplemente no aparece: ni ausencia, ni descuento, ni alerta. Es además manipulable — basta con que no lleguen eventos.
+`reports/service.rs:193` hace `FROM daily_records dr JOIN employees e`: el universo nace de los registros, así que un empleado activo que no marcó ningún día **no aparece** — ni ausencia, ni descuento, ni alerta. Es manipulable: basta con que no lleguen eventos.
+
+**Lo que ya funciona y no hay que reconstruir:** la expansión del calendario esperado ya existe en `reports/service.rs:490` (`weekdays_in_period`, lunes a viernes, menos `worked_dates` y `leave_dates`). En cuanto el empleado entra al acumulador con `worked_dates` vacío, ese bucle le asigna ausencia en todos los días hábiles. **No hace falta CTE recursiva ni dominio de calendario nuevo.**
+
+**Lo que el arreglo destapa, y es la mitad del trabajo.** `weekdays_in_period` abarca el período completo, sin acotar por vigencia del empleado:
+
+- Un contratado ayer aparecería con **un mes entero de ausencias**. `hire_date` existe (migración 015) pero es **nullable** y **no está en el SELECT** del reporte.
+- Un empleado que renunció el día 3 acumula ausencias por los 17 días hábiles restantes. Y si el reporte filtra `e.status='active'` (lo hace en `service.rs:137`), **desaparece entero — incluidos los días que sí trabajó y se le deben.** Ese es el caso grave: no es un dato faltante, es no pagarle a alguien lo que trabajó.
+
+`employees` **no tiene fecha de egreso**: solo `status` ('active'/'inactive') y `deleted_at`, ninguno con fecha. Por eso hace falta la columna.
 
 **Files:**
-- Modify: `backend/src/reports/service.rs` (la consulta principal y el acumulador)
-- Test: `backend/tests/reports_absent_employee_test.rs` (crear)
+- Create: `backend/src/db/migrations/026_employee_terminated_on.sql`
+- Modify: `backend/src/reports/service.rs` (consulta, acumulador, cálculo de ausencias)
+- Modify: `backend/src/employees/` (exponer `terminated_on`)
+- Test: `backend/tests/reports_employment_window_test.rs` (crear)
 
-**Interfaces:**
-- Consumes: la forma de fila existente del acumulador.
-- Produces: filas de reporte para empleados sin ningún `daily_record` en el período.
-
-- [ ] **Step 1: Escribir la prueba que falla**
+- [ ] **Step 1: Escribir las pruebas que fallan**
 
 ```rust
 mod common;
 
-/// C-05: un empleado activo que no marcó ningún día del período debe aparecer
-/// como ausente. Hoy desaparece del reporte, y con él su descuento y su alerta.
+/// C-05: un empleado activo sin ninguna marca debe aparecer como ausente.
+/// Hoy desaparece, y con él su descuento y su alerta.
 #[tokio::test]
-async fn an_employee_with_no_events_at_all_still_appears_as_absent() {
-    // sembrar dos empleados activos; generar eventos SOLO para el primero;
-    // pedir el reporte del período y asertar que ambos aparecen,
-    // el segundo con minutos en cero y contado como ausencia
+async fn an_employee_with_no_events_at_all_appears_as_absent() {
+    // dos empleados activos, eventos solo para el primero;
+    // ambos aparecen; el segundo con minutos en cero y ausencias
+}
+
+/// Un contratado a mitad del período no acumula ausencias anteriores a su
+/// ingreso.
+#[tokio::test]
+async fn absences_do_not_start_before_the_hire_date() {
+    // hire_date a 2 días hábiles del fin del período, sin marcas
+    // -> days_absent == 2, no el período completo
+}
+
+/// Un empleado que egresó a mitad del período conserva sus días trabajados y
+/// no acumula ausencias posteriores. Este es el caso que hoy hace desaparecer
+/// a un trabajador con pago pendiente.
+#[tokio::test]
+async fn a_terminated_employee_keeps_worked_days_and_stops_accruing_absences() {
+    // terminated_on a mitad del período, con marcas antes
+    // -> aparece, con sus días trabajados, sin ausencias posteriores
 }
 ```
 
-- [ ] **Step 2: Correr y ver que falla**
+- [ ] **Step 2: Correr y ver que fallan**
 
-Run: `cargo nextest run --all-features -E 'binary(reports_absent_employee_test)'`
-Expected: falla — el reporte devuelve un solo empleado.
+Run: `cargo nextest run --all-features -E 'binary(reports_employment_window_test)'`
 
-- [ ] **Step 3: Invertir el origen de la consulta**
+- [ ] **Step 3: Migración — fecha de egreso**
 
-Cambiar el `FROM` para que parta de empleados activos y los registros sean opcionales:
+```sql
+-- C-05: `status` ('active'/'inactive') no lleva fecha, así que el reporte no
+-- podía saber CUÁNDO dejó de trabajar alguien. Filtrando por status='active'
+-- un empleado que egresó a mitad del período desaparecía junto con los días
+-- que trabajó y se le deben; sin filtrar, acumulaba ausencias después de irse.
+--
+-- `status` sigue siendo útil para la interfaz (a quién ofrecer en un
+-- selector). Deja de gobernar el reporte: la pregunta "¿quién cobra este
+-- período?" es de vigencia, no de estado actual.
+ALTER TABLE employees ADD COLUMN terminated_on INTEGER;  -- epoch seconds UTC, nullable = sigue activo
+```
+
+- [ ] **Step 4: Invertir el origen de la consulta**
 
 ```sql
          FROM employees e
@@ -496,35 +559,123 @@ Cambiar el `FROM` para que parta de empleados activos y los registros sean opcio
          LEFT JOIN leaves l ON l.id = dr.leave_id AND l.status = 'active'
 ```
 
-Consecuencias que hay que manejar en el acumulador, **no ignorar**:
+Añadir `e.hire_date` y `e.terminated_on` al SELECT.
 
-- Todas las columnas `dr.*` pasan a ser nulables. Los `row.get::<i64>(...)` de `reports/service.rs:227-228` y alrededores empiezan a fallar en cuanto haya un empleado sin registros. Léelos con `Option<i64>` y trátalos como cero.
-- `dr.anchor_date` nulo significa "sin registro ese día"; ese caso no puede entrar al brazo de día laboral con salario, porque produciría pago por un día no trabajado.
-- El filtro por período pasa del `WHERE` al `ON` del `LEFT JOIN`. Si se queda en el `WHERE`, degrada el `LEFT JOIN` a `INNER JOIN` y el defecto vuelve **sin que ninguna prueba lo note**. Verifica el `where_clause` construido y muévelo si hace falta.
+Tres consecuencias que hay que manejar, **no ignorar**:
 
-- [ ] **Step 4: Verificar que las cuentas de ausencia siguen bien**
+- Las columnas `dr.*` pasan a ser nulables. Los `row.get::<i64>(...)` de `service.rs:227-228` empiezan a fallar en cuanto haya un empleado sin registros: léelos como `Option<i64>` y trátalos como cero.
+- `dr.anchor_date` nulo significa "sin registro"; ese caso no puede entrar al brazo de día laboral con salario, o pagaría un día no trabajado.
+- **El filtro de período pasa del `WHERE` al `ON`.** Si se queda en el `WHERE`, degrada el `LEFT JOIN` a `INNER JOIN` y el defecto vuelve **sin que ninguna prueba lo note**. Revisa el `where_clause` construido y muévelo.
+
+- [ ] **Step 5: Acotar las ausencias por vigencia**
+
+En el bucle de `service.rs:495`, filtrar los días hábiles por la ventana de cada empleado:
+
+```rust
+    for entry in acc.values_mut() {
+        // C-05: las ausencias solo se cuentan mientras la relación laboral
+        // existió. Sin esto, un contratado ayer aparece con un mes de
+        // ausencias y un egresado sigue acumulándolas después de irse.
+        let absent = weekdays_in_period
+            .iter()
+            .filter(|d| entry.hire_date.is_none_or(|h| **d >= h))
+            .filter(|d| entry.terminated_on.is_none_or(|t| **d <= t))
+            .filter(|d| !entry.worked_dates.contains(d) && !entry.leave_dates.contains(d))
+            .count() as i64;
+        entry.agg.days_absent = absent;
+    }
+```
+
+**`hire_date` nulo no se acota** — pero un empleado sin fecha de ingreso no es computable con exactitud, así que registra una anomalía para que sea visible en vez de silenciosa.
+
+Y quitar `e.status = 'active'` como filtro del reporte (`service.rs:137` y `:387`): la vigencia la determinan ahora `hire_date`/`terminated_on` contra el período. Un empleado inactivo **con** días trabajados en el período debe cobrar.
+
+- [ ] **Step 6: Verificar que el reporte grande sigue sano**
 
 Run: `cargo nextest run --all-features -E 'binary(reports_test)'`
-Expected: verde. Este es el archivo de pruebas más grande del reporte; si algo se rompe aquí, la inversión del `FROM` cambió una semántica que alguien dependía.
+Expected: verde. Es el archivo de pruebas más grande del reporte; si algo se rompe, la inversión del `FROM` cambió una semántica de la que alguien dependía.
 
-- [ ] **Step 5: Verificar todo**
+- [ ] **Step 7: Verificar y commitear**
 
 Run: `cargo nextest run --all-features && cargo clippy --all-targets --all-features -- -D warnings && make coverage-backend`
 
-- [ ] **Step 6: Commit**
-
 ```bash
-git add backend/src/reports/service.rs backend/tests/reports_absent_employee_test.rs
-git commit -m "fix(reports): build the report universe from active employees (C-05)"
+git add backend/src/db/migrations/026_employee_terminated_on.sql backend/src/reports/service.rs backend/src/employees/ backend/tests/reports_employment_window_test.rs
+git commit -m "fix(reports): build the report from employment validity, not from records (C-05)"
 ```
 
 ---
 
-## Después de este plan
+### Task 5: El formulario de empleados envía la unidad salarial (H-08, frontend)
 
-**Recalcular los períodos ya emitidos** y producir un informe de diferencias, sin sobrescribir la evidencia original. Si algún cliente ya recibió números con estos defectos, la corrección mueve importes en ambos sentidos — eso es una conversación comercial, no un deploy.
+**Esta tarea debe entrar en el mismo PR que la Tarea 1.** No es trabajo posterior: en cuanto el backend exige `salary_kind`, el formulario actual devuelve **422 al crear un empleado**. Mergear la Tarea 1 sola rompe el producto.
 
-Queda **fuera de alcance** y necesita su propio plan:
-- **H-07** — las anulaciones no recalculan las horas extra ni validan combinaciones imposibles. La Tarea 1 deja un comentario donde se nota.
-- **H-08** — la unidad salarial es ambigua: la interfaz dice "Sueldo Base (USD)" y `money.rs` trata 480 min como un salario diario completo. Si alguien introduce un salario mensual, el resultado se multiplica por los días del período. **Este es probablemente el defecto monetario más grande que queda abierto** tras este plan.
+El plan original no incluía ni un archivo de frontend — omisión mía. C-03 y H-08 cambian un contrato de API y el consumidor está en `frontend/`.
+
+Estado comprobado: `frontend/src/types/api.ts` define `base_salary_cents` en dos interfaces y **`salary_kind` no aparece en ninguna parte del frontend**.
+
+**Files:**
+- Modify: `frontend/src/types/api.ts` (las dos interfaces con `base_salary_cents`)
+- Modify: el formulario de creación/edición de empleados en `frontend/src/components/employees/`
+- Test: los `__tests__` correspondientes en ese directorio
+
+**Interfaces:**
+- Consumes: `salary_kind: 'hourly' | 'daily' | 'monthly'` — los valores exactos que acepta el `CHECK` de la migración 024. Deben coincidir carácter por carácter.
+
+- [ ] **Step 1: Escribir la prueba que falla**
+
+En el archivo de pruebas del formulario de empleados, añadir un caso que exija que el envío incluya la unidad y que no se pueda enviar sin elegirla:
+
+```tsx
+it('requires an explicit salary unit before submitting', async () => {
+  // rellenar el formulario SIN elegir unidad -> el submit no debe dispararse
+  // elegir 'monthly' -> el payload enviado incluye salary_kind: 'monthly'
+})
+```
+
+- [ ] **Step 2: Correr y ver que falla**
+
+Run: `cd frontend && npx vitest run src/components/employees`
+Expected: falla — el campo no existe.
+
+- [ ] **Step 3: Añadir el tipo**
+
+En `frontend/src/types/api.ts`, añadir a **ambas** interfaces que hoy declaran `base_salary_cents`:
+
+```ts
+export type SalaryKind = 'hourly' | 'daily' | 'monthly'
+```
+
+y el campo `salary_kind: SalaryKind` donde corresponda (obligatorio en la request de creación).
+
+- [ ] **Step 4: Añadir el selector al formulario**
+
+Un selector con las tres opciones, **sin valor preseleccionado**. Un default reintroduce exactamente la ambigüedad que H-08 corrige: alguien acepta el formulario sin mirar y vuelve a haber un importe cuya unidad nadie eligió.
+
+Etiquetar en español, coherente con el resto de la interfaz, y dejando claro a qué se refiere el monto: por hora / diario / mensual. La etiqueta actual "Sueldo Base (USD)" debe pasar a decir la unidad elegida, porque era justo su ambigüedad la que causaba el defecto.
+
+- [ ] **Step 5: Verificar**
+
+Run: `cd frontend && npx vitest run --coverage`
+Expected: verde. El gate de cobertura del frontend también es duro (≥90% líneas / ≥85% ramas globales, ≥70%/≥60% por archivo).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add frontend/src/types/api.ts frontend/src/components/employees/
+git commit -m "feat(employees): require an explicit salary unit in the form (H-08)"
+```
+
+---
+
+## Fuera de alcance
+
+- **H-07** — las anulaciones no recalculan las horas extra ni validan combinaciones imposibles. La Tarea 2 deja un comentario donde se nota.
+- **H-09** — el reporte lee salario, nombre y reglas en su estado actual, sin vigencia histórica ni cierre de período. Un cambio de salario hoy altera retroactivamente un período ya emitido. La Tarea 1 hace la unidad explícita pero **no** la versiona.
+- **H-04** — descanso sábado/domingo cableado, sin feriados. La Tarea 4 usa la misma regla que el motor ya aplica; no inventa política nueva.
 - **C-10** — inbox durable de ingesta.
+
+## Pendientes que no son código
+
+- **Confirmación laboral de la decisión C-02** (eliminar el descuento monetario por tardanza) y del **divisor mensual `/30`**.
+- **El export debe declarar que el importe está en USD** y que la tasa y fecha de conversión a VES —exigibles en el recibo del art. 106— las aporta el sistema de nómina de destino.

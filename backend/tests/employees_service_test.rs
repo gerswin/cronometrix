@@ -18,7 +18,7 @@ use cronometrix_api::config::Config;
 use cronometrix_api::departments::models::CreateDepartmentRequest;
 use cronometrix_api::departments::service as dept_service;
 use cronometrix_api::employees::models::{
-    CreateEmployeeRequest, EmployeeListQuery, UpdateEmployeeRequest,
+    CreateEmployeeRequest, EmployeeListQuery, SalaryKind, UpdateEmployeeRequest,
 };
 use cronometrix_api::employees::service as emp_service;
 
@@ -73,7 +73,8 @@ async fn create_employee_happy_path_no_optional_fields() {
             department_id: dept_id.clone(),
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -97,7 +98,8 @@ async fn create_employee_with_hire_date_yyyy_mm_dd() {
             department_id: dept_id,
             position: Some("Engineer".into()),
             hire_date: Some("2024-01-15".into()),
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -120,7 +122,8 @@ async fn create_employee_rejects_malformed_hire_date() {
             department_id: dept_id,
             position: None,
             hire_date: Some("15-01-2024".into()), // wrong format
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -146,7 +149,8 @@ async fn create_employee_empty_hire_date_treated_as_null() {
             department_id: dept_id,
             position: None,
             hire_date: Some("".into()),
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -167,7 +171,8 @@ async fn create_employee_404_when_department_unknown() {
             department_id: "no-such-dept".into(),
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -190,7 +195,8 @@ async fn create_employee_duplicate_employee_code_conflicts() {
             department_id: dept_id.clone(),
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -204,7 +210,8 @@ async fn create_employee_duplicate_employee_code_conflicts() {
             department_id: dept_id,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -230,7 +237,8 @@ async fn list_filters_by_name_partial_match() {
             department_id: dept_id.clone(),
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -243,7 +251,8 @@ async fn list_filters_by_name_partial_match() {
             department_id: dept_id,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -280,7 +289,8 @@ async fn list_filters_by_department() {
             department_id: dept_a.clone(),
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -293,7 +303,8 @@ async fn list_filters_by_department() {
             department_id: dept_b,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -362,7 +373,8 @@ async fn update_no_fields_returns_current_state_no_version_bump() {
             department_id: dept_id,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -376,6 +388,7 @@ async fn update_no_fields_returns_current_state_no_version_bump() {
             position: None,
             hire_date: None,
             base_salary_cents: None,
+            salary_kind: None,
             version: emp.version,
         },
     )
@@ -399,6 +412,7 @@ async fn update_404_unknown_id() {
             position: None,
             hire_date: None,
             base_salary_cents: None,
+            salary_kind: None,
             version: 1,
         },
     )
@@ -421,7 +435,8 @@ async fn update_409_on_stale_version() {
             department_id: dept_id,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -435,6 +450,7 @@ async fn update_409_on_stale_version() {
             position: None,
             hire_date: None,
             base_salary_cents: None,
+            salary_kind: None,
             version: emp.version,
         },
     )
@@ -450,6 +466,7 @@ async fn update_409_on_stale_version() {
             position: None,
             hire_date: None,
             base_salary_cents: None,
+            salary_kind: None,
             version: emp.version, // stale
         },
     )
@@ -472,7 +489,8 @@ async fn update_404_when_changing_to_unknown_department() {
             department_id: dept_id,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -486,6 +504,7 @@ async fn update_404_when_changing_to_unknown_department() {
             position: None,
             hire_date: None,
             base_salary_cents: None,
+            salary_kind: None,
             version: emp.version,
         },
     )
@@ -508,7 +527,8 @@ async fn update_can_clear_hire_date_via_empty_string() {
             department_id: dept_id,
             position: None,
             hire_date: Some("2024-06-01".into()),
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -523,6 +543,7 @@ async fn update_can_clear_hire_date_via_empty_string() {
             position: None,
             hire_date: Some("".into()),
             base_salary_cents: None,
+            salary_kind: None,
             version: emp.version,
         },
     )
@@ -545,7 +566,8 @@ async fn update_rejects_malformed_hire_date() {
             department_id: dept_id,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -559,6 +581,7 @@ async fn update_rejects_malformed_hire_date() {
             position: None,
             hire_date: Some("not-a-date".into()),
             base_salary_cents: None,
+            salary_kind: None,
             version: emp.version,
         },
     )
@@ -581,7 +604,8 @@ async fn deactivate_marks_inactive_and_subsequent_call_404s() {
             department_id: dept_id,
             position: None,
             hire_date: None,
-            base_salary_cents: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
         },
     )
     .await
@@ -609,4 +633,245 @@ async fn deactivate_404_unknown_id() {
         .await
         .expect_err("must 404");
     assert!(err.to_string().contains("not found"));
+}
+
+// ----- C-03 / H-08: salary is required and its unit is required. -----
+// `req.base_salary_cents.unwrap_or(0)` used to make an absent salary silently
+// become zero-pay payroll (C-03). `salary_kind` did not exist at all, so
+// `money.rs` treated every `base_salary_cents` as a daily rate even when the
+// caller meant a monthly figure (H-08). These tests lock the rejection paths.
+
+#[tokio::test]
+async fn create_employee_rejects_missing_salary() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept_id = create_active_dept(&state, "SalaryMissing").await;
+    let err = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "SAL_MISSING".into(),
+            name: "No Salary".into(),
+            department_id: dept_id,
+            position: None,
+            hire_date: None,
+            base_salary_cents: None,
+            salary_kind: Some(SalaryKind::Daily),
+        },
+    )
+    .await
+    .expect_err("missing base_salary_cents must reject");
+    let s = err.to_string();
+    assert!(s.contains("SALARY_REQUIRED") || s.contains("validation"), "err: {s}");
+}
+
+#[tokio::test]
+async fn create_employee_rejects_zero_salary() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept_id = create_active_dept(&state, "SalaryZero").await;
+    let err = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "SAL_ZERO".into(),
+            name: "Zero Salary".into(),
+            department_id: dept_id,
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(0),
+            salary_kind: Some(SalaryKind::Daily),
+        },
+    )
+    .await
+    .expect_err("base_salary_cents <= 0 must reject");
+    let s = err.to_string();
+    assert!(s.contains("SALARY_INVALID") || s.contains("validation"), "err: {s}");
+}
+
+#[tokio::test]
+async fn create_employee_rejects_negative_salary() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept_id = create_active_dept(&state, "SalaryNegative").await;
+    let err = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "SAL_NEG".into(),
+            name: "Negative Salary".into(),
+            department_id: dept_id,
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(-100),
+            salary_kind: Some(SalaryKind::Daily),
+        },
+    )
+    .await
+    .expect_err("negative base_salary_cents must reject");
+    let s = err.to_string();
+    assert!(s.contains("SALARY_INVALID") || s.contains("validation"), "err: {s}");
+}
+
+#[tokio::test]
+async fn create_employee_rejects_missing_salary_kind() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept_id = create_active_dept(&state, "KindMissing").await;
+    let err = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "KIND_MISSING".into(),
+            name: "No Kind".into(),
+            department_id: dept_id,
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: None,
+        },
+    )
+    .await
+    .expect_err("missing salary_kind must reject");
+    let s = err.to_string();
+    assert!(
+        s.contains("SALARY_KIND_REQUIRED") || s.contains("validation"),
+        "err: {s}"
+    );
+}
+
+#[tokio::test]
+async fn create_employee_accepts_monthly_and_hourly_kinds() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept_id = create_active_dept(&state, "KindVariants").await;
+    let monthly = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "KIND_MONTHLY".into(),
+            name: "Monthly Employee".into(),
+            department_id: dept_id.clone(),
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(150_000),
+            salary_kind: Some(SalaryKind::Monthly),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(monthly.base_salary_cents, 150_000);
+
+    let hourly = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "KIND_HOURLY".into(),
+            name: "Hourly Employee".into(),
+            department_id: dept_id,
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(625),
+            salary_kind: Some(SalaryKind::Hourly),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(hourly.base_salary_cents, 625);
+}
+
+#[tokio::test]
+async fn update_rejects_zero_salary_not_silently_ignored() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept_id = create_active_dept(&state, "UpdSalaryZero").await;
+    let emp = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "USZ1".into(),
+            name: "UpdSalZero".into(),
+            department_id: dept_id,
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(50_000),
+            salary_kind: Some(SalaryKind::Daily),
+        },
+    )
+    .await
+    .unwrap();
+    let err = emp_service::update_queued(
+        &state,
+        &emp.id,
+        UpdateEmployeeRequest {
+            name: None,
+            department_id: None,
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(0),
+            salary_kind: None,
+            version: emp.version,
+        },
+    )
+    .await
+    .expect_err("Some(0) salary on update must reject, not silently no-op");
+    let s = err.to_string();
+    assert!(s.contains("SALARY_INVALID") || s.contains("validation"), "err: {s}");
+
+    // Confirm the reject didn't mutate anything (version unchanged).
+    let conn = state.db.connect().unwrap();
+    let unchanged = emp_service::get_by_id(&conn, &emp.id).await.unwrap();
+    assert_eq!(unchanged.version, emp.version);
+    assert_eq!(unchanged.base_salary_cents, 50_000);
+}
+
+#[tokio::test]
+async fn update_can_change_salary_kind() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), make_config());
+    let _conn = db.connect().unwrap();
+    let dept_id = create_active_dept(&state, "UpdKind").await;
+    let emp = emp_service::create_queued(
+        &state,
+        CreateEmployeeRequest {
+            employee_code: "UK1".into(),
+            name: "UpdKindEmp".into(),
+            department_id: dept_id,
+            position: None,
+            hire_date: None,
+            base_salary_cents: Some(150_000),
+            salary_kind: Some(SalaryKind::Daily),
+        },
+    )
+    .await
+    .unwrap();
+    let updated = emp_service::update_queued(
+        &state,
+        &emp.id,
+        UpdateEmployeeRequest {
+            name: None,
+            department_id: None,
+            position: None,
+            hire_date: None,
+            base_salary_cents: None,
+            salary_kind: Some(SalaryKind::Monthly),
+            version: emp.version,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.version, emp.version + 1);
+
+    // `Employee` (the response DTO) doesn't surface salary_kind, so verify
+    // the persisted column directly.
+    let conn = state.db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT salary_kind FROM employees WHERE id = ?1",
+            libsql::params![updated.id],
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let persisted_kind: String = row.get(0).unwrap();
+    assert_eq!(persisted_kind, "monthly");
 }

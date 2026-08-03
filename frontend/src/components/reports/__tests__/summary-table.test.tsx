@@ -98,7 +98,6 @@ const EXPECTED_HEADERS = [
   'Pago Extra',
   'Prima Nocturna',
   'Recargo Domingo',
-  'Descuento Retraso',
   'Total a Pagar',
   'Días IVSS',
   'Días Vacación',
@@ -136,7 +135,7 @@ describe('buildTableRows', () => {
 })
 
 describe('<SummaryTable>', () => {
-  it('renders all 20 column headers', () => {
+  it('renders all 19 column headers', () => {
     render(
       <SummaryTable
         payload={PAYLOAD}

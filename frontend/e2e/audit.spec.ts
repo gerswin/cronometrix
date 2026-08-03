@@ -65,6 +65,11 @@ test.describe('Audit log page (D-04 UAT)', () => {
         name: 'Audit Test User',
         employee_code: `AUD${Date.now()}`,
         department_id: 'dept-prod',
+        // H-08/C-03: POST /employees now requires both fields (previously
+        // an absent salary silently defaulted to 0 and an absent unit was
+        // assumed "daily" — see migration 024 / employees::service).
+        base_salary_cents: 100_000,
+        salary_kind: 'daily',
       },
     })
 
@@ -101,6 +106,9 @@ test.describe('Audit log page (D-04 UAT)', () => {
         name: 'Admin Made',
         employee_code: `ADM${Date.now()}`,
         department_id: 'dept-prod',
+        // H-08/C-03: mandatory on create — see comment above.
+        base_salary_cents: 100_000,
+        salary_kind: 'daily',
       },
     })
     expect(triggerMutation.ok()).toBe(true)
@@ -228,6 +236,9 @@ test.describe('Audit log page (D-04 UAT)', () => {
         name: 'Date Filter Test',
         employee_code: `DTE${Date.now()}`,
         department_id: 'dept-prod',
+        // H-08/C-03: mandatory on create — see comment above.
+        base_salary_cents: 100_000,
+        salary_kind: 'daily',
       },
     })
     expect(mutation.ok()).toBe(true)

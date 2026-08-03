@@ -19,6 +19,13 @@ pub struct ReportParamsRequest {
     pub to_date: String,
     pub period_type: String,
     pub department_ids: Option<Vec<String>>,
+    /// C-05: kept for API/audit-log compatibility but no longer gates which
+    /// rows appear. `status` used to be a report filter, which meant an
+    /// employee whose status flipped to 'inactive' mid-period vanished from
+    /// the report along with the pay they were owed for days they DID work.
+    /// Employment validity is now decided by `hire_date`/`terminated_on`
+    /// against the period (see reports/service.rs), so an inactive employee
+    /// with worked days in the period appears regardless of this flag.
     pub include_inactive: Option<bool>,
     pub employee_id: Option<String>,
     pub shift_type: Option<String>,

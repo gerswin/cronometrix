@@ -1147,11 +1147,22 @@ async fn dias_ausentes_weekday_only() {
     );
 }
 
-/// Sanity check: include_inactive=false (default) excludes inactive employees
-/// even if they have daily_records in the period. include_inactive=true brings
-/// them back. Acts as a guard that the predicate is parameterized correctly.
+/// C-05 supersedes this test's original premise. It used to assert that
+/// `include_inactive=false` (default) excludes an inactive employee EVEN IF
+/// they have daily_records in the period — i.e. it encoded the defect being
+/// fixed: filtering the report by `status='active'` made a worker who
+/// clocked in, and is owed pay for it, disappear entirely once someone
+/// flipped their status to inactive.
+///
+/// C-05's fix removes `status` as a report gate outright — employment
+/// validity is now decided by `hire_date`/`terminated_on` vs. the period,
+/// not by the current-state `status` flag (see reports/service.rs). So an
+/// inactive employee with worked days in the period must appear REGARDLESS
+/// of `include_inactive`; this test now guards that `include_inactive` no
+/// longer participates in row inclusion (status still gates other things,
+/// like which employees the UI offers in a picker — just not this).
 #[tokio::test]
-async fn include_inactive_filter_works() {
+async fn status_no_longer_gates_the_report_employment_window_does() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
@@ -1188,8 +1199,15 @@ async fn include_inactive_filter_works() {
     )
     .await;
     let rows = body["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "default excludes inactive");
-    assert_eq!(rows[0]["employee_id"], active);
+    assert_eq!(
+        rows.len(),
+        2,
+        "C-05: an inactive employee with worked days in the period must \
+         still appear (and be paid) even with include_inactive=false: {:?}",
+        rows
+    );
+    assert!(rows.iter().any(|r| r["employee_id"] == active));
+    assert!(rows.iter().any(|r| r["employee_id"] == inactive));
 
     let (_, body) = post_report(
         &app,
@@ -1203,5 +1221,190 @@ async fn include_inactive_filter_works() {
     )
     .await;
     let rows = body["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 2, "include_inactive=true brings inactive back");
+    assert_eq!(
+        rows.len(),
+        2,
+        "include_inactive=true must not change the result: status is no \
+         longer a report gate either way"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// H-08: a row with no salary_kind must surface as a data error, never be
+// silently treated as Daily. `seed_employee` sets salary_kind='daily' for
+// every other test in this file (see fixtures/reports/seed.rs); these two
+// tests clear it back to NULL to prove compute_report refuses to guess.
+// -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn missing_salary_kind_surfaces_as_data_error_not_daily_default() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+
+    let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
+    let emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
+    db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET salary_kind = NULL WHERE id = ?1",
+            libsql::params![emp.clone()],
+        )
+        .await
+        .unwrap();
+    let _dr = seed_daily_record(&db, &emp, &dept, "2026-04-15", "day", 480, 0, 0, 0, None).await;
+
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
+    let (status, body) = post_report(
+        &app,
+        &token,
+        json!({
+            "period_type": "custom",
+            "from_date": "2026-04-15",
+            "to_date": "2026-04-15",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "missing salary_kind must fail the report, not silently pay as Daily: {:?}",
+        body
+    );
+    assert_eq!(body["error"]["code"], "SALARY_KIND_MISSING");
+}
+
+#[tokio::test]
+async fn vacation_with_missing_salary_kind_also_surfaces_as_data_error() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+
+    let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
+    let emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
+    db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET salary_kind = NULL WHERE id = ?1",
+            libsql::params![emp.clone()],
+        )
+        .await
+        .unwrap();
+    let leave = seed_leave(&db, &emp, "vacation", "2026-04-15", "2026-04-15", &admin).await;
+    let _dr = seed_daily_record(
+        &db,
+        &emp,
+        &dept,
+        "2026-04-15",
+        "day",
+        0,
+        0,
+        0,
+        0,
+        Some(&leave),
+    )
+    .await;
+
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
+    let (status, body) = post_report(
+        &app,
+        &token,
+        json!({
+            "period_type": "custom",
+            "from_date": "2026-04-15",
+            "to_date": "2026-04-15",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "vacation pay with missing salary_kind must also fail, not silently pay as Daily: {:?}",
+        body
+    );
+    assert_eq!(body["error"]["code"], "SALARY_KIND_MISSING");
+}
+
+/// H-08 end-to-end: a Monthly-kind employee's `base_salary_cents` is pro-rated
+/// by /30, not paid whole for a single day worked — this is the exact defect
+/// the task closes (before SalaryKind existed, every base_salary_cents was
+/// treated as a daily rate, so a monthly figure paid a full month per day).
+#[tokio::test]
+async fn monthly_salary_kind_is_pro_rated_through_the_full_report_pipeline() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+
+    let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
+    let emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
+    db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET salary_kind = 'monthly' WHERE id = ?1",
+            libsql::params![emp.clone()],
+        )
+        .await
+        .unwrap();
+    let _dr = seed_daily_record(&db, &emp, &dept, "2026-04-15", "day", 480, 0, 0, 0, None).await;
+
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
+    let (status, body) = post_report(
+        &app,
+        &token,
+        json!({
+            "period_type": "custom",
+            "from_date": "2026-04-15",
+            "to_date": "2026-04-15",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let row = row_for(&body, &emp);
+    // 480 min * 100_000 cents * 1 / (30 * 480) = 100_000 / 30 = 3_333 (truncated).
+    // The pre-H-08 bug would have paid 100_000 (the whole "monthly" figure) for
+    // this single day.
+    assert_eq!(row["work_pay_cents"], 3_333, "monthly base must be /30, not paid whole");
+    assert_eq!(row["total_a_pagar_cents"], 3_333);
+}
+
+/// H-08 end-to-end: an Hourly-kind employee's `base_salary_cents` scales by
+/// the ordinary day's minutes, not treated as a flat daily amount.
+#[tokio::test]
+async fn hourly_salary_kind_scales_by_ordinary_day_through_the_full_report_pipeline() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+
+    let dept = seed_dept(&db, "Eng", 500, 480, "day").await; // dept default irrelevant; employee overrides base+kind below
+    let emp = seed_employee(&db, "E1", "Bob", &dept, "Dev").await;
+    db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE employees SET base_salary_cents = 500, salary_kind = 'hourly' WHERE id = ?1",
+            libsql::params![emp.clone()],
+        )
+        .await
+        .unwrap();
+    let _dr = seed_daily_record(&db, &emp, &dept, "2026-04-15", "day", 480, 0, 0, 0, None).await;
+
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
+    let (status, body) = post_report(
+        &app,
+        &token,
+        json!({
+            "period_type": "custom",
+            "from_date": "2026-04-15",
+            "to_date": "2026-04-15",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let row = row_for(&body, &emp);
+    // 480 min * 500 cents/hr * 480 / (60 * 480) = 480 * 500 / 60 = 4_000 (8h * $5.00).
+    assert_eq!(row["work_pay_cents"], 4_000, "hourly base must scale by the 8h ordinary day");
+    assert_eq!(row["total_a_pagar_cents"], 4_000);
 }

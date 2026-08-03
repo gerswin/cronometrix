@@ -76,6 +76,12 @@ export const SEL = {
   empActionEdit: (id: string) => `employee-edit-${id}`,
   empActionDeactivate: (id: string) => `employee-deactivate-${id}`,
 
+  // Salary unit (H-08 / C-03) — POST /employees requires both base_salary_cents
+  // (a positive amount) and salary_kind; the unit <select> has no preselected
+  // value on purpose (see new-employee-dialog.tsx).
+  newEmpBaseSalary: 'new-employee-base-salary',
+  newEmpSalaryKind: 'new-employee-salary-kind',
+
   // Reports page
   reportsPage: 'reports-page',
   reportPeriodTab: (period: 'biweekly' | 'weekly' | 'monthly') =>

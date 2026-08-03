@@ -227,6 +227,21 @@ pub async fn create_override(
                     let employee_id: String = daily_record.get(0)?;
                     let anchor_date: String = daily_record.get(1)?;
 
+                    // C-04: revoke any currently-active override for this record
+                    // before inserting the new one, in the same transaction. Doing
+                    // this as two separate operations would leave a window with no
+                    // active override at all; skipping it entirely would make the
+                    // legitimate "replace an override" action fail once the unique
+                    // partial index (idx_overrides_one_active_per_record) is in
+                    // place. Never DELETE — the revoked row is evidence.
+                    tx.statement(
+                        "UPDATE daily_record_overrides \
+                            SET status = 'revoked', updated_at = unixepoch() \
+                          WHERE daily_record_id = ?1 AND status = 'active' AND deleted_at IS NULL",
+                        libsql::params![daily_record_id.clone()],
+                    )
+                    .await?;
+
                     tx.statement(
                         "INSERT INTO daily_record_overrides
                            (id, daily_record_id, override_work_minutes, override_entry_at, override_exit_at,
