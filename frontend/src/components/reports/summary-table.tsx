@@ -15,7 +15,7 @@ import type {
   EmployeeReportRow,
   Aggregates,
 } from '@/types/api'
-import { fmtMoney, fmtMoneyNegative } from '@/lib/format/currency'
+import { fmtMoney } from '@/lib/format/currency'
 
 type RowKind = 'data' | 'subtotal' | 'grandtotal'
 
@@ -85,6 +85,11 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
     [payload],
   )
 
+  // Critical 2 fix: the 'Descuento Retraso' (late_deduction_cents) column
+  // was removed. C-02 stopped subtracting it from 'Total a Pagar', so
+  // rendering it as a negative amount right before the total column no
+  // longer summed correctly. 'Min Retraso' still carries the discipline
+  // metric this column existed to surface.
   const columns: ColumnDef<TableRow>[] = useMemo(
     () => [
       { accessorKey: 'cedula', header: 'Cédula' },
@@ -135,11 +140,6 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
         accessorKey: 'rest_day_surcharge_cents',
         header: 'Recargo Domingo',
         cell: ({ getValue }) => fmtMoney(getValue() as number),
-      },
-      {
-        accessorKey: 'late_deduction_cents',
-        header: 'Descuento Retraso',
-        cell: ({ getValue }) => fmtMoneyNegative(getValue() as number),
       },
       {
         accessorKey: 'total_a_pagar_cents',

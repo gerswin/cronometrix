@@ -18,10 +18,12 @@ export function fmtMoney(cents: number | null | undefined): string {
 }
 
 /**
- * Format USD cents as a negative amount (`-$31.25`). Used for the
- * `Descuento por Retraso` column (D-05) which is always shown as a
- * negative line item even though backend stores it as a positive
- * magnitude.
+ * Format USD cents as a negative amount (`-$31.25`). Formerly used for the
+ * `Descuento por Retraso` column (D-05); that column was removed from every
+ * report output (Critical 2 fix — it was rendered as a negative deduction
+ * immediately before the total even after C-02 stopped subtracting it,
+ * making the sheet not add up). Kept as a general-purpose formatter; no
+ * report code calls it as of this fix.
  */
 export function fmtMoneyNegative(cents: number | null | undefined): string {
   if (cents === null || cents === undefined) return '—'

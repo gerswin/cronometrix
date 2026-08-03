@@ -7,7 +7,8 @@
 //! - Sheet name = 'Resumen'.
 //! - Branding header rows 0-2 (D-28) — title, client_name+RIF, period+generated_at.
 //! - Branding header dashes when tenant_info empty (D-28 fallback).
-//! - 20-column header row at row 4 (D-14).
+//! - 19-column header row at row 4 (D-14; Critical 2 dropped the
+//!   'Descuento Retraso' money column).
 //! - Per-dept subtotal rows + grand total row (D-27).
 //! - Anomaly column data preserved (D-16 column population — tint is visual-only).
 //! - RBAC: Viewer 403, Admin 200.
@@ -406,7 +407,6 @@ async fn excel_column_headers_present() {
         "Pago Extra",
         "Prima Nocturna",
         "Recargo Domingo",
-        "Descuento Retraso",
         "Total a Pagar",
         "Días IVSS",
         "Días Vacación",
@@ -559,7 +559,9 @@ async fn excel_anomaly_data_present() {
     let mut found = false;
     for r in 5..(n_rows as u32) {
         if cell_string(&range, r, 1) == "Bob Anomaly" {
-            let codes = cell_string(&range, r, 19);
+            // Critical 2 fix: 'Descuento Retraso' (col 13) was removed, so
+            // the anomaly column shifted from 19 to 18.
+            let codes = cell_string(&range, r, 18);
             assert!(
                 codes.contains("MISSING_ENTRY"),
                 "missing MISSING_ENTRY in: {:?}",
