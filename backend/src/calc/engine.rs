@@ -73,8 +73,37 @@ pub fn compute_daily_record(input: &EngineInput) -> DailyRecordOutput {
                 anomalies.push(a);
             }
             let work = (raw_minutes - lunch_ded).max(0);
-            let late = (((ent - nominal_start).max(0)) / 60).max(0);
-            let early = (((nominal_end - exi).max(0)) / 60).max(0);
+
+            // H-01: the configured tolerance never affected lateness — it only
+            // ever widened the event-capture window (calc/overnight.rs). With a
+            // 10-minute tolerance, entering at 08:01 produced late = 1.
+            //
+            // The rule is a CLIFF, not a subtraction (QA-GUIDE §21.2, cases
+            // R1.1-R1.8): inside the grace period lateness is zero; past the
+            // grace period it is the FULL amount measured from the nominal
+            // shift boundary, not the excess over the grace. With tol=10 and
+            // bonus=5, entering at 08:16 is 16 minutes of lateness, not 1.
+            //
+            // The bonus is grace *additional* to the tolerance, not a
+            // replacement for it.
+            let late_grace_s = (input.rules.late_arrival_tolerance_min + input.rules.bonus_minutes)
+                * 60;
+            let raw_late_s = (ent - nominal_start).max(0);
+            let late = if raw_late_s > late_grace_s {
+                (raw_late_s / 60).max(0)
+            } else {
+                0
+            };
+
+            let early_grace_s = (input.rules.early_departure_tolerance_min
+                + input.rules.bonus_minutes)
+                * 60;
+            let raw_early_s = (nominal_end - exi).max(0);
+            let early = if raw_early_s > early_grace_s {
+                (raw_early_s / 60).max(0)
+            } else {
+                0
+            };
             (work, late, early)
         }
     };
