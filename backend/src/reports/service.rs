@@ -41,22 +41,19 @@ use crate::{
 /// H-08: a row cannot be monetized without a valid `salary_kind`. Callers use
 /// this only at the money-math call sites (the leave branches that never pay —
 /// medical/unpaid/manual — don't call it, since no monetization happens there).
-/// A missing/unrecognized unit surfaces as a data error; it is never assumed
-/// to be `Daily` — that assumption is exactly how the H-08 ambiguity came
-/// back in the first place.
-fn require_salary_kind(
-    raw: Option<&str>,
-    nombre: &str,
-    cedula: &str,
-) -> Result<SalaryKind, AppError> {
+/// A missing/unrecognized unit is never assumed to be `Daily` — that
+/// assumption is exactly how the H-08 ambiguity came back in the first place.
+///
+/// I7: this used to return `Result` and get `?`-propagated, so ONE employee
+/// with a NULL `salary_kind` produced a 500 for the whole report — every
+/// OTHER employee's payroll became uncomputable because of one unrelated
+/// row. A missing `hire_date`, by contrast, only ever raised a per-row
+/// anomaly (`HIRE_DATE_MISSING`). Returning `Option` instead lets the caller
+/// degrade the same way: zero this row's money and attach
+/// `SALARY_KIND_MISSING` to its `anomaly_codes`, while the rest of the
+/// report — every other employee, every other row — computes normally.
+fn require_salary_kind(raw: Option<&str>) -> Option<SalaryKind> {
     raw.and_then(SalaryKind::from_db_str)
-        .ok_or_else(|| AppError::CalcError {
-            code: "SALARY_KIND_MISSING",
-            message: format!(
-                "Employee '{nombre}' (cédula {cedula}) has no valid salary_kind \
-                 (hourly/daily/monthly) set; payroll cannot be computed until it is set."
-            ),
-        })
 }
 
 /// Internal accumulator: one entry per employee while we sweep daily_records
@@ -191,6 +188,38 @@ pub async fn compute_report(
     // `include_inactive` is kept on the request/audit payload for API
     // compatibility but no longer participates in this predicate — `status`
     // still governs employee-picker UI elsewhere, just not payroll validity.
+
+    // I5: C-05 removed `status` as a universe gate but did not replace the
+    // bound it was implicitly providing — without this, someone deactivated
+    // in 2024 produces an all-zeros row in every 2026 report forever, since
+    // nothing else ever excludes them. Bound the universe to employment that
+    // OVERLAPS [from..to] instead: these predicates read e.hire_date /
+    // e.terminated_on, columns of `employees` (not `daily_records`), so they
+    // are safe in the WHERE-built `predicates` list — unlike `shift_type`
+    // below, which had to move into the JOIN's ON clause because it reads
+    // dr.*. NULL means "unbounded on that side" (hire date unknown / still
+    // employed), never "exclude": an employee with a NULL column on either
+    // side must not be dropped by these predicates.
+    let from_epoch = from
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is always a valid time")
+        .and_utc()
+        .timestamp();
+    let to_epoch = to
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is always a valid time")
+        .and_utc()
+        .timestamp();
+    predicates.push(format!(
+        "(e.terminated_on IS NULL OR e.terminated_on >= ?{})",
+        values.len() + 1
+    ));
+    values.push(libsql::Value::Integer(from_epoch));
+    predicates.push(format!(
+        "(e.hire_date IS NULL OR e.hire_date <= ?{})",
+        values.len() + 1
+    ));
+    values.push(libsql::Value::Integer(to_epoch));
 
     if let Some(dept_ids) = &params.department_ids {
         if !dept_ids.is_empty() {
@@ -391,17 +420,30 @@ pub async fn compute_report(
                 // without an overlay are documented as a v1 limitation —
                 // they produce only counter increments (see W-5 block below).
                 entry.leave_dates.insert(anchor_date);
-                let salary_kind =
-                    require_salary_kind(salary_kind_str_opt.as_deref(), &nombre, &cedula)?;
-                let work_pay = money::work_pay_cents(
-                    ordinary_daily_minutes,
-                    base_salary_cents,
-                    ordinary_daily_minutes,
-                    salary_kind,
-                );
-                entry.agg.work_pay_cents = entry.agg.work_pay_cents.saturating_add(work_pay);
-                entry.agg.total_a_pagar_cents =
-                    entry.agg.total_a_pagar_cents.saturating_add(work_pay);
+                match require_salary_kind(salary_kind_str_opt.as_deref()) {
+                    Some(salary_kind) => {
+                        let work_pay = money::work_pay_cents(
+                            ordinary_daily_minutes,
+                            base_salary_cents,
+                            ordinary_daily_minutes,
+                            salary_kind,
+                        );
+                        entry.agg.work_pay_cents =
+                            entry.agg.work_pay_cents.saturating_add(work_pay);
+                        entry.agg.total_a_pagar_cents =
+                            entry.agg.total_a_pagar_cents.saturating_add(work_pay);
+                    }
+                    None => {
+                        // I7: this row does not monetize — amounts stay at
+                        // zero, exactly like a day with no daily_record.
+                        // Never assume `Daily` to keep going; that is the
+                        // H-08 defect verbatim (a monthly salary paid every
+                        // day).
+                        entry
+                            .anomaly_codes_set
+                            .insert("SALARY_KIND_MISSING".to_string());
+                    }
+                }
             }
             Some("unpaid") => {
                 entry.leave_dates.insert(anchor_date);
@@ -410,9 +452,27 @@ pub async fn compute_report(
                 entry.leave_dates.insert(anchor_date);
             }
             _ => {
-                // Standard work day money math.
-                let salary_kind =
-                    require_salary_kind(salary_kind_str_opt.as_deref(), &nombre, &cedula)?;
+                // Standard work day. I7: a missing salary_kind must not fail
+                // the whole report over one row — this used to `?`-propagate
+                // AppError::CalcError, so ONE employee with a NULL
+                // salary_kind produced a 500 for every OTHER employee too. It
+                // now degrades to a per-row anomaly, the same treatment
+                // HIRE_DATE_MISSING already gets: money amounts stay at zero
+                // (`salary_kind_opt` is threaded through as `None` below,
+                // never assumed to be `Daily` — that assumption is the H-08
+                // defect verbatim) while everything computed directly from
+                // daily_records (minutes worked, late minutes, days_worked)
+                // is not "invented" data and still accumulates normally —
+                // skipping it would falsely mark a day someone demonstrably
+                // worked as an absence in the días_ausentes loop below, over
+                // an unrelated payroll-config gap.
+                let salary_kind_opt = require_salary_kind(salary_kind_str_opt.as_deref());
+                if salary_kind_opt.is_none() {
+                    entry
+                        .anomaly_codes_set
+                        .insert("SALARY_KIND_MISSING".to_string());
+                }
+
                 // C-01: `overtime_minutes` is a SUBSET of the worked minutes
                 // (calc/engine.rs:82). Paying the full total at the ordinary
                 // rate and ALSO adding the overtime slice at 150% charges every
@@ -424,12 +484,6 @@ pub async fn compute_report(
                 // is H-07, out of scope here; this comment is for the next
                 // reader who wonders why the two can disagree.
                 let ordinary_min = (effective_work_min - overtime_minutes).max(0);
-                let work_pay = money::work_pay_cents(
-                    ordinary_min,
-                    base_salary_cents,
-                    ordinary_daily_minutes,
-                    salary_kind,
-                );
                 // Important 2: an overtime minute on a premium day earns the
                 // Art. 118 overtime surcharge (+50%) on top of the
                 // ALREADY-LOADED hour (night +30% / rest day +50%), not a
@@ -441,60 +495,81 @@ pub async fn compute_report(
                 let day_premium_pct = 100
                     + if day_shift_type == "night" { 30 } else { 0 }
                     + if is_rest_day_worked == 1 { 50 } else { 0 };
-                let ot_pay = money::ot_pay_cents(
-                    overtime_minutes,
-                    base_salary_cents,
-                    ordinary_daily_minutes,
-                    salary_kind,
-                    day_premium_pct,
-                );
-                // W-6: night premium gates on dr.shift_type (per-day actual
-                // shift), NOT departments.shift_type. The engine's per-day
-                // output is authoritative for what actually happened.
-                //
-                // Important 2: uses `ordinary_min`, NOT `effective_work_min`
-                // — the overtime slice's night premium is already folded
-                // into `ot_pay` above (multiplicatively via `day_premium_pct`).
-                // Passing the full effective minutes here would additively
-                // double-apply the night premium to the overtime slice on
-                // top of that. When there is no overtime, `ordinary_min ==
-                // effective_work_min`, so the ordinary-hours case (no OT) is
-                // byte-for-byte unchanged.
-                let night = if day_shift_type == "night" {
-                    money::night_premium_cents(
-                        ordinary_min,
-                        base_salary_cents,
-                        ordinary_daily_minutes,
-                        salary_kind,
-                    )
-                } else {
-                    0
+
+                // I7: money math only runs when salary_kind is present; a
+                // `None` row keeps every cents figure at 0 rather than
+                // guessing a unit.
+                let (work_pay, ot_pay, night, rest, late, total) = match salary_kind_opt {
+                    Some(salary_kind) => {
+                        let work_pay = money::work_pay_cents(
+                            ordinary_min,
+                            base_salary_cents,
+                            ordinary_daily_minutes,
+                            salary_kind,
+                        );
+                        let ot_pay = money::ot_pay_cents(
+                            overtime_minutes,
+                            base_salary_cents,
+                            ordinary_daily_minutes,
+                            salary_kind,
+                            day_premium_pct,
+                        );
+                        // W-6: night premium gates on dr.shift_type (per-day
+                        // actual shift), NOT departments.shift_type. The
+                        // engine's per-day output is authoritative for what
+                        // actually happened.
+                        //
+                        // Important 2: uses `ordinary_min`, NOT
+                        // `effective_work_min` — the overtime slice's night
+                        // premium is already folded into `ot_pay` above
+                        // (multiplicatively via `day_premium_pct`). Passing
+                        // the full effective minutes here would additively
+                        // double-apply the night premium to the overtime
+                        // slice on top of that. When there is no overtime,
+                        // `ordinary_min == effective_work_min`, so the
+                        // ordinary-hours case (no OT) is byte-for-byte
+                        // unchanged.
+                        let night = if day_shift_type == "night" {
+                            money::night_premium_cents(
+                                ordinary_min,
+                                base_salary_cents,
+                                ordinary_daily_minutes,
+                                salary_kind,
+                            )
+                        } else {
+                            0
+                        };
+                        let rest = if is_rest_day_worked == 1 {
+                            money::rest_day_surcharge_cents(
+                                ordinary_min,
+                                base_salary_cents,
+                                ordinary_daily_minutes,
+                                salary_kind,
+                            )
+                        } else {
+                            0
+                        };
+                        // C-02: `work_minutes` is measured between the real
+                        // entry and exit (calc/engine.rs:70-76), so arriving
+                        // late already shrinks the paid minutes. `late` is
+                        // kept as an informational metric — reports/excel.rs
+                        // no longer renders it as its own money column
+                        // (Critical 2 removed that column entirely; the "Min
+                        // Retraso" minutes column carries this metric
+                        // instead) — but it must NOT be subtracted from the
+                        // total again; that would charge the same lateness
+                        // twice.
+                        let late = money::late_deduction_cents(
+                            late_minutes,
+                            base_salary_cents,
+                            ordinary_daily_minutes,
+                            salary_kind,
+                        );
+                        let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, 0);
+                        (work_pay, ot_pay, night, rest, late, total)
+                    }
+                    None => (0, 0, 0, 0, 0, 0),
                 };
-                let rest = if is_rest_day_worked == 1 {
-                    money::rest_day_surcharge_cents(
-                        ordinary_min,
-                        base_salary_cents,
-                        ordinary_daily_minutes,
-                        salary_kind,
-                    )
-                } else {
-                    0
-                };
-                // C-02: `work_minutes` is measured between the real entry and
-                // exit (calc/engine.rs:70-76), so arriving late already
-                // shrinks the paid minutes. `late` is kept as an informational
-                // metric — reports/excel.rs no longer renders it as its own
-                // money column (Critical 2 removed that column entirely; the
-                // "Min Retraso" minutes column carries this metric instead)
-                // — but it must NOT be subtracted from the total again; that
-                // would charge the same lateness twice.
-                let late = money::late_deduction_cents(
-                    late_minutes,
-                    base_salary_cents,
-                    ordinary_daily_minutes,
-                    salary_kind,
-                );
-                let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, 0);
 
                 entry.agg.work_min = entry.agg.work_min.saturating_add(effective_work_min);
                 entry.agg.ot_min = entry.agg.ot_min.saturating_add(overtime_minutes);
@@ -554,6 +629,24 @@ pub async fn compute_report(
     // C-05: `e.status` removed as a gate here too, symmetric with the main
     // query above — employment validity for leave-day counts is decided by
     // hire_date/terminated_on, not the current status flag.
+    //
+    // I5: same universe bound as the main query, symmetric for the same
+    // reason — without it, an employee whose employment window does not
+    // overlap [from..to] could still be pulled into `acc` (and thus the
+    // report) purely by way of a leave row whose dates happen to fall in
+    // the period. `e.hire_date` / `e.terminated_on` here too, so this is a
+    // safe WHERE predicate (this query INNER JOINs employees, no LEFT JOIN
+    // to degrade).
+    leave_predicates.push(format!(
+        "(e.terminated_on IS NULL OR e.terminated_on >= ?{})",
+        leave_values.len() + 1
+    ));
+    leave_values.push(libsql::Value::Integer(from_epoch));
+    leave_predicates.push(format!(
+        "(e.hire_date IS NULL OR e.hire_date <= ?{})",
+        leave_values.len() + 1
+    ));
+    leave_values.push(libsql::Value::Integer(to_epoch));
     if let Some(dept_ids) = &params.department_ids {
         if !dept_ids.is_empty() {
             let placeholders: Vec<String> = dept_ids
