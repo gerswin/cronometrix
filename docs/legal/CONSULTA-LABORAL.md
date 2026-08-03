@@ -151,10 +151,11 @@ jornada ordinaria de 480 minutos:
 | 60 min extra, descanso | 60 × 5000 × 150 × 150 / (100 × 100 × 480) | 1 406 |
 | Mensual 1 500,00, jornada completa | 480 × 150000 / (30 × 480) | 5 000 |
 
-El truncamiento es siempre hacia abajo, nunca redondeo. Con hasta cuatro
-componentes por día, eso favorece sistemáticamente al patrono en unos pocos
-céntimos. **Si prefiere redondeo simétrico, díganoslo** — es un cambio de una
-línea y también nos interesa su criterio sobre esto.
+Cada componente aplica **redondeo simétrico** (medio céntimo hacia arriba).
+Antes truncaba hacia abajo, lo que con hasta cuatro componentes por día
+favorecía sistemáticamente al patrono en unos pocos céntimos. Se corrigió el
+2026-08-03 por decisión propia, no por exigencia legal conocida — **si
+considera que la norma impone otro criterio de redondeo, díganoslo.**
 
 ---
 
