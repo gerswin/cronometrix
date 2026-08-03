@@ -33,7 +33,7 @@ Los cinco críticos fueron **verificados** contra el código actual — `docs/au
 - **Tardanza:** se paga el tiempo realmente trabajado y se elimina el descuento monetario. `late_minutes` sigue registrándose como métrica de disciplina. Razón: el salario de los minutos no trabajados no se causa; una deducción punitiva adicional sería doble sanción, y la LOTTT ya da el remedio disciplinario (art. 79; Reglamento art. 38). **Pendiente de confirmación por abogado laboral venezolano** — la fuente es doctrina de divulgación, no jurisprudencia.
 - **Salario vacío:** se rechaza. Sin herencia departamental.
 - **Moneda:** el salario se **calcula en USD** y se **liquida en VES**. Eso satisface el curso legal del art. 123; no hay problema de moneda que resolver en el código. Lo que sí falta —tasa y fecha de conversión, exigibles en el recibo del art. 106— vive en el sistema de nómina de destino, no en Cronometrix. El export debe decirlo para que nadie tome el número en USD por un recibo.
-- **Divisor mensual:** `/30`. Es la convención venezolana de salario diario. **Confirmar con contador o abogado laboral antes de facturar con esta lógica.**
+- **Divisor mensual:** `/30`. **No es convención: es el artículo 121 de la LOTTT**, que define el salario diario como la treintava parte de la remuneración mensual cuando el salario se estipula por mes (y el salario por hora como el diario entre las horas de la jornada). Localizado el 2026-08-03; queda por confirmar si el 121 aplica a remunerar días trabajados o solo a prestaciones. Ver `docs/legal/CONSULTA-LABORAL.md`.
 
 ---
 
