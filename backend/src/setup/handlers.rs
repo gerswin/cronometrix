@@ -53,6 +53,34 @@ pub struct SetupInitRequest {
 /// transacción del escritor serializado. Un `SELECT COUNT(*)` previo por otra
 /// conexión NO cierra la carrera: entre lectura y escritura corre el hash
 /// Argon2, que abre una ventana de cientos de milisegundos.
+///
+/// (Argon2 DoS follow-up) `/setup/init` is unauthenticated and this backend
+/// has no rate limiting anywhere. Both checks below MUST stay present at the
+/// same time — they defend against different things and neither one alone is
+/// enough:
+///   1. The cheap `SELECT COUNT(*)` fast-path immediately below is a COST
+///      GATE ONLY. It rejects an already-initialized system before we ever
+///      touch Argon2, so a flood of requests against an initialized install
+///      can't turn this route into a hashing grinder that starves the tokio
+///      workers (and, transitively, the serialized `db_write` task — see
+///      DbWriteQueue::DEFAULT_ENQUEUE_TIMEOUT). It does NOT close the
+///      bootstrap race; two concurrent first-time requests can both read
+///      count == 0 here.
+///   2. The in-transaction `SELECT COUNT(*)` + INSERT inside `db_write.transact`
+///      further down is what actually closes that race, because it runs
+///      serialized on the single writer. Do NOT remove it and do NOT treat
+///      step 1 as a replacement for it.
+///
+/// Do not "simplify" this down to one check.
+///
+/// The fast-path read below is routed through `state.db_write.job(...)`
+/// (the writer's own connection, which carries `PRAGMA busy_timeout`) rather
+/// than a bare `state.db.connect()`. An ad hoc connection has no busy_timeout
+/// configured (nothing in this codebase can set one outside the
+/// `check_db_write_queue.py` allowlist) and was observed to intermittently
+/// fail with "database is locked" when racing the writer mid-transaction —
+/// a plain COUNT(*) is microseconds, nowhere near the Argon2 cost the writer
+/// must stay clear of, so sharing its connection for this one read is safe.
 pub async fn setup_init(
     State(state): State<AppState>,
     Json(body): Json<SetupInitRequest>,
@@ -62,9 +90,41 @@ pub async fn setup_init(
         message: e.to_string(),
     })?;
 
+    // Cost-gate fast path (see doc comment above): reject already-initialized
+    // systems on a cheap COUNT before we ever run Argon2. This is intentionally
+    // duplicated with the in-transaction check below, not a substitute for it.
+    let precheck_count: i64 = state
+        .db_write
+        .job("setup.count-check", |conn| {
+            Box::pin(async move {
+                let mut rows = conn.query("SELECT COUNT(*) FROM users", ()).await?;
+                let count = rows
+                    .next()
+                    .await?
+                    .map(|row| row.get::<i64>(0).unwrap_or(0))
+                    .unwrap_or(0);
+                Ok(count)
+            })
+        })
+        .await
+        .map_err(AppError::from)?;
+    if precheck_count > 0 {
+        return Err(AppError::Conflict {
+            code: "SETUP_ALREADY_COMPLETE",
+            message: "System has already been initialized. An admin user already exists."
+                .to_string(),
+        });
+    }
+
     // Argon2 es caro a propósito: se calcula fuera de la transacción para no
     // ocupar el escritor serializado. La comprobación de unicidad ocurre dentro.
-    let password_hash = service::hash_password(&body.password)?;
+    // Runs in spawn_blocking so a hash computation can never occupy an async
+    // worker thread (which would otherwise starve the db_write task sharing
+    // the same runtime — see the DoS follow-up note above).
+    let password = body.password.clone();
+    let password_hash = tokio::task::spawn_blocking(move || service::hash_password(&password))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))??;
     let user_id = Uuid::new_v4().to_string();
     let insert_id = user_id.clone();
 
