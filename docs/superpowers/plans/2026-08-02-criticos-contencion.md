@@ -278,6 +278,23 @@ fn push_without_token_is_left_untouched() {
         "/api/v1/devices/dev-123/push"
     );
 }
+
+/// El caso que hunde una redacción ingenua: si algo sigue al token, el brazo de
+/// descarte NO puede devolver la ruta original. La capa corre antes del ruteo,
+/// así que estas rutas dan 404 pero igual pasan por aquí con el token real.
+#[test]
+fn a_trailing_slash_or_extra_segment_still_hides_the_token() {
+    for path in [
+        "/api/v1/devices/dev-123/push/s3cr3t-t0ken-value/",
+        "/api/v1/devices/dev-123/push/s3cr3t-t0ken-value/extra",
+    ] {
+        let redacted = redact_path(path);
+        assert!(
+            !redacted.contains("s3cr3t"),
+            "token leaked for {path}: {redacted}"
+        );
+    }
+}
 ```
 
 - [ ] **Step 2: Correr y ver que falla**
@@ -296,11 +313,20 @@ En `backend/src/http_trace.rs`, añadir antes de `SafeMakeSpan`:
 /// (`/devices/{id}/push/{token}`). El firmware Hikvision no admite cabeceras
 /// arbitrarias en `httpHosts`, así que el secreto tiene que seguir en la URI;
 /// lo que no puede es sobrevivir en un log.
+/// Una vez encontrado `/push/`, redacta SIEMPRE. El brazo de descarte no puede
+/// re-emitir un token que sí estaba presente: la capa se monta en el router más
+/// externo (`main.rs:484`), así que el span se construye ANTES del ruteo — una
+/// ruta con barra final o segmento extra da 404, pero ya escribió el secreto.
 pub fn redact_path(path: &str) -> String {
+    // `/push/` se busca como subcadena y la capa es global. Hoy la ruta de push
+    // del device es la única que lo contiene; si algún día se añade otra, esta
+    // función le quitará observabilidad sin que nadie lo decida.
     match path.rsplit_once("/push/") {
-        Some((prefix, token)) if !token.is_empty() && !token.contains('/') => {
-            format!("{prefix}/push/[redacted]")
-        }
+        Some((prefix, rest)) if !rest.is_empty() => match rest.split_once('/') {
+            // Token más segmentos extra: se redacta el token, se conserva el resto.
+            Some((_token, tail)) => format!("{prefix}/push/[redacted]/{tail}"),
+            None => format!("{prefix}/push/[redacted]"),
+        },
         _ => path.to_string(),
     }
 }
