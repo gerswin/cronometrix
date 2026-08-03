@@ -1,6 +1,67 @@
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+/// Unit in which `base_salary_cents` is expressed (H-08).
+///
+/// Before this type existed there was none: `money.rs` assumed "pay for one
+/// ordinary day" while the UI only said "Sueldo Base (USD)". A monthly salary
+/// entered there paid a full month for every single day worked — the period
+/// was multiplied by ~30.
+///
+/// Serializes/deserializes as the lowercase strings that match the
+/// `salary_kind` CHECK constraint added in migration 024:
+/// `"hourly"` | `"daily"` | `"monthly"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SalaryKind {
+    Hourly,
+    Daily,
+    Monthly,
+}
+
+impl SalaryKind {
+    /// The DB TEXT representation, matching migration 024's CHECK constraint.
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            SalaryKind::Hourly => "hourly",
+            SalaryKind::Daily => "daily",
+            SalaryKind::Monthly => "monthly",
+        }
+    }
+
+    /// Parse the DB TEXT column into a `SalaryKind`. Returns `None` for
+    /// anything else, including a NULL column (mapped to `None` by the
+    /// caller before this is reached) — a missing/unrecognized unit must
+    /// surface as a data error, never silently become a default (H-08).
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "hourly" => Some(SalaryKind::Hourly),
+            "daily" => Some(SalaryKind::Daily),
+            "monthly" => Some(SalaryKind::Monthly),
+            _ => None,
+        }
+    }
+
+    /// Multiplier/divisor pair that brings `base_salary_cents` to "one
+    /// ordinary day", returned separately on purpose: the caller builds ONE
+    /// fraction with them. Pre-computing a daily salary would introduce an
+    /// extra division and lose up to 29 cents/day in integer-cents math —
+    /// exactly what `money.rs`'s "multiply numerators first, divide once"
+    /// rule (money.rs:3-4) exists to avoid.
+    ///
+    /// - `Daily` -> base as-is
+    /// - `Monthly` -> base / 30 (Venezuelan daily-salary convention; pending
+    ///   accounting confirmation)
+    /// - `Hourly` -> base * ordinary_daily_minutes / 60
+    pub(crate) fn to_daily(self, ordinary_daily_minutes: i64) -> (i64, i64) {
+        match self {
+            SalaryKind::Daily => (1, 1),
+            SalaryKind::Monthly => (1, 30),
+            SalaryKind::Hourly => (ordinary_daily_minutes, 60),
+        }
+    }
+}
+
 /// Employee record returned by GET endpoints. Timestamps are ISO 8601 strings per D-13.
 ///
 /// Phase 5 D-30a adds `position` (cargo) and `hire_date` (epoch seconds → ISO date) so the
@@ -38,8 +99,12 @@ pub struct CreateEmployeeRequest {
     pub position: Option<String>,
     /// YYYY-MM-DD; service parses to epoch seconds. Empty string treated as NULL.
     pub hire_date: Option<String>,
-    /// Per-employee base salary in cents. Defaults to 0 when omitted.
+    /// Per-employee base salary in cents. Required (C-03): the service layer
+    /// rejects `None` and non-positive values instead of defaulting to 0.
     pub base_salary_cents: Option<i64>,
+    /// Unit `base_salary_cents` is expressed in (H-08). Required — the
+    /// service layer rejects `None` rather than assuming a unit.
+    pub salary_kind: Option<SalaryKind>,
 }
 
 /// Request body for PATCH /employees/:id. All fields optional; `version` is required
@@ -53,7 +118,12 @@ pub struct UpdateEmployeeRequest {
     pub position: Option<String>,
     /// YYYY-MM-DD; service parses to epoch seconds. Empty string treated as NULL clear.
     pub hire_date: Option<String>,
+    /// A `Some(salary)` with `salary <= 0` is rejected with `SALARY_INVALID`
+    /// (C-03) — never silently coerced to `None`/no-op.
     pub base_salary_cents: Option<i64>,
+    /// Unit `base_salary_cents` is expressed in (H-08). Optional on update —
+    /// omit to leave the employee's existing unit unchanged.
+    pub salary_kind: Option<SalaryKind>,
     pub version: i64,
 }
 

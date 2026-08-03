@@ -95,6 +95,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "023_raw_payload_rename",
         include_str!("migrations/023_raw_payload_rename.sql"),
     ),
+    (
+        "024_employee_salary_kind",
+        include_str!("migrations/024_employee_salary_kind.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded

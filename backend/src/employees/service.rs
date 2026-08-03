@@ -102,13 +102,31 @@ pub async fn create_queued(
         None => libsql::Value::Null,
     };
 
-    let salary = req.base_salary_cents.unwrap_or(0);
+    // C-03: an absent salary is NOT zero. The UI promised a department-level
+    // inheritance the backend never implemented, so the old default silently
+    // produced zero-pay payroll.
+    let salary = req.base_salary_cents.ok_or_else(|| AppError::Validation {
+        code: "SALARY_REQUIRED",
+        message: "base_salary_cents is required and must be greater than zero".to_string(),
+    })?;
+    if salary <= 0 {
+        return Err(AppError::Validation {
+            code: "SALARY_INVALID",
+            message: "base_salary_cents must be greater than zero".to_string(),
+        });
+    }
+    // H-08: without an explicit unit the amount is uninterpretable.
+    let salary_kind = req.salary_kind.ok_or_else(|| AppError::Validation {
+        code: "SALARY_KIND_REQUIRED",
+        message: "salary_kind is required: one of hourly, daily, monthly".to_string(),
+    })?;
+
     let result = state
         .db_write
         .statement(
             "employees.create",
-            "INSERT INTO employees (id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, version, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, 1, unixepoch(), unixepoch())",
+            "INSERT INTO employees (id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, salary_kind, version, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, ?8, 1, unixepoch(), unixepoch())",
             vec![
                 libsql::Value::Text(id.clone()),
                 libsql::Value::Text(req.employee_code.clone()),
@@ -117,6 +135,7 @@ pub async fn create_queued(
                 libsql::Value::Text(position),
                 hire_date_value,
                 libsql::Value::Integer(salary),
+                libsql::Value::Text(salary_kind.as_db_str().to_string()),
             ],
         )
         .await;
@@ -304,8 +323,21 @@ pub async fn update_queued(
         values.push(val);
     }
     if let Some(salary) = req.base_salary_cents {
+        // C-03: a `Some(salary)` with salary <= 0 is rejected, not silently
+        // accepted — a zero/negative salary is exactly the ambiguous "no
+        // salary" state this task closes off.
+        if salary <= 0 {
+            return Err(AppError::Validation {
+                code: "SALARY_INVALID",
+                message: "base_salary_cents must be greater than zero".to_string(),
+            });
+        }
         sets.push(format!("base_salary_cents = ?{}", values.len() + 1));
         values.push(libsql::Value::Integer(salary));
+    }
+    if let Some(kind) = req.salary_kind {
+        sets.push(format!("salary_kind = ?{}", values.len() + 1));
+        values.push(libsql::Value::Text(kind.as_db_str().to_string()));
     }
 
     if sets.is_empty() {

@@ -56,11 +56,18 @@ pub async fn seed_employee(
     // Migration 018 moved the authoritative payroll salary from the department
     // to employees.base_salary_cents. Inherit the department's value here so
     // report math (which reads e.base_salary_cents) matches the seeded dept.
+    //
+    // H-08: migration 024 added salary_kind with no DEFAULT — a NULL unit is
+    // now a hard data error in compute_report (require_salary_kind). Seeded
+    // employees inherit the department's base_salary_cents, which every
+    // existing test written before H-08 already treats as a per-day rate, so
+    // 'daily' here preserves every hand-calculated money assertion in
+    // reports_test.rs / reports_excel_test.rs unchanged.
     conn.execute(
         "INSERT INTO employees (id, employee_code, name, department_id, status, position, \
-         base_salary_cents, hire_date, version, created_at, updated_at) \
+         base_salary_cents, salary_kind, hire_date, version, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, 'active', ?5, \
-         (SELECT base_salary_cents FROM departments WHERE id = ?4), NULL, 1, unixepoch(), unixepoch())",
+         (SELECT base_salary_cents FROM departments WHERE id = ?4), 'daily', NULL, 1, unixepoch(), unixepoch())",
         params![
             id.clone(),
             code.to_string(),
@@ -85,9 +92,9 @@ pub async fn seed_inactive_employee(
     let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO employees (id, employee_code, name, department_id, status, position, \
-         base_salary_cents, hire_date, version, created_at, updated_at) \
+         base_salary_cents, salary_kind, hire_date, version, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, 'inactive', '', \
-         (SELECT base_salary_cents FROM departments WHERE id = ?4), NULL, 1, unixepoch(), unixepoch())",
+         (SELECT base_salary_cents FROM departments WHERE id = ?4), 'daily', NULL, 1, unixepoch(), unixepoch())",
         params![
             id.clone(),
             code.to_string(),

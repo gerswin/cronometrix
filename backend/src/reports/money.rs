@@ -10,86 +10,114 @@
 //! - Art. 117 — Jornada nocturna: +30% premium on night shifts (D-04, D-31 ADDITIVE)
 //! - Art. 118 — Horas extraordinarias: +50% premium on overtime (D-06)
 //! - Art. 120 — Prima dominical: +50% surcharge on Sunday/rest-day work (D-03)
+//!
+//! H-08: every formula below also takes a `SalaryKind` so `base_salary_cents`
+//! can be normalized to "one ordinary day" as part of the SAME fraction —
+//! never as a separate pre-division (see `SalaryKind::to_daily`'s doc comment
+//! for why that would lose money).
 
-/// Pro-rated salary for the worked minutes: `work_min × base_cents / ord_min`.
+use crate::employees::models::SalaryKind;
+
+/// Pro-rated salary for the worked minutes: `work_min × base_cents / ord_min`,
+/// normalized by `kind` to one ordinary day first.
 /// Returns 0 if `ord_min <= 0` (defensive — misconfigured department).
 pub fn work_pay_cents(
     work_minutes: i64,
     base_salary_cents: i64,
     ordinary_daily_minutes: i64,
+    kind: SalaryKind,
 ) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
     }
+    let (num, den) = kind.to_daily(ordinary_daily_minutes);
     work_minutes
         .checked_mul(base_salary_cents)
-        .map(|p| p / ordinary_daily_minutes)
+        .and_then(|p| p.checked_mul(num))
+        .map(|p| p / (den * ordinary_daily_minutes))
         .unwrap_or(0)
 }
 
 /// Overtime pay at +50% premium (LOTTT Art. 118):
-/// `ot_min × base_cents × 150 / (100 × ord_min)`.
-pub fn ot_pay_cents(ot_minutes: i64, base_salary_cents: i64, ordinary_daily_minutes: i64) -> i64 {
+/// `ot_min × base_cents × 150 / (100 × ord_min)`, normalized by `kind`.
+pub fn ot_pay_cents(
+    ot_minutes: i64,
+    base_salary_cents: i64,
+    ordinary_daily_minutes: i64,
+    kind: SalaryKind,
+) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
     }
+    let (num, den) = kind.to_daily(ordinary_daily_minutes);
     ot_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(150))
-        .map(|p| p / (100 * ordinary_daily_minutes))
+        .and_then(|p| p.checked_mul(num))
+        .map(|p| p / (100 * den * ordinary_daily_minutes))
         .unwrap_or(0)
 }
 
 /// Night premium = +30% ADDITIVE on top of work_pay (D-31, LOTTT Art. 117).
 /// Caller is responsible for gating this on `daily_records.shift_type == "night"`
 /// (W-6 — per-day actual shift, NOT departments.shift_type).
-/// Formula: `work_min × base_cents × 30 / (100 × ord_min)`.
+/// Formula: `work_min × base_cents × 30 / (100 × ord_min)`, normalized by `kind`.
 pub fn night_premium_cents(
     work_minutes: i64,
     base_salary_cents: i64,
     ordinary_daily_minutes: i64,
+    kind: SalaryKind,
 ) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
     }
+    let (num, den) = kind.to_daily(ordinary_daily_minutes);
     work_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(30))
-        .map(|p| p / (100 * ordinary_daily_minutes))
+        .and_then(|p| p.checked_mul(num))
+        .map(|p| p / (100 * den * ordinary_daily_minutes))
         .unwrap_or(0)
 }
 
 /// Rest-day surcharge = +50% (D-03, LOTTT Art. 120).
 /// Caller gates on `daily_records.is_rest_day_worked == 1`.
-/// Formula: `work_min × base_cents × 50 / (100 × ord_min)`.
+/// Formula: `work_min × base_cents × 50 / (100 × ord_min)`, normalized by `kind`.
 pub fn rest_day_surcharge_cents(
     work_minutes: i64,
     base_salary_cents: i64,
     ordinary_daily_minutes: i64,
+    kind: SalaryKind,
 ) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
     }
+    let (num, den) = kind.to_daily(ordinary_daily_minutes);
     work_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(50))
-        .map(|p| p / (100 * ordinary_daily_minutes))
+        .and_then(|p| p.checked_mul(num))
+        .map(|p| p / (100 * den * ordinary_daily_minutes))
         .unwrap_or(0)
 }
 
-/// Late-arrival deduction = pro-rated salary on late minutes (D-05). Returned as
-/// a positive number; caller subtracts. `total_a_pagar_cents` does the subtract.
+/// Late-arrival deduction = pro-rated salary on late minutes (D-05), normalized
+/// by `kind`. Returned as a positive number; caller subtracts.
+/// `total_a_pagar_cents` does the subtract.
 pub fn late_deduction_cents(
     late_minutes: i64,
     base_salary_cents: i64,
     ordinary_daily_minutes: i64,
+    kind: SalaryKind,
 ) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
     }
+    let (num, den) = kind.to_daily(ordinary_daily_minutes);
     late_minutes
         .checked_mul(base_salary_cents)
-        .map(|p| p / ordinary_daily_minutes)
+        .and_then(|p| p.checked_mul(num))
+        .map(|p| p / (den * ordinary_daily_minutes))
         .unwrap_or(0)
 }
 
@@ -120,90 +148,90 @@ mod tests {
     #[test]
     fn work_pay_half_day() {
         // 240 min worked, $1000/day base, 480 min/day → $500.00
-        assert_eq!(work_pay_cents(240, 100_000, 480), 50_000);
+        assert_eq!(work_pay_cents(240, 100_000, 480, SalaryKind::Daily), 50_000);
     }
 
     #[test]
     fn work_pay_zero_minutes() {
-        assert_eq!(work_pay_cents(0, 100_000, 480), 0);
+        assert_eq!(work_pay_cents(0, 100_000, 480, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn work_pay_full_day() {
-        assert_eq!(work_pay_cents(480, 100_000, 480), 100_000);
+        assert_eq!(work_pay_cents(480, 100_000, 480, SalaryKind::Daily), 100_000);
     }
 
     #[test]
     fn work_pay_misconfig_returns_zero() {
         // ord_min == 0 must not divide-by-zero
-        assert_eq!(work_pay_cents(240, 100_000, 0), 0);
-        assert_eq!(work_pay_cents(240, 100_000, -1), 0);
+        assert_eq!(work_pay_cents(240, 100_000, 0, SalaryKind::Daily), 0);
+        assert_eq!(work_pay_cents(240, 100_000, -1, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn ot_pay_one_hour() {
         // 60 OT min at 1.5× over 480-min ordinary day at $1000 → $187.50
-        assert_eq!(ot_pay_cents(60, 100_000, 480), 18_750);
+        assert_eq!(ot_pay_cents(60, 100_000, 480, SalaryKind::Daily), 18_750);
     }
 
     #[test]
     fn ot_pay_zero() {
-        assert_eq!(ot_pay_cents(0, 100_000, 480), 0);
+        assert_eq!(ot_pay_cents(0, 100_000, 480, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn ot_pay_misconfig_returns_zero() {
-        assert_eq!(ot_pay_cents(60, 100_000, 0), 0);
+        assert_eq!(ot_pay_cents(60, 100_000, 0, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn night_premium_full_shift() {
         // 480 min × $1000 × 30 / (100 × 480) = $300.00 (30% of $1000) — ADDITIVE per D-31
-        assert_eq!(night_premium_cents(480, 100_000, 480), 30_000);
+        assert_eq!(night_premium_cents(480, 100_000, 480, SalaryKind::Daily), 30_000);
     }
 
     #[test]
     fn night_premium_half_shift() {
-        assert_eq!(night_premium_cents(240, 100_000, 480), 15_000);
+        assert_eq!(night_premium_cents(240, 100_000, 480, SalaryKind::Daily), 15_000);
     }
 
     #[test]
     fn night_premium_misconfig_returns_zero() {
-        assert_eq!(night_premium_cents(480, 100_000, 0), 0);
+        assert_eq!(night_premium_cents(480, 100_000, 0, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn rest_day_surcharge_full() {
         // 480 min × $1000 × 50 / (100 × 480) = $500.00 (+50%)
-        assert_eq!(rest_day_surcharge_cents(480, 100_000, 480), 50_000);
+        assert_eq!(rest_day_surcharge_cents(480, 100_000, 480, SalaryKind::Daily), 50_000);
     }
 
     #[test]
     fn rest_day_surcharge_zero() {
-        assert_eq!(rest_day_surcharge_cents(0, 100_000, 480), 0);
+        assert_eq!(rest_day_surcharge_cents(0, 100_000, 480, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn rest_day_surcharge_misconfig_returns_zero() {
-        assert_eq!(rest_day_surcharge_cents(480, 100_000, 0), 0);
-        assert_eq!(rest_day_surcharge_cents(480, 100_000, -1), 0);
+        assert_eq!(rest_day_surcharge_cents(480, 100_000, 0, SalaryKind::Daily), 0);
+        assert_eq!(rest_day_surcharge_cents(480, 100_000, -1, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn late_deduction_quarter_hour() {
         // 15 late min × $1000 / 480 = $31.25
-        assert_eq!(late_deduction_cents(15, 100_000, 480), 3_125);
+        assert_eq!(late_deduction_cents(15, 100_000, 480, SalaryKind::Daily), 3_125);
     }
 
     #[test]
     fn late_deduction_zero() {
-        assert_eq!(late_deduction_cents(0, 100_000, 480), 0);
+        assert_eq!(late_deduction_cents(0, 100_000, 480, SalaryKind::Daily), 0);
     }
 
     #[test]
     fn late_deduction_misconfig_returns_zero() {
-        assert_eq!(late_deduction_cents(15, 100_000, 0), 0);
-        assert_eq!(late_deduction_cents(15, 100_000, -1), 0);
+        assert_eq!(late_deduction_cents(15, 100_000, 0, SalaryKind::Daily), 0);
+        assert_eq!(late_deduction_cents(15, 100_000, -1, SalaryKind::Daily), 0);
     }
 
     #[test]
@@ -234,11 +262,13 @@ mod tests {
         ) {
             let lo = m1.min(m2);
             let hi = m1.max(m2);
-            prop_assert!(work_pay_cents(lo, b, o) <= work_pay_cents(hi, b, o));
+            prop_assert!(work_pay_cents(lo, b, o, SalaryKind::Daily) <= work_pay_cents(hi, b, o, SalaryKind::Daily));
         }
 
         /// No panic on plausible inputs. 10k cases covers the realistic range
-        /// (work 0..43200, base up to $10M/day cents, ord 360..600 min).
+        /// (work 0..43200, base up to $10M/day cents, ord 360..600 min), across
+        /// all three `SalaryKind` variants so `to_daily`'s Hourly/Monthly
+        /// branches also get overflow-safety coverage, not just Daily.
         #[test]
         fn no_panic_on_random_inputs(
             work in 0i64..43200,
@@ -246,13 +276,19 @@ mod tests {
             late in 0i64..43200,
             base in 0i64..10_000_000_000,
             ord in 360i64..600,
+            kind_idx in 0u8..3,
         ) {
+            let kind = match kind_idx {
+                0 => SalaryKind::Hourly,
+                1 => SalaryKind::Daily,
+                _ => SalaryKind::Monthly,
+            };
             // Must not panic on any of the six functions.
-            let w = work_pay_cents(work, base, ord);
-            let o = ot_pay_cents(ot, base, ord);
-            let n = night_premium_cents(work, base, ord);
-            let r = rest_day_surcharge_cents(work, base, ord);
-            let l = late_deduction_cents(late, base, ord);
+            let w = work_pay_cents(work, base, ord, kind);
+            let o = ot_pay_cents(ot, base, ord, kind);
+            let n = night_premium_cents(work, base, ord, kind);
+            let r = rest_day_surcharge_cents(work, base, ord, kind);
+            let l = late_deduction_cents(late, base, ord, kind);
             let _t = total_a_pagar_cents(w, o, n, r, l);
         }
     }

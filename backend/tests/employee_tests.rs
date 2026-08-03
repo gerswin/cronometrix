@@ -198,7 +198,9 @@ async fn crud_employee_endpoints() {
             json!({
                 "employee_code": "EMP001",
                 "name": "Alice Smith",
-                "department_id": dept_id
+                "department_id": dept_id,
+                "base_salary_cents": 100000,
+                "salary_kind": "daily"
             })
             .to_string(),
         ))
@@ -315,7 +317,9 @@ async fn soft_delete_only_no_hard_delete() {
             json!({
                 "employee_code": "SD001",
                 "name": "Bob Delete",
-                "department_id": dept_id
+                "department_id": dept_id,
+                "base_salary_cents": 100000,
+                "salary_kind": "daily"
             })
             .to_string(),
         ))
@@ -433,7 +437,9 @@ async fn employee_search_and_filter() {
                 json!({
                     "employee_code": code,
                     "name": name,
-                    "department_id": dept
+                    "department_id": dept,
+                    "base_salary_cents": 100000,
+                    "salary_kind": "daily"
                 })
                 .to_string(),
             ))

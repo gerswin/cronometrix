@@ -34,7 +34,30 @@ use super::{
     },
     money, periods,
 };
-use crate::{common::epoch_to_iso, errors::AppError, state::AppState};
+use crate::{
+    common::epoch_to_iso, employees::models::SalaryKind, errors::AppError, state::AppState,
+};
+
+/// H-08: a row cannot be monetized without a valid `salary_kind`. Callers use
+/// this only at the money-math call sites (the leave branches that never pay —
+/// medical/unpaid/manual — don't call it, since no monetization happens there).
+/// A missing/unrecognized unit surfaces as a data error; it is never assumed
+/// to be `Daily` — that assumption is exactly how the H-08 ambiguity came
+/// back in the first place.
+fn require_salary_kind(
+    raw: Option<&str>,
+    nombre: &str,
+    cedula: &str,
+) -> Result<SalaryKind, AppError> {
+    raw.and_then(SalaryKind::from_db_str)
+        .ok_or_else(|| AppError::CalcError {
+            code: "SALARY_KIND_MISSING",
+            message: format!(
+                "Employee '{nombre}' (cédula {cedula}) has no valid salary_kind \
+                 (hourly/daily/monthly) set; payroll cannot be computed until it is set."
+            ),
+        })
+}
 
 /// Internal accumulator: one entry per employee while we sweep daily_records
 /// rows + leaves rows. `worked_dates` and `leave_dates` drive the
@@ -189,7 +212,8 @@ pub async fn compute_report(
             dr.leave_id, \
             l.leave_type, \
             dro.override_work_minutes, \
-            (SELECT GROUP_CONCAT(code) FROM daily_record_anomalies WHERE daily_record_id = dr.id) AS anomaly_codes \
+            (SELECT GROUP_CONCAT(code) FROM daily_record_anomalies WHERE daily_record_id = dr.id) AS anomaly_codes, \
+            e.salary_kind \
          FROM daily_records dr \
          JOIN employees e   ON e.id = dr.employee_id \
          JOIN departments d ON d.id = dr.department_id \
@@ -232,6 +256,7 @@ pub async fn compute_report(
         let leave_type_opt: Option<String> = row.get(15).ok();
         let override_work_min_opt: Option<i64> = row.get(16).ok();
         let anomaly_codes_str_opt: Option<String> = row.get(17).ok();
+        let salary_kind_str_opt: Option<String> = row.get(18).ok();
 
         let anchor_date = NaiveDate::parse_from_str(&anchor_date_str, "%Y-%m-%d")
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
@@ -273,10 +298,13 @@ pub async fn compute_report(
                 // without an overlay are documented as a v1 limitation —
                 // they produce only counter increments (see W-5 block below).
                 entry.leave_dates.insert(anchor_date);
+                let salary_kind =
+                    require_salary_kind(salary_kind_str_opt.as_deref(), &nombre, &cedula)?;
                 let work_pay = money::work_pay_cents(
                     ordinary_daily_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
                 );
                 entry.agg.work_pay_cents = entry.agg.work_pay_cents.saturating_add(work_pay);
                 entry.agg.total_a_pagar_cents =
@@ -290,15 +318,19 @@ pub async fn compute_report(
             }
             _ => {
                 // Standard work day money math.
+                let salary_kind =
+                    require_salary_kind(salary_kind_str_opt.as_deref(), &nombre, &cedula)?;
                 let work_pay = money::work_pay_cents(
                     effective_work_min,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
                 );
                 let ot_pay = money::ot_pay_cents(
                     overtime_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
                 );
                 // W-6: night premium gates on dr.shift_type (per-day actual
                 // shift), NOT departments.shift_type. The engine's per-day
@@ -308,6 +340,7 @@ pub async fn compute_report(
                         effective_work_min,
                         base_salary_cents,
                         ordinary_daily_minutes,
+                        salary_kind,
                     )
                 } else {
                     0
@@ -317,6 +350,7 @@ pub async fn compute_report(
                         effective_work_min,
                         base_salary_cents,
                         ordinary_daily_minutes,
+                        salary_kind,
                     )
                 } else {
                     0
@@ -325,6 +359,7 @@ pub async fn compute_report(
                     late_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
+                    salary_kind,
                 );
                 let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, late);
 
