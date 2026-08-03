@@ -28,3 +28,25 @@ fn push_without_token_is_left_untouched() {
         "/api/v1/devices/dev-123/push"
     );
 }
+
+/// Fix round 1 (Critical): una barra final después del token no puede hacer
+/// que el token sobreviva en texto plano. Una normalización de proxy, un
+/// firmware con manía de barra final, o un retry pueden producir esta forma
+/// -- el 404 ocurre en el enrutador, pero el span ya se construyó antes.
+#[test]
+fn push_token_with_trailing_slash_is_still_redacted() {
+    let redacted = redact_path("/api/v1/devices/dev-123/push/s3cr3t-t0ken-value/");
+    assert!(!redacted.contains("s3cr3t"));
+    assert_eq!(redacted, "/api/v1/devices/dev-123/push/[redacted]/");
+}
+
+/// Fix round 1 (Critical): un segmento extra después del token tampoco puede
+/// dejar el token en claro. Solo el primer segmento (el token) se redacta;
+/// cualquier segmento posterior se conserva intacto para no perder
+/// observabilidad del resto de la ruta.
+#[test]
+fn push_token_with_trailing_segment_is_still_redacted() {
+    let redacted = redact_path("/api/v1/devices/dev-123/push/s3cr3t-t0ken-value/extra");
+    assert!(!redacted.contains("s3cr3t"));
+    assert_eq!(redacted, "/api/v1/devices/dev-123/push/[redacted]/extra");
+}

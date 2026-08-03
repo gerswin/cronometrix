@@ -8,13 +8,41 @@ use tracing::Span;
 /// (`/devices/{id}/push/{token}`). El firmware Hikvision no admite cabeceras
 /// arbitrarias en `httpHosts`, así que el secreto tiene que seguir en la URI;
 /// lo que no puede es sobrevivir en un log.
+///
+/// This layer is global (installed on the outermost Router, before
+/// routing), so it must redact unconditionally once `/push/` is found —
+/// there is no fallback arm that re-emits the original path once a token
+/// was actually present. A trailing slash, a stray extra path segment
+/// (proxy normalization, firmware quirk, a retry), or anything else after
+/// the token gets a 404 at the route level but the span for it is built
+/// first, so the previous "only redact if nothing follows the token"
+/// guard could still leak the secret to the log on that request.
+///
+/// Only the first segment after `/push/` (the token) is replaced; any
+/// further segments are kept byte-identical so this never silently
+/// swallows observability for the rest of the path.
+///
+/// Note: this matches `/push/` as a plain substring anywhere in the path,
+/// not anchored to the device push route specifically. Harmless today —
+/// the device push endpoint is the only route containing `/push/` — but a
+/// future route with `/push/` in its own path would also lose path
+/// observability here; anchor this to the actual route pattern if that
+/// ever happens.
 pub fn redact_path(path: &str) -> String {
-    match path.rsplit_once("/push/") {
-        Some((prefix, token)) if !token.is_empty() && !token.contains('/') => {
-            format!("{prefix}/push/[redacted]")
-        }
-        _ => path.to_string(),
+    let Some(marker_start) = path.find("/push/") else {
+        return path.to_string();
+    };
+    let prefix = &path[..marker_start];
+    let rest = &path[marker_start + "/push/".len()..];
+    if rest.is_empty() {
+        return path.to_string();
     }
+
+    let mut redacted = format!("{prefix}/push/[redacted]");
+    if let Some(next_slash) = rest.find('/') {
+        redacted.push_str(&rest[next_slash..]);
+    }
+    redacted
 }
 
 /// Produces request spans that deliberately exclude URI query strings.
