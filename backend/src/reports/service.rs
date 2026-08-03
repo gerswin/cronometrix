@@ -214,8 +214,24 @@ pub async fn compute_report(
     // shift_type filter scopes the daily_records JOIN by daily_records.shift_type
     // (the per-day actual shift). Operators can request "show me only the night-
     // shift days in this period" by passing this filter.
+    //
+    // Important 1 fix: this predicate MUST NOT go into the WHERE-built
+    // `predicates` list above. `dr.shift_type` is a column of the LEFT-JOINed
+    // `daily_records` table; on a row where an employee has zero records that
+    // day (or in the whole period) `dr.*` is NULL, and `dr.shift_type = ?`
+    // evaluates to NULL (neither true nor false) there — WHERE then drops the
+    // row. That silently re-degrades the LEFT JOIN back into an INNER JOIN
+    // for exactly the rows C-05 exists to keep (an employee with no records
+    // in the period vanishes again, and once they vanish EVERY day of the
+    // *other* shift type gets counted as an absence, because `worked_dates`
+    // only ever collects days that survived the filter). The fix is to
+    // scope this predicate inside the JOIN's own ON clause instead, right
+    // beside the period bound — see the `sql` template below — so it only
+    // ever excludes real daily_records rows, never the employee's own
+    // NULL-filled placeholder row.
+    let mut shift_type_on_clause = String::new();
     if let Some(st) = &params.shift_type {
-        predicates.push(format!("dr.shift_type = ?{}", values.len() + 1));
+        shift_type_on_clause = format!(" AND dr.shift_type = ?{}", values.len() + 1);
         values.push(libsql::Value::Text(st.clone()));
     }
 
@@ -266,6 +282,7 @@ pub async fn compute_report(
          LEFT JOIN daily_records dr \
                 ON dr.employee_id = e.id \
                AND dr.anchor_date BETWEEN ?1 AND ?2 \
+               {shift_type_on_clause} \
          LEFT JOIN daily_record_overrides dro ON dro.daily_record_id = dr.id AND dro.status = 'active' \
          LEFT JOIN leaves l ON l.id = dr.leave_id AND l.status = 'active' \
          {where_clause} \

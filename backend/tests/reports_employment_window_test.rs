@@ -315,3 +315,93 @@ async fn a_terminated_employee_keeps_worked_days_and_stops_accruing_absences() {
         row
     );
 }
+
+/// Important 1: the `shift_type` filter must not re-degrade the C-05 LEFT
+/// JOIN back into an INNER JOIN. Before this fix, `dr.shift_type = ?` lived
+/// in the WHERE-built `predicates` list; on the NULL-filled placeholder row
+/// LEFT JOIN produces for an employee with zero daily_records, that
+/// comparison evaluates to NULL (not true), so WHERE dropped the row and the
+/// employee vanished from the report the moment an operator set the shift
+/// filter — exactly the C-05 defect, reintroduced by a later predicate.
+///
+/// Reproduces the reviewer's repro directly: with `shift_type` unset both E1
+/// (has a day-shift record) and E2 (zero daily_records at all) appear; with
+/// `shift_type: "night"` set, E2 (zero records) must STILL appear.
+#[tokio::test]
+async fn shift_type_filter_does_not_hide_an_employee_with_no_records() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+
+    let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
+    let with_day_record = seed_employee(&db, "E1", "Elena", &dept, "Dev").await;
+    let no_records = seed_employee(&db, "E2", "Nora", &dept, "Dev").await;
+    let _ = seed_daily_record(
+        &db,
+        &with_day_record,
+        &dept,
+        "2026-04-15",
+        "day",
+        480,
+        0,
+        0,
+        0,
+        None,
+    )
+    .await;
+
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
+
+    // Sanity check (unfiltered): both employees appear.
+    let (status, body) = post_report(
+        &app,
+        &token,
+        json!({
+            "period_type": "custom",
+            "from_date": "2026-04-13",
+            "to_date": "2026-04-17",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "report should 200: {:?}", body);
+    assert!(
+        find_row(&body, &with_day_record).is_some(),
+        "sanity: E1 should appear unfiltered: {:?}",
+        body
+    );
+    assert!(
+        find_row(&body, &no_records).is_some(),
+        "sanity: E2 (no records) should appear unfiltered: {:?}",
+        body
+    );
+
+    // With the shift_type filter set to "night" (E1's record is "day", so it
+    // does not match — that's expected/correct), E2 (zero records at all,
+    // regardless of shift) must still appear rather than vanishing.
+    let (status, body) = post_report(
+        &app,
+        &token,
+        json!({
+            "period_type": "custom",
+            "from_date": "2026-04-13",
+            "to_date": "2026-04-17",
+            "shift_type": "night",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "report should 200: {:?}", body);
+
+    let nora = find_row(&body, &no_records).unwrap_or_else(|| {
+        panic!(
+            "Important 1: shift_type filter hid an employee with zero daily_records \
+             — the LEFT JOIN was re-degraded into an INNER JOIN: {:?}",
+            body
+        )
+    });
+    assert_eq!(
+        nora["days_absent"], 5,
+        "no records at all under the night filter -> full-period absence, not a vanished row: {:?}",
+        nora
+    );
+}
