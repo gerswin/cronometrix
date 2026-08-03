@@ -10,7 +10,8 @@
 //! Security invariants:
 //! - Evidence paths are SERVER-GENERATED from UUID + extension (T-3-15).
 //! - Evidence read path canonicalizes + verifies under `state.paths.leaves_root` (T-3-18).
-//! - Content-Type enum restricted to pdf/jpeg/png (T-3-16).
+//! - Evidence type restricted to pdf/jpeg/png (T-3-16), verified from magic
+//!   bytes — the client-supplied Content-Type header is advisory only (M-07).
 //! - Hard size cap 10MB enforced before DB commit (T-3-21).
 //! - Create + cancel publish bounded recompute range work after commit so
 //!   existing daily_records pick up (or drop) the overlay.
@@ -31,6 +32,7 @@ use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
 use crate::storage::atomic_file::AtomicFileGuard;
+use crate::storage::evidence_magic::infer_evidence_ext_from_magic;
 
 use super::models::{CreateLeaveRequest, LeaveListQuery, LeaveResponse};
 use super::service;
@@ -101,11 +103,11 @@ pub async fn create_leave(
                 })?);
             }
             "evidence" => {
+                // M-07: declared content-type is a quick filter only; actual
+                // type is verified from the file's magic bytes after reading.
                 let ct = field.content_type().unwrap_or("").to_string();
-                evidence_ext = match ct.as_str() {
-                    "application/pdf" => Some("pdf"),
-                    "image/jpeg" => Some("jpg"),
-                    "image/png" => Some("png"),
+                match ct.as_str() {
+                    "application/pdf" | "image/jpeg" | "image/png" => {}
                     _ => {
                         return Err(AppError::Validation {
                             code: "VALIDATION_ERROR",
@@ -115,7 +117,7 @@ pub async fn create_leave(
                             ),
                         });
                     }
-                };
+                }
                 let bytes = field.bytes().await.map_err(|e| AppError::Validation {
                     code: "VALIDATION_ERROR",
                     message: format!("reading evidence bytes: {}", e),
@@ -126,6 +128,17 @@ pub async fn create_leave(
                         message: format!("evidence file exceeds 10MB (got {} bytes)", bytes.len()),
                     });
                 }
+                // M-07: authoritative type check via magic bytes — content-type
+                // header from the client is untrusted (spoofable in multipart).
+                // The stored extension is derived from the bytes, never from
+                // the header or the client-supplied filename.
+                let magic_ext =
+                    infer_evidence_ext_from_magic(&bytes).ok_or_else(|| AppError::Validation {
+                        code: "VALIDATION_ERROR",
+                        message: "evidence bytes do not match a supported file type (PDF/JPEG/PNG)"
+                            .into(),
+                    })?;
+                evidence_ext = Some(magic_ext);
                 evidence_bytes = Some(bytes.to_vec());
             }
             _ => {
