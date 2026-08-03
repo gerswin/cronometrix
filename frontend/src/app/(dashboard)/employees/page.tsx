@@ -13,14 +13,12 @@ import {
   Trash2,
   LogOut,
   Loader2,
-  X,
-  User,
-  Briefcase,
   Save,
 } from 'lucide-react'
 import { api, logoutCurrentSession } from '@/lib/api'
 import { useAuth } from '@/hooks/use-auth'
 import { EnrollmentModal } from '@/components/enrollment/enrollment-modal'
+import { NewEmployeeDialog } from '@/components/employees/new-employee-dialog'
 import {
   Dialog,
   DialogContent,
@@ -32,7 +30,7 @@ import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { PrimaryButton } from '@/components/ui/primary-button'
 import { fmtDate } from '@/lib/format/datetime'
-import type { PaginatedResponse, Employee, Department } from '@/types/api'
+import type { PaginatedResponse, Employee, Department, CreateEmployeeRequest } from '@/types/api'
 
 const PAGE_SIZE = 10
 
@@ -59,22 +57,29 @@ function parseSalaryCents(value: string | undefined): number | undefined {
   return Math.round(Number(value) * 100)
 }
 
-const newEmployeeSchema = z.object({
-  name: z.string().min(1, 'Nombre es requerido'),
-  employee_code: z.string().min(1, 'Cédula es requerida'),
-  department_id: z.string().min(1, 'Departamento es requerido'),
-  position: z.string().optional(),
-  hire_date: z.string().optional(),
-  base_salary: optionalSalary,
-})
-type NewEmployeeFormData = z.infer<typeof newEmployeeSchema>
-
+// H-08: the create form's own schema (including the mandatory, no-default
+// `salary_kind` unit) lives in NewEmployeeDialog
+// (`@/components/employees/new-employee-dialog`), not here — POST /employees
+// requires salary_kind while PATCH /employees/:id treats it as optional
+// (omit to leave the employee's existing unit unchanged), so the edit
+// form's schema stays independent.
 const editEmployeeSchema = z.object({
   name: z.string().min(1, 'Nombre es requerido'),
   department_id: z.string().min(1, 'Departamento es requerido'),
   position: z.string().optional(),
   hire_date: z.string().optional(),
   base_salary: optionalSalary,
+  // No default value here or in the <select> below (H-08). This field
+  // cannot be schema-mandated the way the create form's is: `base_salary`
+  // above is pre-filled with the employee's CURRENT amount (GET /employees
+  // doesn't round-trip salary_kind, so it always starts blank), so "is
+  // base_salary non-empty" is true on every edit, not just ones that change
+  // the amount. A zod-level requirement on that condition would block
+  // *every* save. The actual "only required when the amount is actually
+  // being changed" rule is enforced in the submit handler below via
+  // react-hook-form's dirtyFields, which zod's schema-level validation has
+  // no access to.
+  salary_kind: z.enum(['hourly', 'daily', 'monthly']).optional().or(z.literal('')),
 })
 type EditEmployeeFormData = z.infer<typeof editEmployeeSchema>
 
@@ -146,23 +151,13 @@ export default function EmployeesPage() {
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   const createMutation = useMutation({
-    mutationFn: async (values: NewEmployeeFormData) => {
-      const r = await api.post<Employee>('/employees', {
-        employee_code: values.employee_code,
-        name: values.name,
-        department_id: values.department_id,
-        ...(values.position && { position: values.position }),
-        ...(values.hire_date && { hire_date: values.hire_date }),
-        ...(parseSalaryCents(values.base_salary) !== undefined && {
-          base_salary_cents: parseSalaryCents(values.base_salary),
-        }),
-      })
+    mutationFn: async (payload: CreateEmployeeRequest) => {
+      const r = await api.post<Employee>('/employees', payload)
       return r.data
     },
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['employees'] })
       queryClient.invalidateQueries({ queryKey: ['employees-total-active'] })
-      resetNew()
       setNewEmpOpen(false)
       if (enrollAfterSave) {
         setEnrollmentEmployee(created)
@@ -188,6 +183,9 @@ export default function EmployeesPage() {
         ...(parseSalaryCents(values.base_salary) !== undefined && {
           base_salary_cents: parseSalaryCents(values.base_salary),
         }),
+        // H-08: only sent when the operator picked one — omitting it leaves
+        // the employee's existing salary_kind unchanged (PATCH semantics).
+        ...(values.salary_kind && { salary_kind: values.salary_kind }),
         version,
       })
     },
@@ -210,20 +208,33 @@ export default function EmployeesPage() {
   })
 
   // ── Forms ─────────────────────────────────────────────────────────────────
-
-  const {
-    register: registerNew,
-    handleSubmit: handleSubmitNew,
-    reset: resetNew,
-    formState: { errors: errorsNew, isSubmitting: isSubmittingNew },
-  } = useForm<NewEmployeeFormData>({ resolver: zodResolver(newEmployeeSchema) })
+  // The "Nuevo Empleado" form owns its own useForm() instance inside
+  // NewEmployeeDialog (see import above) so the H-08/C-03 salary contract is
+  // unit-testable; only the edit form's react-hook-form wiring stays here.
 
   const {
     register: registerEdit,
     handleSubmit: handleSubmitEdit,
     reset: resetEdit,
-    formState: { errors: errorsEdit, isSubmitting: isSubmittingEdit },
+    setError: setErrorEdit,
+    formState: { errors: errorsEdit, isSubmitting: isSubmittingEdit, dirtyFields: dirtyFieldsEdit },
   } = useForm<EditEmployeeFormData>({ resolver: zodResolver(editEmployeeSchema) })
+
+  // H-08: salary_kind is only required when the operator actually changes
+  // base_salary — see the long comment on editEmployeeSchema above for why
+  // that can't be expressed at the zod level (base_salary is pre-filled
+  // with the employee's current amount, so "non-empty" is always true).
+  function submitEdit(values: EditEmployeeFormData) {
+    if (dirtyFieldsEdit.base_salary && values.base_salary?.trim() && !values.salary_kind) {
+      setErrorEdit('salary_kind', { message: 'Selecciona la unidad del sueldo' })
+      return
+    }
+    updateMutation.mutate({
+      id: editEmployee!.id,
+      version: editEmployee!.version,
+      values,
+    })
+  }
 
   function handleEditClick(emp: Employee) {
     setEditEmployee(emp)
@@ -233,6 +244,10 @@ export default function EmployeesPage() {
       position: emp.position ?? '',
       hire_date: emp.hire_date ?? '',
       base_salary: emp.base_salary_cents != null ? String(emp.base_salary_cents / 100) : '',
+      // GET /employees does not currently round-trip salary_kind (Task 1
+      // report, concern #3), so there is nothing to prefill here — the
+      // operator only sets it if they also change the amount.
+      salary_kind: '',
     })
   }
 
@@ -559,241 +574,18 @@ export default function EmployeesPage() {
         onClose={() => setEnrollmentEmployee(null)}
       />
 
-      {/* New Employee */}
-      {/* New Employee — Pencil F93Iv design */}
-      <Dialog
+      {/* New Employee — Pencil F93Iv design; extracted to
+          NewEmployeeDialog so the H-08/C-03 salary contract is unit-tested
+          under src/components (see @/components/employees/new-employee-dialog). */}
+      <NewEmployeeDialog
         open={newEmpOpen}
-        onOpenChange={(o: boolean) => {
-          if (!o) {
-            resetNew()
-            setNewEmpOpen(false)
-          }
-        }}
-      >
-        <DialogContent
-          className="max-w-[700px] p-0 overflow-hidden"
-          data-testid="new-employee-form"
-        >
-          <form
-            onSubmit={handleSubmitNew((v) => createMutation.mutate(v))}
-            className="flex flex-col"
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-7 py-4 border-b border-[#EEF0F2]">
-              <div className="flex flex-col gap-0.5">
-                <h2
-                  className="text-[20px] font-bold text-[#1A1A1A] leading-tight"
-                  style={{ fontFamily: 'var(--font-sans)' }}
-                >
-                  Registrar Nuevo Empleado
-                </h2>
-                <p
-                  className="text-[12px] italic text-[#666666]"
-                  style={{ fontFamily: 'var(--font-serif)' }}
-                >
-                  Complete la ficha técnica del personal
-                </p>
-              </div>
-              <button
-                type="button"
-                aria-label="Cerrar"
-                onClick={() => {
-                  resetNew()
-                  setNewEmpOpen(false)
-                }}
-                className="flex items-center justify-center w-8 h-8 rounded bg-[#F3F4F6] hover:bg-[#E5E7EB] transition-colors"
-              >
-                <X size={18} className="text-[#666666]" />
-              </button>
-            </div>
-
-            {/* Body */}
-            <div className="px-7 py-5 flex flex-col gap-4 max-h-[60vh] overflow-y-auto">
-              {/* Section 1 — Datos Personales */}
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-2">
-                  <User size={16} className="text-[#1E3FB8]" />
-                  <h3
-                    className="text-[14px] font-bold text-[#1A1A1A]"
-                    style={{ fontFamily: 'var(--font-sans)' }}
-                  >
-                    Datos Personales
-                  </h3>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[12px] font-medium text-[#1A1A1A]">
-                      Nombre completo<span className="text-[#DC2626] ml-0.5">*</span>
-                    </span>
-                    <input
-                      {...registerNew('name')}
-                      placeholder="Ana Pérez González"
-                      className={`w-full px-3 py-2 rounded text-[13px] border bg-white ${
-                        errorsNew.name ? 'border-[#DC2626]' : 'border-[#EEF0F2]'
-                      } focus:outline-none focus:ring-2 focus:ring-[#1E3FB8] focus:border-transparent`}
-                    />
-                    {errorsNew.name && (
-                      <span role="alert" className="text-[11px] text-[#DC2626]">
-                        {errorsNew.name.message}
-                      </span>
-                    )}
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[12px] font-medium text-[#1A1A1A]">
-                      Cédula<span className="text-[#DC2626] ml-0.5">*</span>
-                    </span>
-                    <input
-                      {...registerNew('employee_code')}
-                      placeholder="V-12345678"
-                      className={`w-full px-3 py-2 rounded text-[13px] border bg-white ${
-                        errorsNew.employee_code ? 'border-[#DC2626]' : 'border-[#EEF0F2]'
-                      } focus:outline-none focus:ring-2 focus:ring-[#1E3FB8] focus:border-transparent`}
-                    />
-                    {errorsNew.employee_code && (
-                      <span role="alert" className="text-[11px] text-[#DC2626]">
-                        {errorsNew.employee_code.message}
-                      </span>
-                    )}
-                  </label>
-                </div>
-              </div>
-
-              <div className="h-px bg-[#EEF0F2] -mx-7" />
-
-              {/* Section 2 — Datos Laborales */}
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-2">
-                  <Briefcase size={16} className="text-[#1E3FB8]" />
-                  <h3
-                    className="text-[14px] font-bold text-[#1A1A1A]"
-                    style={{ fontFamily: 'var(--font-sans)' }}
-                  >
-                    Datos Laborales
-                  </h3>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[12px] font-medium text-[#1A1A1A]">
-                      Departamento<span className="text-[#DC2626] ml-0.5">*</span>
-                    </span>
-                    <select
-                      {...registerNew('department_id')}
-                      className={`w-full px-3 py-2 rounded text-[13px] border bg-white ${
-                        errorsNew.department_id ? 'border-[#DC2626]' : 'border-[#EEF0F2]'
-                      } focus:outline-none focus:ring-2 focus:ring-[#1E3FB8] focus:border-transparent`}
-                    >
-                      <option value="">Seleccionar…</option>
-                      {departments?.data.map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {d.name}
-                        </option>
-                      ))}
-                    </select>
-                    {errorsNew.department_id && (
-                      <span role="alert" className="text-[11px] text-[#DC2626]">
-                        {errorsNew.department_id.message}
-                      </span>
-                    )}
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[12px] font-medium text-[#1A1A1A]">Cargo</span>
-                    <input
-                      {...registerNew('position')}
-                      placeholder="Ej: Operario"
-                      className="w-full px-3 py-2 rounded text-[13px] border border-[#EEF0F2] bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3FB8] focus:border-transparent"
-                    />
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[12px] font-medium text-[#1A1A1A]">
-                      Fecha de Ingreso
-                    </span>
-                    <input
-                      type="date"
-                      {...registerNew('hire_date')}
-                      className="w-full px-3 py-2 rounded text-[13px] border border-[#EEF0F2] bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3FB8] focus:border-transparent"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-[12px] font-medium text-[#1A1A1A]">
-                      Sueldo Base ($)
-                    </span>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="0.00"
-                      {...registerNew('base_salary')}
-                      className={`w-full px-3 py-2 rounded text-[13px] border bg-white ${
-                        errorsNew.base_salary ? 'border-[#DC2626]' : 'border-[#EEF0F2]'
-                      } focus:outline-none focus:ring-2 focus:ring-[#1E3FB8] focus:border-transparent`}
-                    />
-                    {errorsNew.base_salary ? (
-                      <span role="alert" className="text-[11px] text-[#DC2626]">
-                        {errorsNew.base_salary.message}
-                      </span>
-                    ) : (
-                      <span className="text-[11px] text-[#666666]">
-                        Sustituye al sueldo del departamento.
-                      </span>
-                    )}
-                  </label>
-                </div>
-              </div>
-
-              <div className="h-px bg-[#EEF0F2] -mx-7" />
-
-              {/* Enrollment checkbox */}
-              <label className="flex items-start gap-3 py-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={enrollAfterSave}
-                  onChange={(e) => setEnrollAfterSave(e.target.checked)}
-                  className="mt-0.5 h-[18px] w-[18px] rounded border-[#D1D5DB] text-[#1E3FB8] focus:ring-[#1E3FB8] focus:ring-offset-0"
-                  data-testid="enroll-after-save"
-                />
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[13px] font-medium text-[#1A1A1A]">
-                    Iniciar enrolamiento facial al guardar
-                  </span>
-                  <span className="text-[11px] text-[#666666]">
-                    Se abrirá el sincronizador biométrico para capturar la foto del empleado.
-                  </span>
-                </div>
-              </label>
-            </div>
-
-            {/* Footer */}
-            <div className="flex items-center justify-between px-7 py-3 border-t border-[#EEF0F2] bg-[#FAFBFC]">
-              <div className="flex items-center gap-1">
-                <span className="text-[14px] font-bold text-[#DC2626]">*</span>
-                <span className="text-[11px] text-[#666666]">Campos obligatorios</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    resetNew()
-                    setNewEmpOpen(false)
-                  }}
-                  className="px-6 py-2.5 rounded text-[13px] font-medium text-[#1A1A1A] bg-white border border-[#EEF0F2] hover:bg-slate-50 transition-colors"
-                >
-                  Cancelar
-                </button>
-                <PrimaryButton
-                  type="submit"
-                  size="md"
-                  icon={Save}
-                  data-testid="new-employee-submit"
-                  disabled={isSubmittingNew || createMutation.isPending}
-                >
-                  {createMutation.isPending ? 'Guardando…' : 'Guardar Empleado'}
-                </PrimaryButton>
-              </div>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+        departments={departments?.data}
+        enrollAfterSave={enrollAfterSave}
+        onEnrollAfterSaveChange={setEnrollAfterSave}
+        onClose={() => setNewEmpOpen(false)}
+        onSubmit={(payload) => createMutation.mutate(payload)}
+        isPending={createMutation.isPending}
+      />
 
       {/* Edit Employee */}
       <Dialog
@@ -809,16 +601,7 @@ export default function EmployeesPage() {
           <DialogHeader>
             <DialogTitle>Editar Empleado</DialogTitle>
           </DialogHeader>
-          <form
-            onSubmit={handleSubmitEdit((v) =>
-              updateMutation.mutate({
-                id: editEmployee!.id,
-                version: editEmployee!.version,
-                values: v,
-              }),
-            )}
-            className="space-y-4"
-          >
+          <form onSubmit={handleSubmitEdit(submitEdit)} className="space-y-4">
             <div>
               <Label htmlFor="edit-emp-name">Nombre *</Label>
               <Input id="edit-emp-name" {...registerEdit('name')} />
@@ -857,7 +640,7 @@ export default function EmployeesPage() {
               <Input id="edit-emp-hire-date" type="date" {...registerEdit('hire_date')} />
             </div>
             <div>
-              <Label htmlFor="edit-emp-salary">Sueldo Base ($)</Label>
+              <Label htmlFor="edit-emp-salary">Sueldo Base ($) (opcional)</Label>
               <Input
                 id="edit-emp-salary"
                 type="text"
@@ -867,6 +650,32 @@ export default function EmployeesPage() {
               {errorsEdit.base_salary && (
                 <p role="alert" className="text-xs text-destructive mt-1">
                   {errorsEdit.base_salary.message}
+                </p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="edit-emp-salary-kind">Unidad del Sueldo</Label>
+              {/* H-08: no preselected value — only required (via
+                  superRefine on editEmployeeSchema) when Sueldo Base above is
+                  also being set/changed, matching PATCH /employees/:id,
+                  which treats salary_kind as independently optional. */}
+              <select
+                id="edit-emp-salary-kind"
+                {...registerEdit('salary_kind')}
+                className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+              >
+                <option value="">Seleccionar…</option>
+                <option value="hourly">Por hora</option>
+                <option value="daily">Diario</option>
+                <option value="monthly">Mensual</option>
+              </select>
+              {errorsEdit.salary_kind ? (
+                <p role="alert" className="text-xs text-destructive mt-1">
+                  {errorsEdit.salary_kind.message}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Requerida solo si cambia el Sueldo Base.
                 </p>
               )}
             </div>

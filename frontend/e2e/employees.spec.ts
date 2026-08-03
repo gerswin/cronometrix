@@ -18,7 +18,7 @@
  */
 
 import { test, expect, newRoleContext } from './fixtures/auth'
-import { resetMutableTables, getAudit } from './fixtures/api'
+import { auditWindowStart, resetMutableTables, getAudit } from './fixtures/api'
 import { SEL } from './fixtures/selectors'
 
 // ---------------------------------------------------------------------------
@@ -102,6 +102,11 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
     await page.getByLabel('Cédula').fill('EMP_TEST_09')
     // Department — select Producción (first non-empty option in the seeded list)
     await page.getByLabel(/^Departamento/).selectOption({ label: 'Producción' })
+    // H-08/C-03: salary amount + unit are both mandatory on create — the
+    // unit <select> starts unselected on purpose (no default), so it must
+    // be explicitly chosen here or the submit is blocked client-side.
+    await page.getByTestId(SEL.newEmpBaseSalary).fill('500.00')
+    await page.getByTestId(SEL.newEmpSalaryKind).selectOption('monthly')
 
     await page.getByTestId(SEL.newEmpSubmit).click()
 
@@ -117,6 +122,62 @@ test.describe('Employees (Empleados) — D-03 CRUD UAT', () => {
         const r = await getAudit(request, {
           table_name: 'employees',
           operation: 'INSERT',
+          limit: 5,
+        })
+        if (r.status() !== 200) return null
+        const body = await r.json()
+        return body.total ?? body.data?.length ?? 0
+      },
+      { timeout: 15_000, message: 'Expected audit_log entry for employees INSERT' },
+    ).toBeGreaterThanOrEqual(1)
+  })
+
+  // ── T-06b: H-08 — salary unit has no default and blocks submit until chosen ──
+  test('salary unit: no option is preselected, and create is blocked until one is chosen', async ({
+    page,
+    request,
+  }) => {
+    const fromTs = auditWindowStart()
+    await page.goto('/employees')
+    await page.getByTestId(SEL.newEmpButton).click()
+    await expect(page.getByTestId(SEL.newEmpForm)).toBeVisible({ timeout: 5_000 })
+
+    // No default/preselected unit — the <select> starts on its empty
+    // placeholder option, never silently defaulting to e.g. "daily".
+    await expect(page.getByTestId(SEL.newEmpSalaryKind)).toHaveValue('')
+
+    // Fill every other mandatory field, including the salary amount, but
+    // deliberately leave the unit unselected.
+    await page.getByLabel('Nombre completo').fill('Test Empleado Sin Unidad')
+    await page.getByLabel('Cédula').fill('EMP_TEST_NO_UNIT')
+    await page.getByLabel(/^Departamento/).selectOption({ label: 'Producción' })
+    await page.getByTestId(SEL.newEmpBaseSalary).fill('500.00')
+
+    await page.getByTestId(SEL.newEmpSubmit).click()
+
+    // Client-side validation blocks the submit — the dialog stays open and
+    // the employee is never created.
+    await expect(page.getByTestId(SEL.newEmpForm)).toBeVisible()
+    await expect(page.getByText('Selecciona la unidad del sueldo')).toBeVisible({
+      timeout: 3_000,
+    })
+
+    // Choosing a unit now allows the same form to submit successfully. The
+    // list is paginated (10/page) and the seeded+prior-spec employee count
+    // can push a freshly created row past page 1, so — like T-06/T-07/T-08
+    // above — the audit_log entry, not DOM visibility of the row, is the
+    // authoritative proof of creation here.
+    await page.getByTestId(SEL.newEmpSalaryKind).selectOption('daily')
+    await page.getByTestId(SEL.newEmpSubmit).click()
+
+    await expect(page.getByTestId(SEL.newEmpForm)).toBeHidden({ timeout: 10_000 })
+
+    await expect.poll(
+      async () => {
+        const r = await getAudit(request, {
+          table_name: 'employees',
+          operation: 'INSERT',
+          from_ts: fromTs,
           limit: 5,
         })
         if (r.status() !== 200) return null

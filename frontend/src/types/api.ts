@@ -50,6 +50,41 @@ export interface Employee {
   updated_at: string
 }
 
+/**
+ * Unit `base_salary_cents` is expressed in (H-08, migration 024). Mirrors the
+ * backend's `salary_kind` CHECK constraint character for character — do not
+ * add/rename values here without updating migration 024 in lockstep.
+ *
+ * NOTE: this is intentionally NOT added to `Employee` above. Migration 024
+ * only touches the `employees` table (`Department.base_salary_cents` is an
+ * unrelated department-level default with no `salary_kind` column/support in
+ * the backend), and `GET`/`POST /employees` responses do not currently
+ * round-trip `salary_kind` either (see Task 1 report, concern #3) — so there
+ * is no response shape to type it onto yet. It exists on the *request* side
+ * only, via `CreateEmployeeRequest` below.
+ */
+export type SalaryKind = 'hourly' | 'daily' | 'monthly'
+
+/**
+ * Request body for POST /employees. Mirrors the backend's
+ * `CreateEmployeeRequest` (`backend/src/employees/models.rs`).
+ *
+ * `base_salary_cents` and `salary_kind` are both mandatory here (C-03, H-08):
+ * `employees::service::create_queued` rejects a missing/non-positive salary
+ * with `SALARY_REQUIRED`/`SALARY_INVALID`, and rejects a missing unit with
+ * `SALARY_KIND_REQUIRED` — an absent salary is no longer treated as 0, and an
+ * absent unit is no longer assumed to be "daily".
+ */
+export interface CreateEmployeeRequest {
+  employee_code: string
+  name: string
+  department_id: string
+  position?: string
+  hire_date?: string // YYYY-MM-DD
+  base_salary_cents: number
+  salary_kind: SalaryKind
+}
+
 export interface Department {
   id: string
   name: string

@@ -238,6 +238,9 @@ test.describe('RBAC cross-cut (D-01 + cross-stack)', () => {
         name: 'Admin Created Then Deleted',
         employee_code: 'ADC001',
         department_id: 'dept-prod',
+        // H-08/C-03: mandatory on create — see employees.spec.ts / api.ts.
+        base_salary_cents: 100_000,
+        salary_kind: 'daily',
       },
     })
     expect([200, 201]).toContain(create.status())
