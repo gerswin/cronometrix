@@ -309,8 +309,12 @@ async fn a_terminated_employee_keeps_worked_days_and_stops_accruing_absences() {
         "Wed/Thu/Fri are after terminated_on and must not accrue absences: {:?}",
         row
     );
-    assert!(
-        row["total_a_pagar_cents"].as_i64().unwrap() > 0,
+    // I6: this test already knew the exact figure — 2 worked days at the
+    // department's 100_000 cents/day base salary, no premiums, no overtime,
+    // no late minutes: 2 * 100_000 = 200_000. `> 0` over a known quantity
+    // proves nothing; assert the value.
+    assert_eq!(
+        row["total_a_pagar_cents"], 200_000,
         "worked days before termination must still be paid: {:?}",
         row
     );
