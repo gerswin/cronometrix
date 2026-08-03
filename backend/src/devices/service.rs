@@ -8,7 +8,8 @@ use crate::state::AppState;
 use super::crypto;
 use super::models::{
     validate_direction, validate_ip, validate_scheme, validate_status, Command,
-    CreateDeviceRequest, DeviceListQuery, DeviceResponse, DeviceWithPlaintext, UpdateDeviceRequest,
+    CreateDeviceRequest, DeviceListQuery, DeviceResponse, DeviceWithPlaintext,
+    PushInboxFailedEntry, UpdateDeviceRequest,
 };
 
 /// Outcome tag written to `command_audit_log.outcome`.
@@ -566,4 +567,44 @@ pub async fn write_command_audit_queued(
         .await
         .map_err(AppError::from)?;
     Ok(())
+}
+
+/// `GET /api/v1/devices/push-inbox/failed` — the C-10 dead-letter view.
+///
+/// Deliberately excludes `body`: it can carry a face JPEG, and this is a
+/// diagnostics route (min role `supervisor` via `require_supervisor_or_above`),
+/// not a biometrics one. Capped at 200 rows, most-recently-received first —
+/// this is an operator triage view, not a paginated archive; a backlog past
+/// that size is itself the incident to investigate.
+pub async fn list_push_inbox_failed(
+    conn: &Connection,
+) -> Result<Vec<PushInboxFailedEntry>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT id, device_id, received_at, attempts, last_error \
+             FROM device_push_inbox \
+             WHERE status = 'failed' \
+             ORDER BY received_at DESC \
+             LIMIT 200",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut out = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        let received_at: i64 = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
+        out.push(PushInboxFailedEntry {
+            id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+            device_id: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+            received_at: epoch_to_iso(received_at),
+            attempts: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
+            last_error: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
+        });
+    }
+    Ok(out)
 }

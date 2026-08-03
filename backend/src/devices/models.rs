@@ -174,6 +174,22 @@ impl std::fmt::Debug for DeviceWithPlaintext {
     }
 }
 
+/// One dead-lettered row from `device_push_inbox`, for `GET
+/// /api/v1/devices/push-inbox/failed`.
+///
+/// Deliberately does NOT include `body`: it can carry a face JPEG, and this
+/// is a diagnostics route (min role `supervisor`), not a biometrics one. A
+/// hypothetical body-inspection endpoint would be `admin`-only with its own
+/// audit entry — this one never reads that column.
+#[derive(Debug, Serialize)]
+pub struct PushInboxFailedEntry {
+    pub id: String,
+    pub device_id: String,
+    pub received_at: String, // ISO 8601
+    pub attempts: i64,
+    pub last_error: Option<String>,
+}
+
 /// Validate scheme is `http` or `https`.
 pub fn validate_scheme(s: &str) -> Result<(), &'static str> {
     match s {

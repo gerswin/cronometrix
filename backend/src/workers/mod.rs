@@ -3,6 +3,7 @@ pub mod capture_cleanup;
 /// Drained bounded database writer; shutdown is commanded by `DbWriteQueue`.
 pub mod db_write;
 pub mod purge;
+pub mod push_drain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownSource {

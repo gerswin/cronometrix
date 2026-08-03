@@ -34,7 +34,7 @@ use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
 use cronometrix_api::users;
 use cronometrix_api::workers::{
-    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker,
+    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker, push_drain,
 };
 
 #[tokio::main]
@@ -208,6 +208,13 @@ async fn main() -> anyhow::Result<()> {
         capture_cleanup_shutdown.clone(),
     ));
 
+    // C-10 part 2: drains device_push_inbox off the HTTP response path —
+    // receive_push only stores; this worker parses, ingests, retries
+    // transient failures, and dead-letters permanent ones. Shares the
+    // general `shutdown` token (not capture_cleanup_shutdown — it has no
+    // in-memory state to compensate after the HTTP server stops).
+    let push_drain_handle = tokio::spawn(push_drain::run(state.clone(), shutdown.clone()));
+
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
     let purge_worker = PurgeWorker::new(state.clone(), shutdown.clone());
     let purge_handle = tokio::spawn(async move {
@@ -314,6 +321,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/anomalies", get(anomalies::handlers::list_anomalies))
         .route("/audit", get(audit::handlers::list_audit)) // NEW Plan 09-04
         .route("/audit/actors", get(audit::handlers::list_actors))
+        // C-10 part 2: dead-letter view over device_push_inbox. Never
+        // returns the raw body (may carry a face JPEG) — see
+        // devices::models::PushInboxFailedEntry.
+        .route(
+            "/devices/push-inbox/failed",
+            get(devices::handlers::list_push_inbox_failed),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
@@ -547,6 +561,20 @@ async fn main() -> anyhow::Result<()> {
         &mut first_shutdown_error,
         backfill_handle.await.map_err(anyhow::Error::from),
         "join backfill worker",
+    );
+    // Joined before `state.db_write.flush()` below so this worker's final
+    // drain pass (triggered by the same `shutdown` token) can still enqueue
+    // its status updates through a live write queue. `run` returns
+    // `anyhow::Result<()>` (like capture_cleanup::run), so the JoinError and
+    // the task's own Err must both be flattened before recording either.
+    let push_drain_result = match push_drain_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(error.into()),
+    };
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        push_drain_result,
+        "join push inbox drain worker",
     );
 
     // No new HTTP requests or worker retries can be admitted now. Await each

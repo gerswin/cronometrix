@@ -59,7 +59,11 @@ pub async fn ingest_alert(
                 payload = %raw_payload.chars().take(2000).collect::<String>(),
                 "failed to parse alert payload — skipping"
             );
-            return Ok(IngestOutcome::Skipped);
+            // Distinct from the `Skipped` returns below: this body was never a
+            // valid marking, heartbeat, or notification — it just didn't parse.
+            // `workers::push_drain` treats this as a permanent failure (dead
+            // letter), never as something worth retrying.
+            return Ok(IngestOutcome::Unparseable);
         }
     };
 

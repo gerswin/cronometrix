@@ -21,6 +21,13 @@ pub enum IngestOutcome {
     /// A heartbeat, a door/tamper notification, or anything else that names
     /// nobody. Deliberately not persisted.
     Skipped,
+    /// The wire payload itself could not be decoded (bad UTF-8, malformed XML
+    /// or JSON). Distinct from `Skipped`: a `Skipped` event is a legitimate
+    /// no-op, but an unparseable body is a permanent failure — no amount of
+    /// retrying fixes a payload that was never valid, and `workers::push_drain`
+    /// relies on this variant to route it to the dead-letter queue instead of
+    /// retrying it forever (C-10, part 2).
+    Unparseable,
 }
 
 /// Resolve and persist one marking. `direction_default` comes from the device
