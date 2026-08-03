@@ -84,8 +84,10 @@ jobs:
       - name: Pin npm
         run: npm install --global npm@11.12.1
       - run: npm ci
-      - name: Run Vitest with coverage (thresholds enforced via vitest.config.ts)
+      - name: Run Vitest with coverage (project-wide thresholds enforced via vitest.config.ts)
         run: npx vitest run --coverage
+      - name: Enforce per-file coverage floor
+        run: node ../scripts/enforce-frontend-file-floor.mjs
       - name: Upload HTML artifact
         if: always()
         uses: actions/upload-artifact@v4

@@ -19,6 +19,10 @@ export default defineConfig({
         'src/hooks/**/*.{ts,tsx}',
         'src/lib/**/*.{ts,tsx}',
       ],
+      // This include/exclude pair is also the source of truth for
+      // scripts/enforce-frontend-file-floor.mjs's per-file floor (loaded
+      // programmatically, not copy-pasted — see the thresholds comment
+      // below). Editing these globs changes what that script enforces too.
       exclude: [
         'src/components/ui/**',          // shadcn vendored copies (D-10)
         'src/components/providers.tsx',  // D-09: pure QueryClientProvider wrapper, no logic
@@ -35,13 +39,26 @@ export default defineConfig({
         branches: 85,
         functions: 90,
         statements: 90,
-        // Per-file floor — D-14 line 2 (softer than project gate)
-        '**/*.{ts,tsx}': {
-          lines: 70,
-          branches: 60,
-          functions: 70,
-          statements: 70,
-        },
+        // D-14 line 2 (a per-file floor of 70/60/70/70, softer than the
+        // project gate above) USED to live here as a glob-keyed threshold
+        // block ('**/*.{ts,tsx}': {...}). It looked right and wasn't:
+        // Vitest evaluates a glob-keyed threshold over the AGGREGATE of
+        // every file the glob matches, not file by file. Since the glob
+        // covered the whole `include` set below, it measured roughly the
+        // same thing as the project-wide gate with lower numbers, so it
+        // never bound — files far under 70% still exited 0.
+        // `perFile: true` doesn't fix this either: it applies the PROJECT
+        // thresholds (90/85/90/90) to every file, which is stricter than
+        // the intended floor, not equal to it. "project 90, per-file 70"
+        // is not expressible in Vitest's threshold config.
+        // The per-file floor now lives in
+        // scripts/enforce-frontend-file-floor.mjs, which reads
+        // coverage/coverage-summary.json (emitted by the 'json-summary'
+        // reporter above) after this run finishes and fails per-file. It
+        // reads `include`/`exclude` straight out of this file via Vite's
+        // config loader, so they cannot drift from what's configured here.
+        // See Makefile's coverage-frontend target and the "Frontend
+        // Coverage" job in .github/workflows/ci.yml for how it's wired in.
       },
     },
   },
