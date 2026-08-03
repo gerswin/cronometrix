@@ -16,6 +16,8 @@ use axum::{
 };
 use bytes::Bytes;
 use libsql::params;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::isapi::ingest::{ingest_alert, IngestOutcome};
@@ -95,8 +97,16 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// same `serialNo` arrived on four consecutive pushes; under 200 the counter
 /// moved on each one.
 ///
-/// Errors are swallowed for the same reason: a reader that receives one
-/// re-queues and retries indefinitely.
+/// Processing errors are swallowed for the same reason: a reader that receives
+/// a non-200 re-queues and retries indefinitely. That is safe to do only
+/// because the raw body is durably stored in `device_push_inbox` (C-10)
+/// before any of that processing happens — a *processing* failure (bad XML,
+/// unknown event, business rejection) still answers 200, because the event is
+/// already safe and re-sending it would not help. A *durability* failure (the
+/// inbox INSERT itself did not land) is the one case that answers non-200 on
+/// purpose: nothing was stored, so the device keeping the event and retrying
+/// is correct backpressure, not the swallowed error this comment used to
+/// justify.
 const ACK: StatusCode = StatusCode::OK;
 
 pub async fn receive_push(
@@ -121,6 +131,36 @@ pub async fn receive_push(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_string();
+
+    // C-10: guardar primero, interpretar despues. Todo lo que ocurra a partir
+    // de aqui puede fallar sin perder el evento.
+    let body_sha256 = format!("{:x}", Sha256::digest(body.as_ref()));
+    let inbox_id = Uuid::new_v4().to_string();
+    let stored = state
+        .db_write
+        .statement(
+            "push.inbox-store",
+            "INSERT INTO device_push_inbox \
+               (id, device_id, content_type, body, body_sha256, received_at, status, attempts) \
+             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), 'pending', 0)",
+            vec![
+                libsql::Value::Text(inbox_id.clone()),
+                libsql::Value::Text(device_id.clone()),
+                libsql::Value::Text(content_type.clone()),
+                libsql::Value::Blob(body.to_vec()),
+                libsql::Value::Text(body_sha256),
+            ],
+        )
+        .await;
+
+    if let Err(error) = stored {
+        // Fallo de DURABILIDAD, no de procesamiento. Aqui SI respondemos
+        // no-200 a proposito: el device conserva el evento y reintenta, que es
+        // contrapresion correcta cuando la base no puede aceptarlo. Responder
+        // 200 sin haber guardado es la mentira que causo C-10.
+        tracing::error!(device_id = %device_id, err = %error, "push inbox store failed");
+        return Ok(StatusCode::SERVICE_UNAVAILABLE);
+    }
 
     let parts = split_payload(&content_type, &body);
     for (part_content_type, alert_bytes, jpeg) in parts {
