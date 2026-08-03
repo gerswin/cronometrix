@@ -579,28 +579,38 @@ mod gate_behavior_tests {
         assert!(lv.load(Ordering::Relaxed));
     }
 
-    /// LIC-03 round-trip: wiremock returns a valid signed JWT, handler verifies
-    /// + persists + flips license_valid → true.
-    /// Platform note: on macOS dev hosts collect_fingerprint() errors out
-    /// (no /proc/cpuinfo) so the activation falls into AppError::Internal —
-    /// the gate stays closed (correct fail-closed behavior). Both outcomes
-    /// are accepted as long as the security invariant holds.
-    /// C-06 note: this test goes through the real HTTP router, which calls
-    /// the production `activate_license` entry point — that entry point only
-    /// ever verifies against the embedded `pubkey.pem`, by design (no runtime
-    /// key override reaches the request path). Since `sign_test_jwt` now
-    /// signs with an ephemeral per-run keypair instead of a key matching
-    /// production, the StatusCode::OK branch below is no longer reachable —
-    /// the else branch's "activation failed, gate stays closed" assertion is
-    /// what actually fires now, on every platform. Both branches remain
-    /// intentionally: they document what a legitimate response looks like
-    /// either way, and the assertions still hold. The success path itself
-    /// (verify → persist → return LicenseClaims) is exercised directly, with
-    /// a matching test-supplied key, by
+    /// C-06 note (fix round 2): this test goes through the real HTTP router,
+    /// which calls the production `activate_license` entry point — that
+    /// entry point only ever verifies against the embedded `pubkey.pem`,
+    /// by design (no runtime key override reaches the request path, and
+    /// none was added — widening this to accept a test-supplied key at the
+    /// HTTP layer would recreate the exact key-substitution problem C-06
+    /// closed). Since `sign_test_jwt` signs with an ephemeral per-run
+    /// keypair instead of a key matching production, verification through
+    /// the real router now ALWAYS fails: `StatusCode::OK` is unreachable on
+    /// every platform. This was confirmed by instrumenting the test before
+    /// and after C-06 — pre-fix it returned 200 with `activated == true`
+    /// and flipped `license_valid`; post-fix it always returns non-OK and
+    /// `license_valid` never flips.
+    ///
+    /// What this test still proves: the router-level fail path is fail-closed
+    /// (no license_valid flip, no false "activated") whether the failure
+    /// comes from an unverifiable JWT (Linux — reaches verify, then fails
+    /// with AppError::Unlicensed) or from fingerprint collection itself
+    /// failing first (macOS dev — no /proc/cpuinfo, AppError::Internal).
+    ///
+    /// What this test can no longer prove: response body shape and status
+    /// mapping for a *successful* `POST /setup/activate` (the `activated:
+    /// true` JSON field, the 200 status, the router wiring from a verified
+    /// JWT through to the `license_valid` flip). The service-layer
+    /// success path (verify → persist → return `LicenseClaims`) is still
+    /// covered directly, with a matching test-supplied key, by
     /// `test_activation_calls_do_functions_with_fingerprint` via
-    /// `activate_license_with_key`.
+    /// `activate_license_with_key` — but that bypasses the router, so the
+    /// HTTP-level success response is a real, currently-unfilled coverage
+    /// gap. Recorded in `docs/OBSERVACIONES-FLAKES.md`.
     #[tokio::test]
-    async fn test_setup_activate_succeeds_via_wiremock() {
+    async fn test_setup_activate_fails_closed_via_wiremock_since_c06() {
         use wiremock::matchers::{method as wm_method, path as wm_path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -632,20 +642,17 @@ mod gate_behavior_tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
-        if resp.status() == StatusCode::OK {
-            assert!(
-                lv.load(Ordering::Relaxed),
-                "license_valid must be true after success"
-            );
-            let body = body_to_json(resp.into_body()).await;
-            assert_eq!(body["activated"], true);
-        } else {
-            // macOS dev path — fingerprint collection failed; gate stays closed.
-            assert!(
-                !lv.load(Ordering::Relaxed),
-                "license_valid must remain false on activation failure"
-            );
-        }
+        // An ephemeral test keypair can never verify against the embedded
+        // production key through the real router, so OK is dead here.
+        assert_ne!(
+            resp.status(),
+            StatusCode::OK,
+            "no test-signed JWT can verify against the embedded production key"
+        );
+        assert!(
+            !lv.load(Ordering::Relaxed),
+            "license_valid must remain false when activation cannot verify"
+        );
     }
 
     /// DO Functions 404 surfaces as AppError::NotFound{code:"LICENSE_NOT_FOUND"}.
