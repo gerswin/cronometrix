@@ -1230,14 +1230,26 @@ async fn status_no_longer_gates_the_report_employment_window_does() {
 }
 
 // -----------------------------------------------------------------------------
-// H-08: a row with no salary_kind must surface as a data error, never be
-// silently treated as Daily. `seed_employee` sets salary_kind='daily' for
-// every other test in this file (see fixtures/reports/seed.rs); these two
-// tests clear it back to NULL to prove compute_report refuses to guess.
+// I7 supersedes this section's original premise. It used to assert that a
+// row with no salary_kind failed the ENTIRE report with a 500 — i.e. it
+// encoded the defect being fixed: `require_salary_kind` returned `Result`
+// and was `?`-propagated, so ONE employee with a NULL salary_kind made every
+// OTHER employee's payroll uncomputable too. A missing `hire_date`, by
+// contrast, only ever raised a per-row anomaly (`HIRE_DATE_MISSING`) — the
+// inconsistency was never a deliberate decision.
+//
+// I7's fix keeps H-08's core guarantee (never assume `Daily` to keep going —
+// that is the exact defect H-08 closed) but degrades the failure to the row
+// level: money for that row stays at zero and `SALARY_KIND_MISSING` joins
+// its `anomaly_codes`, while the rest of the report — every other employee —
+// computes normally. `seed_employee` sets salary_kind='daily' for every
+// other test in this file (see fixtures/reports/seed.rs); these two tests
+// clear it back to NULL to prove compute_report still refuses to guess, just
+// without taking the whole report down with it.
 // -----------------------------------------------------------------------------
 
 #[tokio::test]
-async fn missing_salary_kind_surfaces_as_data_error_not_daily_default() {
+async fn missing_salary_kind_degrades_to_a_row_anomaly_not_a_daily_default() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
@@ -1268,15 +1280,39 @@ async fn missing_salary_kind_surfaces_as_data_error_not_daily_default() {
     .await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "missing salary_kind must fail the report, not silently pay as Daily: {:?}",
+        StatusCode::OK,
+        "I7: missing salary_kind must not fail the report — only that row's \
+         money: {:?}",
         body
     );
-    assert_eq!(body["error"]["code"], "SALARY_KIND_MISSING");
+
+    let row = row_for(&body, &emp);
+    assert_eq!(
+        row["total_a_pagar_cents"], 0,
+        "missing salary_kind must never silently pay as Daily — money stays \
+         at zero, exactly like a day with no record: {:?}",
+        row
+    );
+    assert_eq!(
+        row["work_min"], 480,
+        "time-based facts are not invented data and still accumulate: {:?}",
+        row
+    );
+    let codes: Vec<String> = row["anomaly_codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        codes.contains(&"SALARY_KIND_MISSING".to_string()),
+        "missing salary_kind must be a visible per-row anomaly: {:?}",
+        codes
+    );
 }
 
 #[tokio::test]
-async fn vacation_with_missing_salary_kind_also_surfaces_as_data_error() {
+async fn vacation_with_missing_salary_kind_also_degrades_to_a_row_anomaly() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
@@ -1320,11 +1356,31 @@ async fn vacation_with_missing_salary_kind_also_surfaces_as_data_error() {
     .await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "vacation pay with missing salary_kind must also fail, not silently pay as Daily: {:?}",
+        StatusCode::OK,
+        "I7: vacation pay with missing salary_kind must not fail the report \
+         — only that row's money: {:?}",
         body
     );
-    assert_eq!(body["error"]["code"], "SALARY_KIND_MISSING");
+
+    let row = row_for(&body, &emp);
+    assert_eq!(
+        row["total_a_pagar_cents"], 0,
+        "vacation pay must never silently pay as Daily — money stays at \
+         zero: {:?}",
+        row
+    );
+    let codes: Vec<String> = row["anomaly_codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        codes.contains(&"SALARY_KIND_MISSING".to_string()),
+        "missing salary_kind must be a visible per-row anomaly on the \
+         vacation path too: {:?}",
+        codes
+    );
 }
 
 /// H-08 end-to-end: a Monthly-kind employee's `base_salary_cents` is pro-rated
