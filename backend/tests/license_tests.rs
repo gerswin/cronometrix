@@ -7,22 +7,55 @@
 
 mod common;
 
+use std::sync::LazyLock;
+
 use cronometrix_api::errors::AppError;
 use cronometrix_api::license;
 use cronometrix_api::license::service::LicenseClaims;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method as wm_method, path as wm_path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn test_priv_key_pem() -> &'static [u8] {
-    include_bytes!("fixtures/test_license_privkey.pem")
+// C-06: no private key lives in the repo, not even as a test fixture — the
+// keypair that used to live at `tests/fixtures/test_license_{priv,pub}key.pem`
+// turned out to be the same key the backend embeds and trusts in production
+// (`src/license/pubkey.pem`). Generated once per test binary, reused by every
+// test in this file via `verify_license_jwt_with_key` / `*_with_key` — these
+// tests prove that what this crate signs, this crate can verify; they do not
+// and must not depend on the production signing key.
+struct TestKeypair {
+    encoding: EncodingKey,
+    decoding: DecodingKey,
+    pub_pem: String,
 }
+
+static TEST_KEYPAIR: LazyLock<TestKeypair> = LazyLock::new(|| {
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    use rsa::pkcs8::EncodePublicKey;
+    use rsa::RsaPrivateKey;
+
+    let mut rng = rand::thread_rng();
+    let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate ephemeral RSA keypair");
+    let pub_key = priv_key.to_public_key();
+
+    let priv_pem = priv_key
+        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+        .expect("encode ephemeral private key");
+    let pub_pem = pub_key
+        .to_public_key_pem(rsa::pkcs1::LineEnding::LF)
+        .expect("encode ephemeral public key");
+
+    TestKeypair {
+        encoding: EncodingKey::from_rsa_pem(priv_pem.as_bytes()).expect("ephemeral key parses"),
+        decoding: DecodingKey::from_rsa_pem(pub_pem.as_bytes()).expect("ephemeral pubkey parses"),
+        pub_pem: pub_pem.to_string(),
+    }
+});
 
 fn sign_test_jwt(claims: &LicenseClaims) -> String {
     let header = Header::new(Algorithm::RS256);
-    let key = EncodingKey::from_rsa_pem(test_priv_key_pem()).expect("test priv key parses");
-    encode(&header, claims, &key).expect("sign test jwt")
+    encode(&header, claims, &TEST_KEYPAIR.encoding).expect("sign test jwt")
 }
 
 fn make_claims(fingerprint: &str, exp_offset_secs: i64) -> LicenseClaims {
@@ -77,8 +110,8 @@ async fn unlicensed_error_maps_to_403_with_code_unlicensed() {
 /// Without it, DecodingKey::from_rsa_pem does not exist.
 #[test]
 fn jsonwebtoken_use_pem_feature_enabled() {
-    let pem = include_bytes!("fixtures/test_license_pubkey.pem");
-    let _key = jsonwebtoken::DecodingKey::from_rsa_pem(pem).expect("test pubkey should parse");
+    let _key = jsonwebtoken::DecodingKey::from_rsa_pem(TEST_KEYPAIR.pub_pem.as_bytes())
+        .expect("test pubkey should parse");
 }
 
 // =============================================================================
@@ -124,7 +157,8 @@ fn test_verify_rejects_invalid_signature() {
 fn test_verify_accepts_expired_token() {
     let claims = make_claims("test-fp", -3600);
     let token = sign_test_jwt(&claims);
-    let result = cronometrix_api::license::service::verify_license_jwt(&token);
+    let result =
+        cronometrix_api::license::service::verify_license_jwt_with_key(&token, &TEST_KEYPAIR.decoding);
     assert!(
         result.is_ok(),
         "expired but signed token must still verify (D-07)"
@@ -173,9 +207,13 @@ async fn test_activation_calls_do_functions_with_fingerprint() {
 
     let url = format!("{}/licenses/activate", mock.uri());
     let path = format!("/tmp/cronometrix-license-{}.jwt", uuid::Uuid::new_v4());
-    let result =
-        cronometrix_api::license::service::activate_license("ABCD-EFGH-IJKL-MNOP", &url, &path)
-            .await;
+    let result = cronometrix_api::license::service::activate_license_with_key(
+        "ABCD-EFGH-IJKL-MNOP",
+        &url,
+        &path,
+        &TEST_KEYPAIR.decoding,
+    )
+    .await;
 
     // On Linux the activation succeeds (fp present, claims match, JWT verifies, file written).
     // On macOS dev the very first step (collect_fingerprint) errors with AppError::Internal,
@@ -185,7 +223,11 @@ async fn test_activation_calls_do_functions_with_fingerprint() {
             let persisted = std::fs::read_to_string(&path).unwrap();
             assert!(!persisted.is_empty(), "JWT must be written on success");
             // Offline-load round-trip works (DEPL-04)
-            let valid = cronometrix_api::license::service::load_and_validate_license(&path).await;
+            let valid = cronometrix_api::license::service::load_and_validate_license_with_key(
+                &path,
+                &TEST_KEYPAIR.decoding,
+            )
+            .await;
             let _ = valid; // platform-dependent; persistence is the load-bearing assertion
         }
         Err(AppError::Internal(_)) => {
@@ -216,9 +258,13 @@ async fn test_activation_rejects_fingerprint_mismatch() {
 
     let url = format!("{}/licenses/activate", mock.uri());
     let path = format!("/tmp/cronometrix-mismatch-{}.jwt", uuid::Uuid::new_v4());
-    let result =
-        cronometrix_api::license::service::activate_license("ABCD-EFGH-IJKL-MNOP", &url, &path)
-            .await;
+    let result = cronometrix_api::license::service::activate_license_with_key(
+        "ABCD-EFGH-IJKL-MNOP",
+        &url,
+        &path,
+        &TEST_KEYPAIR.decoding,
+    )
+    .await;
 
     // On Linux the local fp is collected and rejected as Forbidden.
     // On macOS the fp lookup itself errors → Internal (still fail-closed).
@@ -289,7 +335,10 @@ async fn test_offline_operation_with_cached_jwt() {
     std::fs::write(&path, &signed).unwrap();
 
     // Direct verify works without any URL — no internet required.
-    let claims_back = cronometrix_api::license::service::verify_license_jwt(&signed);
+    let claims_back = cronometrix_api::license::service::verify_license_jwt_with_key(
+        &signed,
+        &TEST_KEYPAIR.decoding,
+    );
     assert!(claims_back.is_ok());
 
     let _ = std::fs::remove_file(&path);
@@ -536,6 +585,20 @@ mod gate_behavior_tests {
     /// (no /proc/cpuinfo) so the activation falls into AppError::Internal —
     /// the gate stays closed (correct fail-closed behavior). Both outcomes
     /// are accepted as long as the security invariant holds.
+    /// C-06 note: this test goes through the real HTTP router, which calls
+    /// the production `activate_license` entry point — that entry point only
+    /// ever verifies against the embedded `pubkey.pem`, by design (no runtime
+    /// key override reaches the request path). Since `sign_test_jwt` now
+    /// signs with an ephemeral per-run keypair instead of a key matching
+    /// production, the StatusCode::OK branch below is no longer reachable —
+    /// the else branch's "activation failed, gate stays closed" assertion is
+    /// what actually fires now, on every platform. Both branches remain
+    /// intentionally: they document what a legitimate response looks like
+    /// either way, and the assertions still hold. The success path itself
+    /// (verify → persist → return LicenseClaims) is exercised directly, with
+    /// a matching test-supplied key, by
+    /// `test_activation_calls_do_functions_with_fingerprint` via
+    /// `activate_license_with_key`.
     #[tokio::test]
     async fn test_setup_activate_succeeds_via_wiremock() {
         use wiremock::matchers::{method as wm_method, path as wm_path};

@@ -54,32 +54,31 @@ worktrees activos. Mientras esto no se haga, la rotación de los pasos 1-5 es
 lo que realmente protege: la clave vieja queda en la historia pero ya no
 firma nada que el producto acepte.
 
-## 7. Hallazgo pendiente: la misma clave también vive en `backend/tests/fixtures/`
+## 7. Hallazgo resuelto: la misma clave también vivía en `backend/tests/fixtures/`
 
 Durante la Tarea 4 (C-06) se confirmó que `backend/tests/fixtures/test_license_privkey.pem`
-es **byte-idéntico** a `do-functions/test-keys/test_priv.pem` (la clave que
+era **byte-idéntico** a `do-functions/test-keys/test_priv.pem` (la clave que
 esta tarea retiró) y a la pública comprometida
 (`f0318260deb1672cb624314065c8bd42d394fd799a954580265ca3b19f3106fc`). No se
-retiró en esta tarea porque `backend/tests/license_tests.rs` y
-`backend/tests/license_service_extra_test.rs` firman JWTs de prueba con esa
+resolvió en la primera pasada porque `backend/tests/license_tests.rs` y
+`backend/tests/license_service_extra_test.rs` firmaban JWTs de prueba con esa
 clave para verificarlos contra `verify_license_jwt`, que lee
 `backend/src/license/pubkey.pem` embebido en tiempo de compilación
-(`include_str!`, sin punto de inyección para pruebas). Sustituirla por una
-clave efímera exige primero decidir cómo desacoplar la verificación de
-pruebas de la clave de producción sin debilitar la garantía de "embebida en
-compilación" — un cambio de diseño en el core de licencias, fuera del
-alcance de la Tarea 4. Hasta que se resuelva:
+(`include_str!`, sin punto de inyección para pruebas).
 
-- El job `Secret Scan` de CI **detectará este archivo** y fallará en cada
-  push — correctamente: sigue siendo una clave privada comprometida
-  versionada en el árbol.
-- El paso 1-5 de este runbook (rotar `backend/src/license/pubkey.pem`) NO
-  toca este archivo: tras la rotación, `backend/tests/fixtures/test_license_privkey.pem`
-  queda desalineado con la nueva pública de producción, pero sigue siendo
-  una clave privada comprometida commiteada.
-- Requiere una tarea propia: dar a `verify_license_jwt` un punto de
-  inyección solo-para-pruebas (p. ej. env var honrada únicamente bajo
-  `cfg(test)` o un flag equivalente al patrón `CRONOMETRIX_E2E`), generar
-  el par en tiempo de prueba en `license_tests.rs` /
-  `license_service_extra_test.rs`, y entonces sí borrar
-  `backend/tests/fixtures/test_license_{priv,pub}key.pem` del árbol.
+**Resuelto en la ronda de corrección 1:** `verify_license_jwt` se dividió en
+un envoltorio de producción (sin cambios de comportamiento, sigue usando
+solo la clave embebida — nada en el camino de producción puede influir en
+qué clave confía, ni por variable de entorno ni de ninguna otra forma en
+tiempo de ejecución) y una función pura `verify_license_jwt_with_key(token,
+key)` que recibe la clave como parámetro. El mismo patrón se replicó en
+`load_and_validate_license`, `activate_license`, `try_renew` y
+`renewal_task` (cada uno gana un gemelo `*_with_key`), porque las pruebas de
+extremo a extremo de esas cuatro funciones también dependían, de forma
+transitiva, de que la clave de prueba coincidiera con la de producción.
+Las pruebas ahora generan un par RSA-2048 efímero por binario de prueba
+(`rsa::RsaPrivateKey::new` vía `rand::thread_rng()`, ya transitivo por el
+backend `rust_crypto` de `jsonwebtoken` — se declaró explícito en
+`[dev-dependencies]`) y firman/verifican contra ese par, nunca contra la
+clave de producción. `backend/tests/fixtures/test_license_{priv,pub}key.pem`
+se eliminó del árbol.

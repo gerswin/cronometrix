@@ -821,6 +821,7 @@ dependencies = [
  "quick-xml 0.39.2",
  "rand 0.8.5",
  "reqwest",
+ "rsa",
  "rust_xlsxwriter",
  "serde",
  "serde_json",
