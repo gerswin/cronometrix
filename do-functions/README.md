@@ -80,21 +80,21 @@ and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
 ## Local testing
 
 The unit tests run entirely offline using the in-memory `shared-store.js`
-fixture (no Postgres needed) and the test RSA keypair under
-`do-functions/test-keys/`.
+fixture (no Postgres needed) and an ephemeral RSA keypair generated at test
+load time (C-06: no private key lives in the repo, not even as a test
+fixture — see `docs/runbooks/rotacion-clave-licencia.md`).
 
 ```bash
 # 1. Install local-only test runtime (jsonwebtoken at the do-functions root).
 cd do-functions
 npm install --silent
 
-# 2. Test keys are committed at do-functions/test-keys/. They are byte-
-#    identical to backend/tests/fixtures/test_license_{priv,pub}key.pem
-#    (Plan 01 fixtures) so the JWTs the DO Functions sign verify against
-#    the same public key the Rust backend embeds.
-ls test-keys/
+# 2. Each test file generates its own RSA keypair at module load
+#    (node:crypto generateKeyPairSync) and signs/verifies against it —
+#    these tests only prove that what the handler signs, it can verify.
+#    They do not and must not depend on the production signing key.
 
-# 3. Run the full suite (17 tests across both handlers).
+# 3. Run the full suite (18 tests across both handlers).
 node --test packages/licenses/activate/test.js
 node --test packages/licenses/renew/test.js
 ```
@@ -141,26 +141,25 @@ The tests cover:
   JWTs offline. DO Functions does NOT use it during deployment — it
   builds each function package independently.
 
-## Test key alignment with Plan 01
+## Test keys (C-06)
 
-`do-functions/test-keys/test_priv.pem` and `test_pub.pem` are byte-identical
-copies of `backend/tests/fixtures/test_license_privkey.pem` and
-`test_license_pubkey.pem`, which are themselves byte-identical to
-`backend/src/license/pubkey.pem` (the public key embedded in the Rust
-binary). This three-way alignment lets:
+`do-functions/test-keys/` was removed. It used to hold a committed RSA
+keypair (`test_priv.pem` / `test_pub.pem`) that turned out to be
+byte-identical to `backend/src/license/pubkey.pem` — the public key the
+Rust binary embeds and trusts in production. Anyone with a clone of this
+repository could mint license JWTs the product would accept.
 
-1. The DO Functions sign a test JWT with the test private key.
-2. A Rust integration test verify that JWT against the embedded public key.
-3. The same Rust test embed-and-verify cycle work without network access.
+`packages/licenses/activate/test.js` and `packages/licenses/renew/test.js`
+now each generate their own ephemeral RSA-2048 keypair at module load
+(`node:crypto.generateKeyPairSync`) and verify only against that keypair.
+This deliberately breaks the old three-way alignment with
+`backend/src/license/pubkey.pem` — these unit tests were never meant to
+prove production trust; that only requires proving a handler verifies what
+it signs.
 
-When operators rotate keys for production:
-- Replace `backend/src/license/pubkey.pem` with the production public key.
-- Replace `do-functions/test-keys/test_priv.pem` and `test_pub.pem` with a
-  new test-only pair (do NOT use the production keys for tests), OR remove
-  the integration tests that depend on test sign-and-verify (typical for
-  production CI).
-- Recompile the Rust API and redeploy DO Functions with the new private
-  key in `LICENSE_PRIVATE_KEY`.
+Production key rotation (including why `backend/tests/fixtures/` still
+needs separate attention) is documented in
+`docs/runbooks/rotacion-clave-licencia.md`.
 
 ## Why pg over alternatives
 

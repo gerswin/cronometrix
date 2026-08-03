@@ -2,27 +2,26 @@
 // Or:        cd do-functions && node --test packages/licenses/activate/test.js
 //
 // Uses the in-memory shared-store via process.env.TEST_STORE so no Postgres
-// is required for unit tests. The RSA test keypair is copied byte-for-byte
-// from backend/tests/fixtures/ in Plan 01, so JWTs signed here verify with
-// the same public key the Rust backend uses (end-to-end determinism).
+// is required for unit tests. The RSA keypair is generated per run: these
+// tests verify that what this function signs, this function can verify —
+// they do not and must not depend on the production signing key.
 
 const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
 const jwt = require('jsonwebtoken');
 
 process.env.TEST_STORE = '1';
-// __dirname = do-functions/packages/licenses/activate
-// 3 levels up = do-functions/, then into test-keys/
-process.env.LICENSE_PRIVATE_KEY = fs.readFileSync(
-    path.join(__dirname, '../../../test-keys/test_priv.pem'),
-    'utf8',
-);
-const TEST_PUBKEY = fs.readFileSync(
-    path.join(__dirname, '../../../test-keys/test_pub.pem'),
-    'utf8',
-);
+// Ephemeral RSA keypair, generated per run. C-06: no private key lives in
+// the repository, not even as a test fixture — the one that used to live
+// here turned out to be the same key the backend trusts in production.
+const { generateKeyPairSync } = require('node:crypto');
+const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+});
+process.env.LICENSE_PRIVATE_KEY = privateKey;
+const TEST_PUBKEY = publicKey;
 
 const handler = require('./index.js').main;
 const store = require('../shared-store');
