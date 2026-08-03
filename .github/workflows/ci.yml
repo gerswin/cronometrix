@@ -180,3 +180,20 @@ jobs:
           path: deploy/test-artifacts/container-smoke.log
           if-no-files-found: warn
           retention-days: 14
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fail on committed private keys
+        run: |
+          if git grep -nE -- '-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----' -- . ':!*.md'; then
+            echo "::error::A private key is committed in the working tree."
+            exit 1
+          fi
+          echo "No private keys in the working tree."

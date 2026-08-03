@@ -65,6 +65,11 @@ calamine = "0.28"
 http-body-util = "0.1"
 md-5 = "0.10"
 proptest = "1.11.0"
+# C-06: generates an ephemeral RSA keypair per test binary so license
+# integration tests never need a committed private key. Already a transitive
+# dependency of jsonwebtoken's `rust_crypto` backend (see [dependencies]) —
+# listed explicitly here only so test code can call it directly.
+rsa = "0.9"
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }

@@ -47,11 +47,36 @@ fn license_decoding_key() -> &'static DecodingKey {
 /// Verify a license JWT against the embedded RS256 public key.
 /// D-07 soft expiry: validate_exp = false so an expired JWT still verifies.
 /// Algorithm pinned to RS256 to defeat alg=HS256 confusion attacks.
+///
+/// This is the ONLY production entry point and it is not configurable at
+/// runtime: the trusted key always comes from `license_decoding_key()`
+/// (compile-time `include_str!`, see D-01/D-02 above). There is
+/// deliberately no env var or other override here — see
+/// `verify_license_jwt_with_key` for why.
 pub fn verify_license_jwt(token: &str) -> Result<LicenseClaims, AppError> {
+    verify_license_jwt_with_key(token, license_decoding_key())
+}
+
+/// Same verification logic as [`verify_license_jwt`], but the caller supplies
+/// the `DecodingKey` instead of it being read from the embedded production
+/// key (C-06). This exists ONLY so integration tests can sign JWTs with an
+/// ephemeral, per-run keypair and verify them without needing a private key
+/// that matches `pubkey.pem` — i.e. without committing a real private key to
+/// the repo as a test fixture.
+///
+/// Not wired to any env var, CLI flag, or config value: nothing in the
+/// production request path can reach this function with a key other than
+/// the embedded one, because `verify_license_jwt` is the only production
+/// caller and it always passes `license_decoding_key()`. Widening this to a
+/// runtime-selectable key would trade a leaked-key problem for a
+/// key-substitution problem — deliberately not done.
+pub fn verify_license_jwt_with_key(
+    token: &str,
+    key: &DecodingKey,
+) -> Result<LicenseClaims, AppError> {
     let mut validation = Validation::new(Algorithm::RS256);
     validation.validate_exp = false;
-    let data = decode::<LicenseClaims>(token, license_decoding_key(), &validation)
-        .map_err(|_| AppError::Unlicensed)?;
+    let data = decode::<LicenseClaims>(token, key, &validation).map_err(|_| AppError::Unlicensed)?;
     Ok(data.claims)
 }
 
@@ -102,7 +127,17 @@ pub fn evaluate_bypass(e2e: bool, bypass: bool) -> BypassDecision {
 /// and compare against the JWT claim. Returns true ONLY when all checks pass.
 /// Returns false (without panic) on any error so the system can boot to /setup
 /// for first-run activation.
+///
+/// Production entry point — always verifies against the embedded key. See
+/// [`load_and_validate_license_with_key`] for the test-only variant.
 pub async fn load_and_validate_license(jwt_path: &str) -> bool {
+    load_and_validate_license_with_key(jwt_path, license_decoding_key()).await
+}
+
+/// Same as [`load_and_validate_license`], but the caller supplies the
+/// `DecodingKey` (C-06 test seam — see [`verify_license_jwt_with_key`] for
+/// the rationale). Not reachable from any production code path.
+pub async fn load_and_validate_license_with_key(jwt_path: &str, key: &DecodingKey) -> bool {
     let token = match std::fs::read_to_string(jwt_path) {
         Ok(t) => t.trim().to_string(),
         Err(_) => return false, // first run — file does not exist yet
@@ -110,7 +145,7 @@ pub async fn load_and_validate_license(jwt_path: &str) -> bool {
     if token.is_empty() {
         return false;
     }
-    let claims = match verify_license_jwt(&token) {
+    let claims = match verify_license_jwt_with_key(&token, key) {
         Ok(c) => c,
         Err(_) => return false,
     };
@@ -131,10 +166,32 @@ pub async fn load_and_validate_license(jwt_path: &str) -> bool {
 /// Call DO Functions to activate this installation. Persists JWT to disk on
 /// success and verifies the returned JWT BEFORE persisting. Returns LicenseClaims
 /// or AppError. Used by setup_activate handler in Plan 02.
+///
+/// Production entry point — always verifies against the embedded key. See
+/// [`activate_license_with_key`] for the test-only variant.
 pub async fn activate_license(
     license_key: &str,
     do_functions_activate_url: &str,
     jwt_path: &str,
+) -> Result<LicenseClaims, AppError> {
+    activate_license_with_key(
+        license_key,
+        do_functions_activate_url,
+        jwt_path,
+        license_decoding_key(),
+    )
+    .await
+}
+
+/// Same as [`activate_license`], but the caller supplies the `DecodingKey`
+/// used to verify the JWT DO Functions returns (C-06 test seam — see
+/// [`verify_license_jwt_with_key`] for the rationale). Not reachable from any
+/// production code path.
+pub async fn activate_license_with_key(
+    license_key: &str,
+    do_functions_activate_url: &str,
+    jwt_path: &str,
+    key: &DecodingKey,
 ) -> Result<LicenseClaims, AppError> {
     if do_functions_activate_url.is_empty() {
         return Err(AppError::BadGateway {
@@ -197,7 +254,7 @@ pub async fn activate_license(
 
     // VERIFY before persisting. This blocks server-side fingerprint forgery:
     // the server cannot return a JWT we accept unless its claims include OUR fp.
-    let claims = verify_license_jwt(token)?;
+    let claims = verify_license_jwt_with_key(token, key)?;
     if claims.hardware_fingerprint != fp {
         // LIC-05 — anti-cloning at activation time
         return Err(AppError::Forbidden);
@@ -216,11 +273,35 @@ pub async fn activate_license(
 /// Background task: at startup and every 24h, if the cached JWT is within 30 days
 /// of expiry AND DO Functions is configured, attempt a silent renewal. Failures
 /// are logged but never block the system (D-08, D-09: offline-first).
+///
+/// Production entry point — always verifies against the embedded key. See
+/// [`renewal_task_with_key`] for the test-only variant.
 pub async fn renewal_task(
     license_jwt_path: String,
     do_functions_renew_url: String,
     license_valid: std::sync::Arc<std::sync::atomic::AtomicBool>,
     cancel: tokio_util::sync::CancellationToken,
+) {
+    renewal_task_with_key(
+        license_jwt_path,
+        do_functions_renew_url,
+        license_valid,
+        cancel,
+        license_decoding_key(),
+    )
+    .await
+}
+
+/// Same as [`renewal_task`], but the caller supplies the `DecodingKey` used
+/// for every renewal cycle's verification (C-06 test seam — see
+/// [`verify_license_jwt_with_key`] for the rationale). Not reachable from any
+/// production code path.
+pub async fn renewal_task_with_key(
+    license_jwt_path: String,
+    do_functions_renew_url: String,
+    license_valid: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    cancel: tokio_util::sync::CancellationToken,
+    key: &DecodingKey,
 ) {
     use std::sync::atomic::Ordering;
     loop {
@@ -229,7 +310,7 @@ pub async fn renewal_task(
             _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 60 * 24)) => {
                 if !license_valid.load(Ordering::Relaxed) { continue; }
                 if do_functions_renew_url.is_empty() { continue; }
-                if let Err(e) = try_renew(&license_jwt_path, &do_functions_renew_url).await {
+                if let Err(e) = try_renew_with_key(&license_jwt_path, &do_functions_renew_url, key).await {
                     tracing::warn!("license renewal attempt failed: {}", e);
                 }
             }
@@ -242,10 +323,25 @@ pub async fn renewal_task(
 /// This is public so operators and integration tests can exercise the exact
 /// renewal transaction independently from the 24-hour scheduler. Callers that
 /// want the scheduler should use [`renewal_task`].
+///
+/// Production entry point — always verifies against the embedded key. See
+/// [`try_renew_with_key`] for the test-only variant.
 pub async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> {
+    try_renew_with_key(jwt_path, renew_url, license_decoding_key()).await
+}
+
+/// Same as [`try_renew`], but the caller supplies the `DecodingKey` used to
+/// verify both the existing cached JWT and the freshly renewed one (C-06 test
+/// seam — see [`verify_license_jwt_with_key`] for the rationale). Not
+/// reachable from any production code path.
+pub async fn try_renew_with_key(
+    jwt_path: &str,
+    renew_url: &str,
+    key: &DecodingKey,
+) -> Result<(), AppError> {
     let token = std::fs::read_to_string(jwt_path)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("read license: {}", e)))?;
-    let claims = verify_license_jwt(token.trim())?;
+    let claims = verify_license_jwt_with_key(token.trim(), key)?;
 
     // D-08: only renew if within 30 days of expiry
     let now = chrono::Utc::now().timestamp();
@@ -294,7 +390,7 @@ pub async fn try_renew(jwt_path: &str, renew_url: &str) -> Result<(), AppError> 
         })?;
 
     // Verify new token before persisting
-    let new_claims = verify_license_jwt(new_token)?;
+    let new_claims = verify_license_jwt_with_key(new_token, key)?;
     if new_claims.hardware_fingerprint != fp {
         return Err(AppError::Forbidden);
     }
