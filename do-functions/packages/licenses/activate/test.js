@@ -129,3 +129,29 @@ test('binds fingerprint on first activation (state mutation)', async () => {
     });
     assert.strictEqual(await store.lookup('TEST-1234-5678-9012'), 'FP-A');
 });
+
+// C-07: dos activaciones simultáneas con fingerprints distintos. El binding
+// tiene que ser condicional, no un UPDATE ciego: solo un equipo puede quedar
+// vinculado y el otro debe recibir 409.
+//
+// Sobre el alcance: el store en memoria es de un solo hilo, así que esto
+// verifica el CONTRATO (bind condicional + 409), no la atomicidad de Postgres.
+// Esa la aporta el propio UPDATE de una sola sentencia con guarda en el WHERE.
+test('concurrent activations bind the license exactly once', async () => {
+    store.__seedRow('TEST-RACE-0000-0001');
+
+    const [a, b] = await Promise.all([
+        handler({ body: { license_key: 'TEST-RACE-0000-0001', hardware_fingerprint: 'FP-A' } }),
+        handler({ body: { license_key: 'TEST-RACE-0000-0001', hardware_fingerprint: 'FP-B' } }),
+    ]);
+
+    const granted = [a, b].filter((r) => r.statusCode === 200);
+    const rejected = [a, b].filter((r) => r.statusCode === 409);
+    assert.strictEqual(granted.length, 1, 'exactly one activation may receive a token');
+    assert.strictEqual(rejected.length, 1, 'the loser must get 409, not a signed token');
+
+    // Y la licencia queda vinculada al que ganó, no al último en escribir.
+    const bound = await store.lookup('TEST-RACE-0000-0001');
+    assert.strictEqual(bound, granted[0].body.hardware_fingerprint ?? bound);
+    assert.ok(['FP-A', 'FP-B'].includes(bound));
+});

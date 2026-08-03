@@ -9,6 +9,13 @@
 //   null       -> row exists but no fingerprint bound yet                  -> proceed to bind
 //   <string>   -> row exists, bound to that fingerprint                    -> compare
 //
+// Bind contract (C-07, mirrored by the production pg-backed store):
+//   bind(licenseKey, fp, now) -> Promise<boolean>
+//   true  -> the row is now bound to fp (it was unbound, or already bound to fp)
+//   false -> the row is bound to a DIFFERENT fingerprint already; no write
+//            happened. Caller must NOT sign a token in this case — another
+//            activation won the race.
+//
 // Reset between tests via store.__reset(); seed rows via store.__seedRow().
 
 const rows = new Map(); // license_key -> { fp: string|null, activated_at, last_renewed_at }
@@ -21,9 +28,13 @@ module.exports = {
     },
     async bind(licenseKey, fp, now) {
         const row = rows.get(licenseKey) || { fp: null, activated_at: null, last_renewed_at: null };
+        // Mismo contrato que el UPDATE con guarda: solo vincula si está libre o
+        // ya es el mismo equipo. Devuelve si la vinculación quedó hecha.
+        if (row.fp != null && row.fp !== fp) return false;
         if (row.activated_at == null) row.activated_at = now;
         row.fp = fp;
         rows.set(licenseKey, row);
+        return true;
     },
     async touch(licenseKey, now) {
         const row = rows.get(licenseKey);
