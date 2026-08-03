@@ -80,9 +80,15 @@ es una corrección técnica con respuesta única.
 
 ## 3. Lo que NO se verificó
 
-Se comprobaron los **10 críticos** y **4 altos** por muestreo. Quedan **26
-hallazgos sin verificar** (H-01, H-02, H-05 a H-12, H-14 a H-16, M-01 a M-09,
-M-11, M-12, L-01, L-02).
+Se comprobaron los **10 críticos** y **4 altos** por muestreo.
+
+**Actualización 2026-08-03: ya no queda ninguno sin verificar.** Los 25
+restantes se comprobaron en `docs/auditoria/VERIFICACION-LOTE-2.md` (eran 25,
+no 26 — H-01 se verificó y arregló en el trabajo del acantilado de tolerancia).
+Resultado: 20 confirmados, 5 con matiz, ninguno completamente falso — pero tres
+titulares inducen al arreglo equivocado, dos afirmaciones probatorias son falsas
+y dos recomendaciones causarían daño si se siguen literalmente. Leer ese
+documento antes de actuar sobre cualquier hallazgo.
 
 No asumir que son ciertos. El muestreo salió muy bien (14/14 reales, 2 con
 matiz), lo que da confianza en el método del auditor, pero dos de los que sí
