@@ -2,6 +2,21 @@ use axum::http::Request;
 use tower_http::trace::{HttpMakeClassifier, MakeSpan, TraceLayer};
 use tracing::Span;
 
+/// Sustituye el token de un push por `[redacted]`.
+///
+/// C-08: la ruta lleva el secreto de escritura del device
+/// (`/devices/{id}/push/{token}`). El firmware Hikvision no admite cabeceras
+/// arbitrarias en `httpHosts`, así que el secreto tiene que seguir en la URI;
+/// lo que no puede es sobrevivir en un log.
+pub fn redact_path(path: &str) -> String {
+    match path.rsplit_once("/push/") {
+        Some((prefix, token)) if !token.is_empty() && !token.contains('/') => {
+            format!("{prefix}/push/[redacted]")
+        }
+        _ => path.to_string(),
+    }
+}
+
 /// Produces request spans that deliberately exclude URI query strings.
 ///
 /// The SSE endpoint authenticates via `?token=...`; recording the full URI in
@@ -14,7 +29,7 @@ impl<B> MakeSpan<B> for SafeMakeSpan {
         tracing::debug_span!(
             "request",
             method = %request.method(),
-            path = %request.uri().path(),
+            path = %redact_path(request.uri().path()),
         )
     }
 }
