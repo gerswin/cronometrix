@@ -49,7 +49,10 @@ pub struct SetupInitRequest {
 /// POST /api/v1/setup/init
 /// Creates the first admin user. Returns 409 if already initialized.
 /// Per D-07: setup wizard endpoint blocked after first admin exists.
-/// Per T-01-11: SELECT COUNT(*) + 409 prevents race condition duplicate admins.
+/// C-09: la comprobación de unicidad y el INSERT ocurren en la misma
+/// transacción del escritor serializado. Un `SELECT COUNT(*)` previo por otra
+/// conexión NO cierra la carrera: entre lectura y escritura corre el hash
+/// Argon2, que abre una ventana de cientos de milisegundos.
 pub async fn setup_init(
     State(state): State<AppState>,
     Json(body): Json<SetupInitRequest>,
@@ -59,48 +62,39 @@ pub async fn setup_init(
         message: e.to_string(),
     })?;
 
-    let conn = state
-        .db
-        .connect()
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Check if already initialized — T-01-11
-    let mut rows = conn
-        .query("SELECT COUNT(*) FROM users", ())
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    let count: i64 = rows
-        .next()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .map(|row| row.get::<i64>(0).unwrap_or(0))
-        .unwrap_or(0);
-
-    if count > 0 {
-        return Err(AppError::Conflict {
-            code: "SETUP_ALREADY_COMPLETE",
-            message: "System has already been initialized. An admin user already exists."
-                .to_string(),
-        });
-    }
-
+    // Argon2 es caro a propósito: se calcula fuera de la transacción para no
+    // ocupar el escritor serializado. La comprobación de unicidad ocurre dentro.
     let password_hash = service::hash_password(&body.password)?;
     let user_id = Uuid::new_v4().to_string();
+    let insert_id = user_id.clone();
 
     state
         .db_write
-        .statement(
-            "setup.create-admin",
-            "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
-            vec![
-                libsql::Value::Text(user_id.clone()),
-                libsql::Value::Text(body.username),
-                libsql::Value::Text(body.full_name),
-                libsql::Value::Text(password_hash),
-            ],
-        )
+        .transact("setup.create-admin", move |tx| {
+            Box::pin(async move {
+                let mut rows = tx.query("SELECT COUNT(*) FROM users", ()).await?;
+                let count: i64 = rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("COUNT returned no row"))?
+                    .get(0)?;
+                if count > 0 {
+                    return Err(anyhow::Error::new(AppError::Conflict {
+                        code: "SETUP_ALREADY_COMPLETE",
+                        message:
+                            "System has already been initialized. An admin user already exists."
+                                .to_string(),
+                    }));
+                }
+                tx.statement(
+                    "INSERT INTO users (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'admin', 'active', 1, unixepoch(), unixepoch())",
+                    libsql::params![insert_id, body.username, body.full_name, password_hash],
+                )
+                .await?;
+                Ok(())
+            })
+        })
         .await
         .map_err(AppError::from)?;
 
