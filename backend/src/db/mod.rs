@@ -99,6 +99,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "024_employee_salary_kind",
         include_str!("migrations/024_employee_salary_kind.sql"),
     ),
+    (
+        "025_unique_active_override",
+        include_str!("migrations/025_unique_active_override.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded
