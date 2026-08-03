@@ -1147,11 +1147,22 @@ async fn dias_ausentes_weekday_only() {
     );
 }
 
-/// Sanity check: include_inactive=false (default) excludes inactive employees
-/// even if they have daily_records in the period. include_inactive=true brings
-/// them back. Acts as a guard that the predicate is parameterized correctly.
+/// C-05 supersedes this test's original premise. It used to assert that
+/// `include_inactive=false` (default) excludes an inactive employee EVEN IF
+/// they have daily_records in the period — i.e. it encoded the defect being
+/// fixed: filtering the report by `status='active'` made a worker who
+/// clocked in, and is owed pay for it, disappear entirely once someone
+/// flipped their status to inactive.
+///
+/// C-05's fix removes `status` as a report gate outright — employment
+/// validity is now decided by `hire_date`/`terminated_on` vs. the period,
+/// not by the current-state `status` flag (see reports/service.rs). So an
+/// inactive employee with worked days in the period must appear REGARDLESS
+/// of `include_inactive`; this test now guards that `include_inactive` no
+/// longer participates in row inclusion (status still gates other things,
+/// like which employees the UI offers in a picker — just not this).
 #[tokio::test]
-async fn include_inactive_filter_works() {
+async fn status_no_longer_gates_the_report_employment_window_does() {
     let db = common::test_db().await;
     let admin = create_test_admin(&db).await;
     let token = test_access_token(&admin, "admin");
@@ -1188,8 +1199,15 @@ async fn include_inactive_filter_works() {
     )
     .await;
     let rows = body["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "default excludes inactive");
-    assert_eq!(rows[0]["employee_id"], active);
+    assert_eq!(
+        rows.len(),
+        2,
+        "C-05: an inactive employee with worked days in the period must \
+         still appear (and be paid) even with include_inactive=false: {:?}",
+        rows
+    );
+    assert!(rows.iter().any(|r| r["employee_id"] == active));
+    assert!(rows.iter().any(|r| r["employee_id"] == inactive));
 
     let (_, body) = post_report(
         &app,
@@ -1203,7 +1221,12 @@ async fn include_inactive_filter_works() {
     )
     .await;
     let rows = body["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 2, "include_inactive=true brings inactive back");
+    assert_eq!(
+        rows.len(),
+        2,
+        "include_inactive=true must not change the result: status is no \
+         longer a report gate either way"
+    );
 }
 
 // -----------------------------------------------------------------------------

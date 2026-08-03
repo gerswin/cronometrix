@@ -45,7 +45,7 @@ fn parse_hire_date(input: Option<&str>) -> Result<Option<i64>, AppError> {
 /// Map a libSQL row to an Employee struct.
 /// Column order is fixed by the SELECT statements below:
 ///   id, employee_code, name, department_id, status, position, hire_date,
-///   base_salary_cents, deleted_at, version, created_at, updated_at
+///   base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on
 fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
     Ok(Employee {
         id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
@@ -60,6 +60,9 @@ fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
         version: row.get(9).map_err(|e| AppError::Internal(e.into()))?,
         created_at: epoch_to_iso(row.get(10).map_err(|e| AppError::Internal(e.into()))?),
         updated_at: epoch_to_iso(row.get(11).map_err(|e| AppError::Internal(e.into()))?),
+        terminated_on: epoch_to_iso_date_opt(
+            row.get(12).map_err(|e| AppError::Internal(e.into()))?,
+        ),
     })
 }
 
@@ -212,7 +215,7 @@ pub async fn list(
 
     // Fetch page
     let fetch_sql = format!(
-        "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at \
+        "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on \
          FROM employees {} ORDER BY name ASC LIMIT ?{} OFFSET ?{}",
         where_clause,
         fetch_values.len() + 1,
@@ -248,7 +251,7 @@ pub async fn list(
 pub async fn get_by_id(conn: &Connection, id: &str) -> Result<Employee, AppError> {
     let row = conn
         .query(
-            "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at \
+            "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on \
              FROM employees WHERE id = ?1",
             params![id.to_string()],
         )
@@ -399,13 +402,19 @@ pub async fn update_queued(
 
 /// Soft-delete an employee by setting status=inactive and deleted_at per D-03.
 /// Returns NotFound with EMPLOYEE_NOT_FOUND if not found or already inactive.
+///
+/// C-05: also stamps `terminated_on = unixepoch()` — this is the one place
+/// in the app where an employee's employment actually ends, so it is the
+/// authoritative source for the payroll report's employment-window bound
+/// (not user-settable via UpdateEmployeeRequest, same treatment as
+/// `deleted_at`).
 pub async fn deactivate_queued(state: &AppState, id: &str) -> Result<(), AppError> {
     let rows_affected = state
         .db_write
         .statement(
             "employees.deactivate",
             "UPDATE employees SET status = 'inactive', deleted_at = unixepoch(), \
-             updated_at = unixepoch(), version = version + 1 \
+             terminated_on = unixepoch(), updated_at = unixepoch(), version = version + 1 \
              WHERE id = ?1 AND status = 'active'",
             vec![libsql::Value::Text(id.to_string())],
         )

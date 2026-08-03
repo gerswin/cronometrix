@@ -81,6 +81,60 @@ pub async fn seed_employee(
     id
 }
 
+/// YYYY-MM-DD -> epoch seconds at UTC midnight. Test-only helper mirroring
+/// `employees::service::parse_hire_date`, used to seed `hire_date` /
+/// `terminated_on` (both epoch-seconds columns per migrations 015 / 026).
+fn date_to_epoch(date: &str) -> i64 {
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .expect("test date must be YYYY-MM-DD")
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is always valid")
+        .and_utc()
+        .timestamp()
+}
+
+/// Seed an employee with an explicit `hire_date` / `terminated_on`
+/// employment window (C-05). Both are optional YYYY-MM-DD strings; `None`
+/// leaves the column NULL (unknown hire date / still employed). `status` is
+/// caller-controlled ('active' | 'inactive') so tests can exercise the
+/// grave C-05 case directly: an *inactive* employee whose worked days in
+/// the period must still be paid, independent of `status`.
+#[allow(clippy::too_many_arguments)]
+pub async fn seed_employee_with_window(
+    db: &libsql::Database,
+    code: &str,
+    name: &str,
+    dept_id: &str,
+    position: &str,
+    status: &str,
+    hire_date: Option<&str>,
+    terminated_on: Option<&str>,
+) -> String {
+    let conn = db.connect().expect("connect");
+    let id = Uuid::new_v4().to_string();
+    let hire_date_val = hire_date.map(date_to_epoch);
+    let terminated_on_val = terminated_on.map(date_to_epoch);
+    conn.execute(
+        "INSERT INTO employees (id, employee_code, name, department_id, status, position, \
+         base_salary_cents, salary_kind, hire_date, terminated_on, version, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
+         (SELECT base_salary_cents FROM departments WHERE id = ?4), 'daily', ?7, ?8, 1, unixepoch(), unixepoch())",
+        params![
+            id.clone(),
+            code.to_string(),
+            name.to_string(),
+            dept_id.to_string(),
+            status.to_string(),
+            position.to_string(),
+            hire_date_val,
+            terminated_on_val,
+        ],
+    )
+    .await
+    .expect("seed employee with window");
+    id
+}
+
 /// Seed an inactive employee (status='inactive') for include_inactive testing.
 pub async fn seed_inactive_employee(
     db: &libsql::Database,

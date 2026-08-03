@@ -76,6 +76,13 @@ pub struct Employee {
     pub status: String,            // "active" | "inactive"
     pub position: String,          // empty string renders as '—' in UI per D-30a
     pub hire_date: Option<String>, // ISO YYYY-MM-DD or null
+    /// Employment end date (migration 026, C-05). `None` = still employed.
+    /// Stamped automatically by `deactivate_queued` at the moment `status`
+    /// flips to 'inactive' — it is not user-settable via
+    /// Create/UpdateEmployeeRequest, mirroring how `deleted_at` is derived,
+    /// not authored. The payroll report reads this (not `status`) to decide
+    /// whether an employee's days in a period are payable.
+    pub terminated_on: Option<String>, // ISO YYYY-MM-DD or null
     /// Per-employee base salary in cents (migration 018). Authoritative for payroll math.
     /// Department-level salary remains as a "default suggestion" only.
     pub base_salary_cents: i64,
