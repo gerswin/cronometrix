@@ -320,8 +320,19 @@ pub async fn compute_report(
                 // Standard work day money math.
                 let salary_kind =
                     require_salary_kind(salary_kind_str_opt.as_deref(), &nombre, &cedula)?;
+                // C-01: `overtime_minutes` is a SUBSET of the worked minutes
+                // (calc/engine.rs:82). Paying the full total at the ordinary
+                // rate and ALSO adding the overtime slice at 150% charges every
+                // overtime minute at 250%. The ordinary base excludes the
+                // overtime slice; the premium is contributed by ot_pay_cents.
+                // `effective_work_min` may come from an override while
+                // `overtime_minutes` is the original engine value — hence the
+                // `.max(0)`. The override not recomputing the overtime slice
+                // is H-07, out of scope here; this comment is for the next
+                // reader who wonders why the two can disagree.
+                let ordinary_min = (effective_work_min - overtime_minutes).max(0);
                 let work_pay = money::work_pay_cents(
-                    effective_work_min,
+                    ordinary_min,
                     base_salary_cents,
                     ordinary_daily_minutes,
                     salary_kind,
@@ -355,13 +366,20 @@ pub async fn compute_report(
                 } else {
                     0
                 };
+                // C-02: `work_minutes` is measured between the real entry and
+                // exit (calc/engine.rs:70-76), so arriving late already
+                // shrinks the paid minutes. `late` is kept as an informational
+                // metric — the Excel export renders it as its own column
+                // (reports/excel.rs, col 13) alongside `total_a_pagar_cents`
+                // (col 14) — but it must NOT be subtracted from the total
+                // again; that would charge the same lateness twice.
                 let late = money::late_deduction_cents(
                     late_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
                     salary_kind,
                 );
-                let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, late);
+                let total = money::total_a_pagar_cents(work_pay, ot_pay, night, rest, 0);
 
                 entry.agg.work_min = entry.agg.work_min.saturating_add(effective_work_min);
                 entry.agg.ot_min = entry.agg.ot_min.saturating_add(overtime_minutes);
