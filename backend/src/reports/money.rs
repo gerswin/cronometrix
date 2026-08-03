@@ -2,9 +2,26 @@
 //!
 //! All formulas are integer-cents arithmetic. The pattern is "multiply numerators
 //! first, divide once at the end" so we never lose precision via early division.
-//! Every multi-step formula uses `checked_mul` to avoid panics on overflow and
-//! `total_a_pagar_cents` uses `saturating_add`/`saturating_sub` for the same
-//! reason — a misconfigured department should never crash the report.
+//! That single division rounds HALF UP (symmetric rounding), not toward zero:
+//! `(numerator + denominator / 2) / denominator` in place of a bare
+//! `numerator / denominator`. `denominator / 2` is an exact operation on the
+//! denominator, not a second division of the value — every formula below still
+//! divides the accumulated numerator exactly once. Every value flowing through
+//! these formulas is non-negative (see each function's callers in
+//! `reports/service.rs`), so round-half-up coincides with true symmetric
+//! rounding; there is no half-to-even or negative-direction ambiguity to
+//! resolve. Truncation biased every result down — i.e. always in the
+//! employer's favour — which is why the policy changed to round-half-up.
+//! Every multi-step formula uses `checked_mul`/`checked_add` to avoid panics
+//! on overflow and `total_a_pagar_cents` uses `saturating_add`/`saturating_sub`
+//! for the same reason — a misconfigured department should never crash the
+//! report. Note: overflow still degrades to `unwrap_or(0)` (a silent zero
+//! payment), and adding `denominator / 2` to the numerator before dividing
+//! means a numerator that was previously just barely small enough to divide
+//! without overflowing can now overflow the `checked_add` and yield 0 instead
+//! — the failure mode is unchanged, but the window that triggers it is very
+//! slightly wider (by up to `denominator / 2`, the offset added before
+//! dividing).
 //!
 //! LOTTT references:
 //! - Art. 117 — Jornada nocturna: +30% premium on night shifts (D-04, D-31 ADDITIVE)
@@ -31,10 +48,12 @@ pub fn work_pay_cents(
         return 0;
     }
     let (num, den) = kind.to_daily(ordinary_daily_minutes);
+    let denom = den * ordinary_daily_minutes;
     work_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(num))
-        .map(|p| p / (den * ordinary_daily_minutes))
+        .and_then(|p| p.checked_add(denom / 2))
+        .map(|p| p / denom)
         .unwrap_or(0)
 }
 
@@ -74,12 +93,14 @@ pub fn ot_pay_cents(
         return 0;
     }
     let (num, den) = kind.to_daily(ordinary_daily_minutes);
+    let denom = 100 * 100 * den * ordinary_daily_minutes;
     ot_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(150))
         .and_then(|p| p.checked_mul(day_premium_pct))
         .and_then(|p| p.checked_mul(num))
-        .map(|p| p / (100 * 100 * den * ordinary_daily_minutes))
+        .and_then(|p| p.checked_add(denom / 2))
+        .map(|p| p / denom)
         .unwrap_or(0)
 }
 
@@ -104,11 +125,13 @@ pub fn night_premium_cents(
         return 0;
     }
     let (num, den) = kind.to_daily(ordinary_daily_minutes);
+    let denom = 100 * den * ordinary_daily_minutes;
     work_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(30))
         .and_then(|p| p.checked_mul(num))
-        .map(|p| p / (100 * den * ordinary_daily_minutes))
+        .and_then(|p| p.checked_add(denom / 2))
+        .map(|p| p / denom)
         .unwrap_or(0)
 }
 
@@ -130,11 +153,13 @@ pub fn rest_day_surcharge_cents(
         return 0;
     }
     let (num, den) = kind.to_daily(ordinary_daily_minutes);
+    let denom = 100 * den * ordinary_daily_minutes;
     work_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(50))
         .and_then(|p| p.checked_mul(num))
-        .map(|p| p / (100 * den * ordinary_daily_minutes))
+        .and_then(|p| p.checked_add(denom / 2))
+        .map(|p| p / denom)
         .unwrap_or(0)
 }
 
@@ -151,10 +176,12 @@ pub fn late_deduction_cents(
         return 0;
     }
     let (num, den) = kind.to_daily(ordinary_daily_minutes);
+    let denom = den * ordinary_daily_minutes;
     late_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(num))
-        .map(|p| p / (den * ordinary_daily_minutes))
+        .and_then(|p| p.checked_add(denom / 2))
+        .map(|p| p / denom)
         .unwrap_or(0)
 }
 
@@ -234,10 +261,11 @@ mod tests {
     #[test]
     fn ot_pay_night_composes_multiplicatively_not_additively() {
         // Art 118 (1.5x) x Art 117 night (1.3x) = 1.95x, NOT 1.5+0.3=1.8x.
-        // 60 min x $50/day x 1.95 / 480 min = $12.1875 -> floors to 1_218 cents.
+        // 60 min x $50/day x 1.95 / 480 min = $12.1875 -> rounds half-up to
+        // 1_219 cents (1218.75 -> 1219).
         assert_eq!(
             ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 130),
-            1_218
+            1_219
         );
         // The additive-bug value (1.8x) would have been:
         // 60 x 5_000 x 180 / (100 x 480) = 1_125 cents. Confirm we do NOT
@@ -248,7 +276,9 @@ mod tests {
     #[test]
     fn ot_pay_rest_day_composes_multiplicatively_not_additively() {
         // Art 118 (1.5x) x Art 120 rest day (1.5x) = 2.25x, NOT 1.5+0.5=2.0x.
-        // 60 min x $50/day x 2.25 / 480 min = $14.0625 -> floors to 1_406 cents.
+        // 60 min x $50/day x 2.25 / 480 min = $14.0625 -> rounds half-up to
+        // 1_406 cents (1406.25 rounds DOWN — the fractional part is below
+        // the .5 threshold, so round-half-up agrees with truncation here).
         assert_eq!(
             ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 150),
             1_406
@@ -334,17 +364,19 @@ mod tests {
     fn whole_day_total_night_shift_with_overtime() {
         // $50/day = 5_000 cents; 480 min ordinary day; 60 min (1h) overtime.
         // Ordinary 480 min: work_pay=5_000, night_premium(ordinary-only)=1_500
-        //   -> 6_500 (= 1.3x of 5_000, the unchanged ordinary-hours case).
-        // Overtime 60 min at 1.5 x 1.3 = 1.95x -> 1_218 (floors from 1218.75).
-        // Total = 5_000 + 1_500 + 1_218 = 7_718 cents ($77.18).
-        // Exact (pre-floor) value is $77.1875 (7_718.75 cents) — matches the
-        // reviewer's target; the implementation floors the OT component once.
+        //   -> 6_500 (= 1.3x of 5_000, the unchanged ordinary-hours case;
+        //   both terms divide exactly, so round-half-up doesn't move them).
+        // Overtime 60 min at 1.5 x 1.3 = 1.95x -> 1_219 (rounds half-up from
+        // 1218.75).
+        // Total = 5_000 + 1_500 + 1_219 = 7_719 cents ($77.19).
+        // Exact (pre-round) value is $77.1875 (7_718.75 cents); rounding the
+        // OT component up by one cent moves the total from 7_718 to 7_719.
         let work = work_pay_cents(480, 5_000, 480, SalaryKind::Daily);
         let night = night_premium_cents(480, 5_000, 480, SalaryKind::Daily);
         let ot = ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 130);
-        assert_eq!((work, night, ot), (5_000, 1_500, 1_218));
+        assert_eq!((work, night, ot), (5_000, 1_500, 1_219));
         let total = total_a_pagar_cents(work, ot, night, 0, 0);
-        assert_eq!(total, 7_718);
+        assert_eq!(total, 7_719);
         assert_ne!(total, 7_624, "additive composition — the Important 2 defect");
     }
 
@@ -353,9 +385,11 @@ mod tests {
         // Same $50/day / 480 ordinary / 60 OT setup, rest day instead of night.
         // Ordinary 480 min: work_pay=5_000, rest_day_surcharge(ordinary-only)=2_500
         //   -> 7_500 (= 1.5x of 5_000, the unchanged ordinary-hours case).
-        // Overtime 60 min at 1.5 x 1.5 = 2.25x -> 1_406 (floors from 1406.25).
+        // Overtime 60 min at 1.5 x 1.5 = 2.25x -> 1_406 (1406.25 rounds DOWN
+        // under round-half-up — the fractional part is below .5, so this
+        // component is unchanged from the old truncating behavior).
         // Total = 5_000 + 2_500 + 1_406 = 8_906 cents ($89.06).
-        // Exact (pre-floor) value is $89.0625 (8_906.25 cents) — matches the
+        // Exact (pre-round) value is $89.0625 (8_906.25 cents) — matches the
         // reviewer's target.
         let work = work_pay_cents(480, 5_000, 480, SalaryKind::Daily);
         let rest = rest_day_surcharge_cents(480, 5_000, 480, SalaryKind::Daily);
