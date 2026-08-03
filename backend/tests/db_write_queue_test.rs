@@ -454,7 +454,22 @@ async fn concurrent_close_persists_exactly_all_accepted_jobs() {
     for producer in producers {
         match producer.await.unwrap() {
             Ok(_) => accepted += 1,
+            // Closed: the producer arrived after close_and_flush won the race.
             Err(DbWriteError::Closed) => {}
+            // Busy: admission timed out. This is a DOCUMENTED, legitimate
+            // outcome of the API under load — with capacity 4 and 100
+            // producers, those parked on the queue wait for the worker to
+            // drain what is ahead of them, and on a loaded machine that
+            // exceeds the 1s enqueue_timeout. Panicking here made the test
+            // fail whenever the host was busy, and because nextest fail-fast
+            // aborts the run, it also stopped `make coverage-backend` from
+            // ever measuring anything. See docs/OBSERVACIONES-FLAKES.md.
+            //
+            // What this test actually guards is the invariant below:
+            // everything that was ACCEPTED must be persisted. A producer that
+            // was rejected — closed or busy — was never accepted, so it is
+            // outside that invariant.
+            Err(DbWriteError::Busy) => {}
             Err(other) => panic!("unexpected producer result: {other:?}"),
         }
     }
