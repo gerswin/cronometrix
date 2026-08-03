@@ -1,10 +1,13 @@
-// M-06: `audit_employees_update` silently dropped columns every time it was
-// recreated to add one new column (018_employees_base_salary.sql dropped
-// `position`, `hire_date`, `face_id`; migrations 024 and 026 then added
-// `salary_kind` and `terminated_on` without the trigger ever being revisited).
+// M-06: all three `employees` audit triggers (`audit_employees_insert`,
+// `audit_employees_update`, `audit_employees_delete`) silently dropped
+// columns every time they were recreated to add one new column
+// (018_employees_base_salary.sql dropped `position`, `hire_date`, `face_id`
+// from all three; migrations 024 and 026 then added `salary_kind` and
+// `terminated_on` without any of the three being revisited).
 // Migration 028_employee_audit_full_columns.sql fixes this by putting every
 // column of `employees` (verified via PRAGMA table_info, not assumed) back
-// into the trigger's `old`/`new` JSON snapshots.
+// into all three triggers' JSON snapshots — `new` only for insert, `old`
+// only for delete, both for update.
 //
 // These tests exercise the real HTTP layer where practical (salary_kind,
 // position, hire_date, terminated_on) and drop to direct SQL for face_id and
@@ -510,4 +513,164 @@ async fn every_employees_column_is_captured_by_the_trigger() {
     assert_eq!(new["version"], 2);
     assert!(new["created_at"].is_number());
     assert!(new["updated_at"].is_number());
+}
+
+/// M-06 follow-up: `audit_employees_insert` carries the identical defect as
+/// `audit_employees_update` did — 018_employees_base_salary.sql recreated it
+/// alongside `update` with the same trimmed-down column set, and it was
+/// never given `position`/`hire_date`/`face_id`/`current_face_enrollment_id`/
+/// `salary_kind`/`terminated_on`/`deleted_at`/`created_at`/`updated_at` at
+/// any point. Creating an employee through the real HTTP API must produce an
+/// INSERT audit row whose `new_data` carries every column employees has
+/// today — an incomplete row here is exactly as misleading as an incomplete
+/// UPDATE row would have been.
+#[tokio::test]
+async fn creating_an_employee_is_audited_with_every_column() {
+    let db = common::test_db().await;
+    let admin_id = uuid::Uuid::new_v4().to_string();
+    let token = common::test_access_token(&admin_id, "admin");
+    let (state, _tmp) = make_state(db);
+    let db_for_audit = state.db.clone();
+    let app = build_test_app(state);
+
+    let dept_id = create_test_department(&app, &token, "Onboarding Dept").await;
+
+    let create_req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/employees")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::from(
+            json!({
+                "employee_code": "INS001",
+                "name": "Insert Employee",
+                "department_id": dept_id,
+                "position": "Clerk",
+                "hire_date": "2024-01-15",
+                "base_salary_cents": 5000,
+                "salary_kind": "daily"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let create_resp = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(create_resp.status(), StatusCode::CREATED);
+    let created = body_to_json(create_resp.into_body()).await;
+    let emp_id = created["id"].as_str().unwrap().to_string();
+
+    let (old, new) = latest_audit_row(&db_for_audit, "employees", &emp_id, "INSERT").await;
+    assert!(
+        old.is_null(),
+        "INSERT audit row must have NULL old_data: {old:?}"
+    );
+
+    // Columns the create request actually set — must appear with real values.
+    assert_eq!(new["id"], emp_id);
+    assert_eq!(new["employee_code"], "INS001");
+    assert_eq!(new["name"], "Insert Employee");
+    assert_eq!(new["department_id"], dept_id);
+    assert_eq!(new["status"], "active");
+    assert_eq!(new["version"], 1);
+    assert_eq!(new["position"], "Clerk");
+    assert!(new["hire_date"].is_number(), "missing hire_date: {new:?}");
+    assert_eq!(new["base_salary_cents"], 5000);
+    assert_eq!(new["salary_kind"], "daily");
+    assert!(new["created_at"].is_number(), "missing created_at: {new:?}");
+    assert!(new["updated_at"].is_number(), "missing updated_at: {new:?}");
+
+    // Columns nothing sets at creation time — must still be present as keys
+    // (null), proving the trigger snapshots them rather than omitting them.
+    assert!(
+        new.get("deleted_at").is_some() && new["deleted_at"].is_null(),
+        "deleted_at key missing from INSERT audit row: {new:?}"
+    );
+    assert!(
+        new.get("face_id").is_some() && new["face_id"].is_null(),
+        "face_id key missing from INSERT audit row: {new:?}"
+    );
+    assert!(
+        new.get("current_face_enrollment_id").is_some()
+            && new["current_face_enrollment_id"].is_null(),
+        "current_face_enrollment_id key missing from INSERT audit row: {new:?}"
+    );
+    assert!(
+        new.get("terminated_on").is_some() && new["terminated_on"].is_null(),
+        "terminated_on key missing from INSERT audit row: {new:?}"
+    );
+}
+
+/// M-06 follow-up: `audit_employees_delete` carries the identical defect.
+/// Exercised directly against the DB with a real (hard) `DELETE FROM
+/// employees` — the HTTP API only ever soft-deletes (see
+/// `employee_tests::soft_delete_only_no_hard_delete`), so this is the only
+/// way to fire `audit_employees_delete` at all; it is still the same trigger
+/// the running system relies on (e.g. the purge worker's cleanup paths).
+/// `current_face_enrollment_id` is deliberately left NULL here: setting it
+/// would require a `face_enrollments` row whose own FK back to `employees`
+/// would then block the DELETE this test needs to perform.
+#[tokio::test]
+async fn deleting_an_employee_is_audited_with_every_column() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+
+    let dept_id = common::create_test_department_with_shift(
+        &db,
+        "Offboarding Dept",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+
+    let emp_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO employees ( \
+            id, employee_code, name, department_id, status, deleted_at, version, \
+            created_at, updated_at, position, hire_date, face_id, \
+            base_salary_cents, salary_kind, terminated_on \
+         ) VALUES ( \
+            ?1, 'DEL001', 'Delete Employee', ?2, 'inactive', 1800000000, 3, \
+            unixepoch(), unixepoch(), 'Manager', 1700000000, 'face-del-1', \
+            5000, 'monthly', 1800000000 \
+         )",
+        libsql::params![emp_id.clone(), dept_id.clone()],
+    )
+    .await
+    .unwrap();
+
+    conn.execute(
+        "DELETE FROM employees WHERE id = ?1",
+        libsql::params![emp_id.clone()],
+    )
+    .await
+    .unwrap();
+
+    let (old, new) = latest_audit_row(&db, "employees", &emp_id, "DELETE").await;
+    assert!(
+        new.is_null(),
+        "DELETE audit row must have NULL new_data: {new:?}"
+    );
+
+    assert_eq!(old["id"], emp_id);
+    assert_eq!(old["employee_code"], "DEL001");
+    assert_eq!(old["name"], "Delete Employee");
+    assert_eq!(old["department_id"], dept_id);
+    assert_eq!(old["status"], "inactive");
+    assert_eq!(old["deleted_at"], 1800000000);
+    assert_eq!(old["version"], 3);
+    assert!(old["created_at"].is_number(), "missing created_at: {old:?}");
+    assert!(old["updated_at"].is_number(), "missing updated_at: {old:?}");
+    assert_eq!(old["position"], "Manager");
+    assert_eq!(old["hire_date"], 1700000000);
+    assert_eq!(old["face_id"], "face-del-1");
+    assert!(
+        old.get("current_face_enrollment_id").is_some()
+            && old["current_face_enrollment_id"].is_null(),
+        "current_face_enrollment_id key missing from DELETE audit row: {old:?}"
+    );
+    assert_eq!(old["base_salary_cents"], 5000);
+    assert_eq!(old["salary_kind"], "monthly");
+    assert_eq!(old["terminated_on"], 1800000000);
 }
