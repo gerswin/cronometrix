@@ -22,7 +22,7 @@
 
 Los cinco críticos fueron **verificados** contra el código actual — `docs/auditoria/VERIFICACION-Y-PLAN.md`. No son sospechas.
 
-**Las pruebas actuales afirman la especificación equivocada.** `backend/src/calc/overtime.rs:39-45` codifica la suma diaria errónea, y la prueba QA E3 acepta el pago duplicado. **"La suite pasa" no es evidencia de corrección en este plan.** Los importes salen calculados a mano desde la LOTTT; las pruebas viejas se corrigen junto con el código, no al revés.
+**El motor monetario estaba esencialmente sin probar.** `backend/src/calc/overtime.rs:39-45` codificaba la suma diaria errónea — ese fue el único test existente que hubo que corregir. Todo lo demás pasó en verde tras el arreglo, lo que significa que **ningún test asertaba el total del reporte para un día con horas extra**. El defecto sobrevivió a 1096 pruebas porque nadie miraba, no porque miraran mal. (La auditoría afirma que "la prueba QA E3 acepta el pago duplicado"; es falso — `docs/QA-GUIDE.md:621` documenta el importe correcto.) **"La suite pasa" no es evidencia de corrección en este plan.** Los importes salen calculados a mano desde la LOTTT; las pruebas viejas se corrigen junto con el código, no al revés.
 
 **`money::` tiene un solo llamador:** `reports/service.rs`, 7 sitios. Verificado con el grafo del código y por grep.
 
