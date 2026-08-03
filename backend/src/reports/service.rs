@@ -430,18 +430,39 @@ pub async fn compute_report(
                     ordinary_daily_minutes,
                     salary_kind,
                 );
+                // Important 2: an overtime minute on a premium day earns the
+                // Art. 118 overtime surcharge (+50%) on top of the
+                // ALREADY-LOADED hour (night +30% / rest day +50%), not a
+                // flat 1.5x plus a separately-added day premium. `day_premium_pct`
+                // is the day's own rate (100/130/150/180 — see
+                // `night`/`rest` gating just below, which decide it) and is
+                // multiplied into `ot_pay_cents`'s single division, never
+                // summed on top afterward.
+                let day_premium_pct = 100
+                    + if day_shift_type == "night" { 30 } else { 0 }
+                    + if is_rest_day_worked == 1 { 50 } else { 0 };
                 let ot_pay = money::ot_pay_cents(
                     overtime_minutes,
                     base_salary_cents,
                     ordinary_daily_minutes,
                     salary_kind,
+                    day_premium_pct,
                 );
                 // W-6: night premium gates on dr.shift_type (per-day actual
                 // shift), NOT departments.shift_type. The engine's per-day
                 // output is authoritative for what actually happened.
+                //
+                // Important 2: uses `ordinary_min`, NOT `effective_work_min`
+                // — the overtime slice's night premium is already folded
+                // into `ot_pay` above (multiplicatively via `day_premium_pct`).
+                // Passing the full effective minutes here would additively
+                // double-apply the night premium to the overtime slice on
+                // top of that. When there is no overtime, `ordinary_min ==
+                // effective_work_min`, so the ordinary-hours case (no OT) is
+                // byte-for-byte unchanged.
                 let night = if day_shift_type == "night" {
                     money::night_premium_cents(
-                        effective_work_min,
+                        ordinary_min,
                         base_salary_cents,
                         ordinary_daily_minutes,
                         salary_kind,
@@ -451,7 +472,7 @@ pub async fn compute_report(
                 };
                 let rest = if is_rest_day_worked == 1 {
                     money::rest_day_surcharge_cents(
-                        effective_work_min,
+                        ordinary_min,
                         base_salary_cents,
                         ordinary_daily_minutes,
                         salary_kind,
@@ -462,10 +483,11 @@ pub async fn compute_report(
                 // C-02: `work_minutes` is measured between the real entry and
                 // exit (calc/engine.rs:70-76), so arriving late already
                 // shrinks the paid minutes. `late` is kept as an informational
-                // metric — the Excel export renders it as its own column
-                // (reports/excel.rs, col 13) alongside `total_a_pagar_cents`
-                // (col 14) — but it must NOT be subtracted from the total
-                // again; that would charge the same lateness twice.
+                // metric — reports/excel.rs no longer renders it as its own
+                // money column (Critical 2 removed that column entirely; the
+                // "Min Retraso" minutes column carries this metric instead)
+                // — but it must NOT be subtracted from the total again; that
+                // would charge the same lateness twice.
                 let late = money::late_deduction_cents(
                     late_minutes,
                     base_salary_cents,

@@ -38,13 +38,37 @@ pub fn work_pay_cents(
         .unwrap_or(0)
 }
 
-/// Overtime pay at +50% premium (LOTTT Art. 118):
-/// `ot_min × base_cents × 150 / (100 × ord_min)`, normalized by `kind`.
+/// Overtime pay at +50% premium (LOTTT Art. 118), composed MULTIPLICATIVELY
+/// with the day's own premium (Art. 117 night +30%, Art. 120 rest-day +50%)
+/// rather than additively (Important 2 fix).
+///
+/// The LOTTT reading is that Art. 117/120 load the value of the hour itself
+/// (a night hour or a rest-day hour is worth more), and Art. 118's overtime
+/// surcharge then applies to THAT already-loaded hour — not a flat +50% of
+/// the base rate added on top of a separately-added day premium. An
+/// overtime minute on a night shift therefore earns 1.5 × 1.3 = 1.95× the
+/// base rate, not 1.5 + 0.3 = 1.8×; on a rest day, 1.5 × 1.5 = 2.25×, not
+/// 1.5 + 0.5 = 2.0×.
+///
+/// `day_premium_pct` is the day-type rate as a percentage of the base rate
+/// (100 = ordinary day, 130 = night per Art. 117, 150 = rest day per
+/// Art. 120, 180 = both — additive stacking of the two day premiums,
+/// mirroring how the ordinary-hour rate stacks them when both gates are
+/// true; see `night_premium_cents`/`rest_day_surcharge_cents`, which are
+/// unchanged and still additive for the ordinary-minutes slice). Passing
+/// `day_premium_pct = 100` reproduces the flat 1.5× ordinary-day overtime
+/// case exactly — that case is unchanged by this fix.
+///
+/// Formula: `ot_min × base_cents × 150 × day_premium_pct × num / (100 × 100 × den × ord_min)`
+/// — still exactly one integer division at the end (money.rs:3-4): the two
+/// premiums are multiplied together as numerators, never divided
+/// separately and re-summed.
 pub fn ot_pay_cents(
     ot_minutes: i64,
     base_salary_cents: i64,
     ordinary_daily_minutes: i64,
     kind: SalaryKind,
+    day_premium_pct: i64,
 ) -> i64 {
     if ordinary_daily_minutes <= 0 {
         return 0;
@@ -53,8 +77,9 @@ pub fn ot_pay_cents(
     ot_minutes
         .checked_mul(base_salary_cents)
         .and_then(|p| p.checked_mul(150))
+        .and_then(|p| p.checked_mul(day_premium_pct))
         .and_then(|p| p.checked_mul(num))
-        .map(|p| p / (100 * den * ordinary_daily_minutes))
+        .map(|p| p / (100 * 100 * den * ordinary_daily_minutes))
         .unwrap_or(0)
 }
 
@@ -62,6 +87,13 @@ pub fn ot_pay_cents(
 /// Caller is responsible for gating this on `daily_records.shift_type == "night"`
 /// (W-6 — per-day actual shift, NOT departments.shift_type).
 /// Formula: `work_min × base_cents × 30 / (100 × ord_min)`, normalized by `kind`.
+///
+/// Important 2: `work_minutes` here MUST be the ORDINARY slice only (exclude
+/// any overtime minutes) when the day also has overtime. This function stays
+/// additive on top of `work_pay_cents` for that ordinary slice — the
+/// ordinary-hours case is unchanged by the Important 2 fix. The overtime
+/// slice's share of the night premium is folded into `ot_pay_cents`'s
+/// `day_premium_pct` instead (multiplicative, not summed on top of this).
 pub fn night_premium_cents(
     work_minutes: i64,
     base_salary_cents: i64,
@@ -83,6 +115,11 @@ pub fn night_premium_cents(
 /// Rest-day surcharge = +50% (D-03, LOTTT Art. 120).
 /// Caller gates on `daily_records.is_rest_day_worked == 1`.
 /// Formula: `work_min × base_cents × 50 / (100 × ord_min)`, normalized by `kind`.
+///
+/// Important 2: same rule as `night_premium_cents` above — `work_minutes`
+/// must be the ORDINARY slice only when the day also has overtime; the
+/// overtime slice's rest-day share is composed multiplicatively inside
+/// `ot_pay_cents` via `day_premium_pct` instead.
 pub fn rest_day_surcharge_cents(
     work_minutes: i64,
     base_salary_cents: i64,
@@ -170,18 +207,56 @@ mod tests {
 
     #[test]
     fn ot_pay_one_hour() {
-        // 60 OT min at 1.5× over 480-min ordinary day at $1000 → $187.50
-        assert_eq!(ot_pay_cents(60, 100_000, 480, SalaryKind::Daily), 18_750);
+        // 60 OT min at 1.5× over 480-min ordinary day at $1000, ordinary day
+        // (day_premium_pct=100) → $187.50. Reproduces the old flat-1.5x
+        // behavior exactly — the ordinary-day overtime case is unchanged.
+        assert_eq!(
+            ot_pay_cents(60, 100_000, 480, SalaryKind::Daily, 100),
+            18_750
+        );
     }
 
     #[test]
     fn ot_pay_zero() {
-        assert_eq!(ot_pay_cents(0, 100_000, 480, SalaryKind::Daily), 0);
+        assert_eq!(ot_pay_cents(0, 100_000, 480, SalaryKind::Daily, 100), 0);
     }
 
     #[test]
     fn ot_pay_misconfig_returns_zero() {
-        assert_eq!(ot_pay_cents(60, 100_000, 0, SalaryKind::Daily), 0);
+        assert_eq!(ot_pay_cents(60, 100_000, 0, SalaryKind::Daily, 100), 0);
+    }
+
+    // ----- Important 2: overtime composes MULTIPLICATIVELY with the day's
+    // own premium, not additively. Hand-calculated against the task's
+    // worked example: $50/day (5_000 cents), 480 min ordinary day, 60 min
+    // (1h) overtime. -----
+
+    #[test]
+    fn ot_pay_night_composes_multiplicatively_not_additively() {
+        // Art 118 (1.5x) x Art 117 night (1.3x) = 1.95x, NOT 1.5+0.3=1.8x.
+        // 60 min x $50/day x 1.95 / 480 min = $12.1875 -> floors to 1_218 cents.
+        assert_eq!(
+            ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 130),
+            1_218
+        );
+        // The additive-bug value (1.8x) would have been:
+        // 60 x 5_000 x 180 / (100 x 480) = 1_125 cents. Confirm we do NOT
+        // reproduce it.
+        assert_ne!(ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 130), 1_125);
+    }
+
+    #[test]
+    fn ot_pay_rest_day_composes_multiplicatively_not_additively() {
+        // Art 118 (1.5x) x Art 120 rest day (1.5x) = 2.25x, NOT 1.5+0.5=2.0x.
+        // 60 min x $50/day x 2.25 / 480 min = $14.0625 -> floors to 1_406 cents.
+        assert_eq!(
+            ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 150),
+            1_406
+        );
+        // The additive-bug value (2.0x) would have been:
+        // 60 x 5_000 x 200 / (100 x 480) = 1_250 cents. Confirm we do NOT
+        // reproduce it.
+        assert_ne!(ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 150), 1_250);
     }
 
     #[test]
@@ -249,6 +324,48 @@ mod tests {
         assert_eq!(total_a_pagar_cents(100_000, 0, 0, 50_000, 0), 150_000);
     }
 
+    // ----- Important 2: whole-day totals, hand-calculated from the task's
+    // worked example ($50/day, 8h ordinary + 1h overtime). Composes
+    // work_pay (ordinary slice only) + night/rest premium (ordinary slice
+    // only) + the multiplicatively-composed ot_pay, exactly the way
+    // reports/service.rs now calls these three functions. -----
+
+    #[test]
+    fn whole_day_total_night_shift_with_overtime() {
+        // $50/day = 5_000 cents; 480 min ordinary day; 60 min (1h) overtime.
+        // Ordinary 480 min: work_pay=5_000, night_premium(ordinary-only)=1_500
+        //   -> 6_500 (= 1.3x of 5_000, the unchanged ordinary-hours case).
+        // Overtime 60 min at 1.5 x 1.3 = 1.95x -> 1_218 (floors from 1218.75).
+        // Total = 5_000 + 1_500 + 1_218 = 7_718 cents ($77.18).
+        // Exact (pre-floor) value is $77.1875 (7_718.75 cents) — matches the
+        // reviewer's target; the implementation floors the OT component once.
+        let work = work_pay_cents(480, 5_000, 480, SalaryKind::Daily);
+        let night = night_premium_cents(480, 5_000, 480, SalaryKind::Daily);
+        let ot = ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 130);
+        assert_eq!((work, night, ot), (5_000, 1_500, 1_218));
+        let total = total_a_pagar_cents(work, ot, night, 0, 0);
+        assert_eq!(total, 7_718);
+        assert_ne!(total, 7_624, "additive composition — the Important 2 defect");
+    }
+
+    #[test]
+    fn whole_day_total_rest_day_with_overtime() {
+        // Same $50/day / 480 ordinary / 60 OT setup, rest day instead of night.
+        // Ordinary 480 min: work_pay=5_000, rest_day_surcharge(ordinary-only)=2_500
+        //   -> 7_500 (= 1.5x of 5_000, the unchanged ordinary-hours case).
+        // Overtime 60 min at 1.5 x 1.5 = 2.25x -> 1_406 (floors from 1406.25).
+        // Total = 5_000 + 2_500 + 1_406 = 8_906 cents ($89.06).
+        // Exact (pre-floor) value is $89.0625 (8_906.25 cents) — matches the
+        // reviewer's target.
+        let work = work_pay_cents(480, 5_000, 480, SalaryKind::Daily);
+        let rest = rest_day_surcharge_cents(480, 5_000, 480, SalaryKind::Daily);
+        let ot = ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 150);
+        assert_eq!((work, rest, ot), (5_000, 2_500, 1_406));
+        let total = total_a_pagar_cents(work, ot, 0, rest, 0);
+        assert_eq!(total, 8_906);
+        assert_ne!(total, 8_749, "additive composition — the Important 2 defect");
+    }
+
     // ----- Property tests: structural guarantees over realistic input ranges. -----
 
     proptest! {
@@ -277,6 +394,9 @@ mod tests {
             base in 0i64..10_000_000_000,
             ord in 360i64..600,
             kind_idx in 0u8..3,
+            // Important 2: 100 (ordinary day) | 130 (night) | 150 (rest day) |
+            // 180 (both) — the only values reports/service.rs ever passes.
+            day_premium_pct in prop_oneof![Just(100i64), Just(130i64), Just(150i64), Just(180i64)],
         ) {
             let kind = match kind_idx {
                 0 => SalaryKind::Hourly,
@@ -285,7 +405,7 @@ mod tests {
             };
             // Must not panic on any of the six functions.
             let w = work_pay_cents(work, base, ord, kind);
-            let o = ot_pay_cents(ot, base, ord, kind);
+            let o = ot_pay_cents(ot, base, ord, kind, day_premium_pct);
             let n = night_premium_cents(work, base, ord, kind);
             let r = rest_day_surcharge_cents(work, base, ord, kind);
             let l = late_deduction_cents(late, base, ord, kind);

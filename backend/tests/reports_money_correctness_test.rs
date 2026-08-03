@@ -12,7 +12,8 @@ use cronometrix_api::reports::money::{ot_pay_cents, total_a_pagar_cents, work_pa
 #[test]
 fn overtime_is_paid_once_at_150_percent_not_250() {
     let work = work_pay_cents(480, 5_000, 480, SalaryKind::Daily);
-    let ot = ot_pay_cents(60, 5_000, 480, SalaryKind::Daily);
+    // day_premium_pct=100: ordinary day, no night/rest-day premium (Important 2).
+    let ot = ot_pay_cents(60, 5_000, 480, SalaryKind::Daily, 100);
     let total = total_a_pagar_cents(work, ot, 0, 0, 0);
     assert_eq!((work, ot, total), (5_000, 937, 5_937));
     assert_ne!(total, 6_562, "250% — el defecto C-01");
