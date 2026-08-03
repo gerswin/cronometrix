@@ -18,7 +18,7 @@ use crate::supervisor::DeviceLifecycleEvent;
 
 use super::models::{
     Command, CommandRequest, CommandResult, CreateDeviceRequest, DeviceListQuery, DeviceResponse,
-    UpdateDeviceRequest,
+    PushInboxFailedEntry, UpdateDeviceRequest,
 };
 use super::service::{self, CommandAuditOutcome};
 
@@ -321,4 +321,20 @@ pub async fn dispatch_command(
             message: "Device did not respond within 10 seconds".to_string(),
         }),
     }
+}
+
+/// `GET /api/v1/devices/push-inbox/failed` — the C-10 part 2 dead-letter view.
+///
+/// RBAC: `require_supervisor_or_above` (Admin + Supervisor; Viewer → 403,
+/// applied at the `supervisor_read_routes` group in `main.rs`). Never returns
+/// the stored `body` — see `PushInboxFailedEntry`.
+pub async fn list_push_inbox_failed(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PushInboxFailedEntry>>, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let entries = service::list_push_inbox_failed(&conn).await?;
+    Ok(Json(entries))
 }

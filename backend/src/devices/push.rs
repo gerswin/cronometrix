@@ -1,8 +1,12 @@
 //! Inbound webhook for readers configured to push events at us.
 //!
-//! The counterpart to `isapi::stream`, which pulls. Both hand their payload to
-//! `isapi::ingest::ingest_alert`, so a marking is recorded identically whichever
-//! transport carried it.
+//! The counterpart to `isapi::stream`, which pulls. Both eventually hand their
+//! payload to `isapi::ingest::ingest_alert`, so a marking is recorded
+//! identically whichever transport carried it — but this handler no longer
+//! calls it directly. Per C-10 part 2, `receive_push` only authorizes the
+//! caller and stores the raw body in `device_push_inbox`; parsing and ingestion
+//! happen out of the response path, in `workers::push_drain`, which retries
+//! transient failures and dead-letters permanent ones.
 //!
 //! Authentication is a per-device secret in the URL path. That is not a stylistic
 //! choice: the reader cannot present a JWT, and DS-K1T341CMFW leaves
@@ -16,30 +20,27 @@ use axum::{
 };
 use bytes::Bytes;
 use libsql::params;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::isapi::ingest::{ingest_alert, IngestOutcome};
 use crate::isapi::parser;
 use crate::state::AppState;
 use crate::supervisor::status::{touch_last_seen, update_connection_state};
 
-/// Device identity resolved from a webhook path.
-struct PushDevice {
-    direction_default: String,
-}
-
 /// Look up an active push-mode device whose token matches.
 ///
-/// Returns `None` for every failure mode — unknown device, wrong token, device
+/// Returns `false` for every failure mode — unknown device, wrong token, device
 /// not in push mode — so the caller answers identically in each case and cannot
 /// be used to enumerate device ids.
-async fn authorize(
-    state: &AppState,
-    device_id: &str,
-    token: &str,
-) -> Result<Option<PushDevice>, AppError> {
+///
+/// Only proves the caller may write; `direction_default` is no longer resolved
+/// here. Processing (and the device row it needs) happens later, in
+/// `workers::push_drain`, which re-reads the device row from the inbox row's
+/// `device_id` at drain time.
+async fn authorize(state: &AppState, device_id: &str, token: &str) -> Result<bool, AppError> {
     if token.is_empty() {
-        return Ok(None);
+        return Ok(false);
     }
     let conn = state
         .db
@@ -47,7 +48,7 @@ async fn authorize(
         .map_err(|error| AppError::Internal(error.into()))?;
     let mut rows = conn
         .query(
-            "SELECT direction, push_token FROM devices \
+            "SELECT push_token FROM devices \
              WHERE id = ?1 AND status = 'active' AND ingest_mode = 'push'",
             params![device_id.to_string()],
         )
@@ -59,20 +60,17 @@ async fn authorize(
         .await
         .map_err(|error| AppError::Internal(error.into()))?
     else {
-        return Ok(None);
+        return Ok(false);
     };
 
-    let direction_default: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
-    let stored: Option<String> = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
+    let stored: Option<String> = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
 
-    match stored {
+    Ok(match stored {
         // Constant-time compare: a byte-by-byte `==` on a secret leaks its prefix
         // through timing to anyone who can measure the response.
-        Some(expected) if constant_time_eq(expected.as_bytes(), token.as_bytes()) => {
-            Ok(Some(PushDevice { direction_default }))
-        }
-        _ => Ok(None),
-    }
+        Some(expected) => constant_time_eq(expected.as_bytes(), token.as_bytes()),
+        None => false,
+    })
 }
 
 /// Length-independent equality that does not short-circuit on the first
@@ -95,8 +93,18 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// same `serialNo` arrived on four consecutive pushes; under 200 the counter
 /// moved on each one.
 ///
-/// Errors are swallowed for the same reason: a reader that receives one
-/// re-queues and retries indefinitely.
+/// 200 means "received and safe" — NOT "processed". Per C-10 part 2, parsing
+/// and ingestion no longer happen on this response path at all: once the raw
+/// body lands in `device_push_inbox`, `workers::push_drain` owns turning it
+/// into an attendance event, on its own cadence, with its own retries. A
+/// *processing* failure (bad XML, unknown event, business rejection) is
+/// therefore invisible here by construction — it can only be observed later,
+/// as a `failed` row in the inbox — because the event was already safe the
+/// moment this handler stored it, and re-sending it would not help. A
+/// *durability* failure (the inbox INSERT itself did not land) is the one
+/// case that answers non-200 on purpose: nothing was stored, so the device
+/// keeping the event and retrying is correct backpressure, not the swallowed
+/// error this comment used to justify.
 const ACK: StatusCode = StatusCode::OK;
 
 pub async fn receive_push(
@@ -105,10 +113,11 @@ pub async fn receive_push(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    let Some(device) = authorize(&state, &device_id, &token).await? else {
+    let authorized = authorize(&state, &device_id, &token).await?;
+    if !authorized {
         tracing::warn!(device_id = %device_id, "rejected push: unknown device or bad token");
         return Ok(StatusCode::UNAUTHORIZED);
-    };
+    }
 
     // Reaching this point proves the reader is alive and reachable, which is the
     // only liveness signal a push-mode device produces — it never opens a stream
@@ -122,31 +131,39 @@ pub async fn receive_push(
         .unwrap_or_default()
         .to_string();
 
-    let parts = split_payload(&content_type, &body);
-    for (part_content_type, alert_bytes, jpeg) in parts {
-        let raw = String::from_utf8_lossy(&alert_bytes).to_string();
-        match ingest_alert(
-            &state,
-            &device_id,
-            &device.direction_default,
-            &alert_bytes,
-            &part_content_type,
-            raw,
-            jpeg,
+    // C-10: guardar primero, interpretar despues. Todo lo que ocurra a partir
+    // de aqui puede fallar sin perder el evento.
+    let body_sha256 = format!("{:x}", Sha256::digest(body.as_ref()));
+    let inbox_id = Uuid::new_v4().to_string();
+    let stored = state
+        .db_write
+        .statement(
+            "push.inbox-store",
+            "INSERT INTO device_push_inbox \
+               (id, device_id, content_type, body, body_sha256, received_at, status, attempts) \
+             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), 'pending', 0)",
+            vec![
+                libsql::Value::Text(inbox_id.clone()),
+                libsql::Value::Text(device_id.clone()),
+                libsql::Value::Text(content_type.clone()),
+                libsql::Value::Blob(body.to_vec()),
+                libsql::Value::Text(body_sha256),
+            ],
         )
-        .await
-        {
-            Ok(IngestOutcome::Persisted) => {}
-            Ok(_) => {}
-            Err(error) => {
-                // Swallow rather than 500: a persistent failure would make the
-                // device retry the same event forever, and the log is where an
-                // operator can actually see it.
-                tracing::error!(device_id = %device_id, err = %error, "push ingest failed");
-            }
-        }
+        .await;
+
+    if let Err(error) = stored {
+        // Fallo de DURABILIDAD, no de procesamiento. Aqui SI respondemos
+        // no-200 a proposito: el device conserva el evento y reintenta, que es
+        // contrapresion correcta cuando la base no puede aceptarlo. Responder
+        // 200 sin haber guardado es la mentira que causo C-10.
+        tracing::error!(device_id = %device_id, err = %error, "push inbox store failed");
+        return Ok(StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    // C-10 part 2: no parsing, no `ingest_alert`, no device row lookup beyond
+    // `authorize` above. The body is durable; `workers::push_drain` does the
+    // rest off this response path.
     Ok(ACK)
 }
 
@@ -156,7 +173,14 @@ pub async fn receive_push(
 /// before the body — lives in `isapi::parser`, shared with the other two places
 /// the firmware sends multipart. A bare (non-multipart) body is passed straight
 /// through: some readers post the event JSON on its own.
-fn split_payload(content_type: &str, body: &Bytes) -> Vec<(String, Bytes, Option<Bytes>)> {
+///
+/// `pub(crate)` — `workers::push_drain` is the only other caller. It invokes
+/// this exact function rather than re-implementing the split, per the
+/// hexagonal boundary: parsing stays owned here, the worker only drains.
+pub(crate) fn split_payload(
+    content_type: &str,
+    body: &Bytes,
+) -> Vec<(String, Bytes, Option<Bytes>)> {
     let Some(boundary) = parser::boundary_of(content_type) else {
         return vec![(content_type.to_string(), body.clone(), None)];
     };
@@ -253,6 +277,9 @@ mod tests {
         assert!(alert.starts_with(b"{"));
         let jpeg = jpeg.as_ref().expect("JPEG part must be extracted");
         assert!(jpeg.starts_with(&[0xFF, 0xD8, 0xFF]));
-        assert!(jpeg.ends_with(&[0xFF, 0xD9]), "trailing CRLF must be trimmed");
+        assert!(
+            jpeg.ends_with(&[0xFF, 0xD9]),
+            "trailing CRLF must be trimmed"
+        );
     }
 }

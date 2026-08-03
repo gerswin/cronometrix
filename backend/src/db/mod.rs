@@ -107,6 +107,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "026_employee_terminated_on",
         include_str!("migrations/026_employee_terminated_on.sql"),
     ),
+    (
+        "027_device_push_inbox",
+        include_str!("migrations/027_device_push_inbox.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded

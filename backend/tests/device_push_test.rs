@@ -121,6 +121,14 @@ async fn push_persists_a_marking_and_resolves_the_employee() {
         StatusCode::OK
     );
 
+    // C-10 part 2: `receive_push` only stores the raw body now; a marking is
+    // materialized by `workers::push_drain` off the response path. Drain
+    // once, synchronously, so this test can still assert on the resulting
+    // attendance_events row deterministically.
+    cronometrix_api::workers::push_drain::drain_once(&state)
+        .await
+        .expect("drain must succeed");
+
     let conn = state.db.connect().unwrap();
     let mut rows = conn
         .query(
@@ -237,10 +245,7 @@ async fn push_accepts_but_does_not_store_an_event_without_an_identity() {
         "attendanceStatus":"undefined"}}"#
         .to_string();
 
-    assert_eq!(
-        post_event(&state, TOKEN, door).await,
-        StatusCode::OK
-    );
+    assert_eq!(post_event(&state, TOKEN, door).await, StatusCode::OK);
     assert_eq!(event_count(&state).await, 0);
 }
 
@@ -288,6 +293,12 @@ async fn push_stores_the_captured_face_from_a_multipart_body() {
         .unwrap();
     let response = app(state.clone()).oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+
+    // See the comment in `push_persists_a_marking_and_resolves_the_employee`:
+    // processing is off the response path now, so the test drains explicitly.
+    cronometrix_api::workers::push_drain::drain_once(&state)
+        .await
+        .expect("drain must succeed");
 
     let conn = state.db.connect().unwrap();
     let mut rows = conn
