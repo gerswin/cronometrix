@@ -51,7 +51,7 @@ export const SALARY_KIND_OPTIONS: { value: SalaryKind; label: string }[] = [
 
 // H-08: once a unit is picked, the amount field's label says what the amount
 // means instead of the old, ambiguous "Sueldo Base (USD)".
-const SALARY_KIND_AMOUNT_LABEL: Record<SalaryKind, string> = {
+export const SALARY_KIND_AMOUNT_LABEL: Record<SalaryKind, string> = {
   hourly: 'Monto por hora ($)',
   daily: 'Monto por día ($)',
   monthly: 'Monto por mes ($)',

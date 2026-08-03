@@ -5,7 +5,9 @@ use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::errors::AppError;
 use crate::state::AppState;
 
-use super::models::{CreateEmployeeRequest, Employee, EmployeeListQuery, UpdateEmployeeRequest};
+use super::models::{
+    CreateEmployeeRequest, Employee, EmployeeListQuery, SalaryKind, UpdateEmployeeRequest,
+};
 
 /// Convert an optional epoch-seconds (UTC midnight) to an ISO YYYY-MM-DD string.
 /// Returns None if the input is None.
@@ -45,8 +47,16 @@ fn parse_hire_date(input: Option<&str>) -> Result<Option<i64>, AppError> {
 /// Map a libSQL row to an Employee struct.
 /// Column order is fixed by the SELECT statements below:
 ///   id, employee_code, name, department_id, status, position, hire_date,
-///   base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on
+///   base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on,
+///   salary_kind
 fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
+    // H-08 (Critical 1 follow-up): GET /employees must round-trip salary_kind
+    // so the edit form can prefill its unit selector — before this, the
+    // column existed in the DB but was never SELECTed here, so every edit
+    // re-picked the unit blind. A NULL/unrecognized column value maps to
+    // `None`, never guessed as a default (same rule as `SalaryKind::from_db_str`).
+    let salary_kind_raw: Option<String> =
+        row.get(13).map_err(|e| AppError::Internal(e.into()))?;
     Ok(Employee {
         id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
         employee_code: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
@@ -63,6 +73,7 @@ fn row_to_employee(row: libsql::Row) -> Result<Employee, AppError> {
         terminated_on: epoch_to_iso_date_opt(
             row.get(12).map_err(|e| AppError::Internal(e.into()))?,
         ),
+        salary_kind: salary_kind_raw.as_deref().and_then(SalaryKind::from_db_str),
     })
 }
 
@@ -215,7 +226,7 @@ pub async fn list(
 
     // Fetch page
     let fetch_sql = format!(
-        "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on \
+        "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on, salary_kind \
          FROM employees {} ORDER BY name ASC LIMIT ?{} OFFSET ?{}",
         where_clause,
         fetch_values.len() + 1,
@@ -251,7 +262,7 @@ pub async fn list(
 pub async fn get_by_id(conn: &Connection, id: &str) -> Result<Employee, AppError> {
     let row = conn
         .query(
-            "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on \
+            "SELECT id, employee_code, name, department_id, status, position, hire_date, base_salary_cents, deleted_at, version, created_at, updated_at, terminated_on, salary_kind \
              FROM employees WHERE id = ?1",
             params![id.to_string()],
         )

@@ -86,6 +86,13 @@ pub struct Employee {
     /// Per-employee base salary in cents (migration 018). Authoritative for payroll math.
     /// Department-level salary remains as a "default suggestion" only.
     pub base_salary_cents: i64,
+    /// Unit `base_salary_cents` is expressed in (H-08, migration 024).
+    /// `None` when the row predates migration 024 or otherwise has no valid
+    /// unit set (the column has no DEFAULT on purpose — see the migration's
+    /// comment). The edit form (Critical 1 / H-08 follow-up) reads this to
+    /// prefill its unit selector instead of always rendering blank; it must
+    /// stay `Option`, never defaulted to a guessed unit here.
+    pub salary_kind: Option<SalaryKind>,
     pub deleted_at: Option<String>, // ISO 8601 or null
     pub version: i64,
     pub created_at: String, // ISO 8601

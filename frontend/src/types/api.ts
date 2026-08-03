@@ -44,6 +44,19 @@ export interface Employee {
   hire_date: string | null
   /** Per-employee base salary in cents (migration 018). Authoritative for payroll. */
   base_salary_cents: number
+  /**
+   * Unit `base_salary_cents` is expressed in (H-08, migration 024). `null`
+   * when the row predates migration 024 or has no valid unit set. Optional
+   * here (not just nullable) so existing test fixtures built before this
+   * field existed keep compiling; GET /employees always sends the key
+   * (possibly `null`), it is never omitted.
+   *
+   * Critical-1 fix: GET /employees now round-trips this (previously it did
+   * not — see the old note below, kept for history) so the edit form can
+   * prefill its unit selector instead of forcing a blind re-pick on every
+   * save.
+   */
+  salary_kind?: SalaryKind | null
   status: 'active' | 'inactive' | 'pending'
   version: number
   created_at: string
@@ -54,14 +67,6 @@ export interface Employee {
  * Unit `base_salary_cents` is expressed in (H-08, migration 024). Mirrors the
  * backend's `salary_kind` CHECK constraint character for character — do not
  * add/rename values here without updating migration 024 in lockstep.
- *
- * NOTE: this is intentionally NOT added to `Employee` above. Migration 024
- * only touches the `employees` table (`Department.base_salary_cents` is an
- * unrelated department-level default with no `salary_kind` column/support in
- * the backend), and `GET`/`POST /employees` responses do not currently
- * round-trip `salary_kind` either (see Task 1 report, concern #3) — so there
- * is no response shape to type it onto yet. It exists on the *request* side
- * only, via `CreateEmployeeRequest` below.
  */
 export type SalaryKind = 'hourly' | 'daily' | 'monthly'
 

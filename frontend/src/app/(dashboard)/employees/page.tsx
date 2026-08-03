@@ -18,7 +18,11 @@ import {
 import { api, logoutCurrentSession } from '@/lib/api'
 import { useAuth } from '@/hooks/use-auth'
 import { EnrollmentModal } from '@/components/enrollment/enrollment-modal'
-import { NewEmployeeDialog } from '@/components/employees/new-employee-dialog'
+import {
+  NewEmployeeDialog,
+  SALARY_KIND_OPTIONS,
+  SALARY_KIND_AMOUNT_LABEL,
+} from '@/components/employees/new-employee-dialog'
 import {
   Dialog,
   DialogContent,
@@ -30,7 +34,13 @@ import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { PrimaryButton } from '@/components/ui/primary-button'
 import { fmtDate } from '@/lib/format/datetime'
-import type { PaginatedResponse, Employee, Department, CreateEmployeeRequest } from '@/types/api'
+import type {
+  PaginatedResponse,
+  Employee,
+  Department,
+  CreateEmployeeRequest,
+  SalaryKind,
+} from '@/types/api'
 
 const PAGE_SIZE = 10
 
@@ -71,14 +81,15 @@ const editEmployeeSchema = z.object({
   base_salary: optionalSalary,
   // No default value here or in the <select> below (H-08). This field
   // cannot be schema-mandated the way the create form's is: `base_salary`
-  // above is pre-filled with the employee's CURRENT amount (GET /employees
-  // doesn't round-trip salary_kind, so it always starts blank), so "is
+  // above is pre-filled with the employee's CURRENT amount, so "is
   // base_salary non-empty" is true on every edit, not just ones that change
   // the amount. A zod-level requirement on that condition would block
   // *every* save. The actual "only required when the amount is actually
   // being changed" rule is enforced in the submit handler below via
   // react-hook-form's dirtyFields, which zod's schema-level validation has
-  // no access to.
+  // no access to. (Critical 1 fix: GET /employees now round-trips
+  // salary_kind, so `handleEditClick` below prefills this field with the
+  // employee's current unit instead of leaving it blank.)
   salary_kind: z.enum(['hourly', 'daily', 'monthly']).optional().or(z.literal('')),
 })
 type EditEmployeeFormData = z.infer<typeof editEmployeeSchema>
@@ -217,8 +228,17 @@ export default function EmployeesPage() {
     handleSubmit: handleSubmitEdit,
     reset: resetEdit,
     setError: setErrorEdit,
+    watch: watchEdit,
     formState: { errors: errorsEdit, isSubmitting: isSubmittingEdit, dirtyFields: dirtyFieldsEdit },
   } = useForm<EditEmployeeFormData>({ resolver: zodResolver(editEmployeeSchema) })
+
+  // H-08 / Critical 1: label the amount field with the unit currently
+  // selected, the same way NewEmployeeDialog does — falls back to the
+  // ambiguous generic label only while no unit is known/selected yet.
+  const selectedEditKind = watchEdit('salary_kind')
+  const editAmountLabel = selectedEditKind
+    ? SALARY_KIND_AMOUNT_LABEL[selectedEditKind as SalaryKind]
+    : 'Sueldo Base ($)'
 
   // H-08: salary_kind is only required when the operator actually changes
   // base_salary — see the long comment on editEmployeeSchema above for why
@@ -244,10 +264,11 @@ export default function EmployeesPage() {
       position: emp.position ?? '',
       hire_date: emp.hire_date ?? '',
       base_salary: emp.base_salary_cents != null ? String(emp.base_salary_cents / 100) : '',
-      // GET /employees does not currently round-trip salary_kind (Task 1
-      // report, concern #3), so there is nothing to prefill here — the
-      // operator only sets it if they also change the amount.
-      salary_kind: '',
+      // Critical 1 / H-08: GET /employees now round-trips salary_kind, so
+      // the selector opens already showing the employee's current unit
+      // instead of forcing a blind re-pick on every edit (raising the
+      // amount used to risk re-interpreting a monthly salary as daily).
+      salary_kind: emp.salary_kind ?? '',
     })
   }
 
@@ -640,7 +661,7 @@ export default function EmployeesPage() {
               <Input id="edit-emp-hire-date" type="date" {...registerEdit('hire_date')} />
             </div>
             <div>
-              <Label htmlFor="edit-emp-salary">Sueldo Base ($) (opcional)</Label>
+              <Label htmlFor="edit-emp-salary">{editAmountLabel} (opcional)</Label>
               <Input
                 id="edit-emp-salary"
                 type="text"
@@ -655,19 +676,23 @@ export default function EmployeesPage() {
             </div>
             <div>
               <Label htmlFor="edit-emp-salary-kind">Unidad del Sueldo</Label>
-              {/* H-08: no preselected value — only required (via
-                  superRefine on editEmployeeSchema) when Sueldo Base above is
-                  also being set/changed, matching PATCH /employees/:id,
-                  which treats salary_kind as independently optional. */}
+              {/* H-08: prefilled from the employee's current unit by
+                  handleEditClick above (falls back to blank only when the
+                  employee has none set yet); required (via the submit-time
+                  check below) only when Sueldo Base above is also being
+                  set/changed, matching PATCH /employees/:id, which treats
+                  salary_kind as independently optional. */}
               <select
                 id="edit-emp-salary-kind"
                 {...registerEdit('salary_kind')}
                 className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
               >
                 <option value="">Seleccionar…</option>
-                <option value="hourly">Por hora</option>
-                <option value="daily">Diario</option>
-                <option value="monthly">Mensual</option>
+                {SALARY_KIND_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
               {errorsEdit.salary_kind ? (
                 <p role="alert" className="text-xs text-destructive mt-1">
