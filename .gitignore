@@ -65,3 +65,6 @@ backend/load-test-results/
 
 # Skill manager lockfile (regenerated)
 skills-lock.json
+
+# graphify knowledge-graph output (generated)
+graphify-out/
