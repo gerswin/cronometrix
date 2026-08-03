@@ -29,7 +29,7 @@ suite completa instrumentada.
 |-----------|-------------|-----------|
 | Pérdida de datos por TOCTOU en el cierre | 200 iteraciones del escenario | 0 pérdidas |
 | Ídem, bajo instrumentación `llvm-cov` | 200 iteraciones instrumentadas | 0 pérdidas |
-| Contención de CPU disparando el timeout | 5 corridas con 64 procesos quemando 32 cores | 5/5 pasa |
+| Contención de CPU disparando el timeout | 5 corridas con 64 procesos quemando 32 cores | 5/5 pasa — **experimento defectuoso, ver §Resuelto** |
 | Cierre concurrente con llegada de productores | 200 iteraciones, 16 worker threads (~20.000 interleavings) | 0 pérdidas, 0 fantasmas |
 
 El invariante `persisted == accepted` aguantó en todos los casos.
@@ -146,3 +146,47 @@ sustituible por la de producción:
 
 Cualquiera de las dos rutas es trabajo nuevo con su propio análisis de
 riesgo — no se implementa aquí.
+
+
+---
+
+## RESUELTO — 2026-08-03
+
+**Causa raíz: fragilidad del test, no pérdida de datos.** Mensaje capturado:
+
+```
+panicked at tests/db_write_queue_test.rs:458:27:
+unexpected producer result: Busy
+```
+
+Reprodujo **2 de 3 corridas** mientras otro proyecto compilaba en la misma
+máquina (podman + builds propios). Con `capacity: 4`, 100 productores y un
+`enqueue_timeout` de 1 segundo, los productores estacionados esperan a que el
+worker drene lo que va delante. Bajo carga real ese drenaje supera el segundo y
+la API devuelve `DbWriteError::Busy` — que es un resultado **legítimo**,
+documentado, y que la línea 458 trata como panic.
+
+No hay pérdida de datos: el invariante `persisted == accepted` nunca falló.
+
+### Por qué el experimento del 2026-08-02 lo descartó por error
+
+La hipótesis de contención era correcta y se refutó con carga sintética: 64
+bucles ocupados sobre 32 cores, 5/5 en verde. La conclusión fue equivocada
+porque **el experimento no reproducía la carga real**. Quemar CPU en bucles
+sube el load average sin competir por I/O ni presionar al planificador como lo
+hace una compilación con escrituras a disco. La carga sintética se parecía a la
+real en la métrica que se estaba midiendo, y no en la que importaba.
+
+Un experimento negativo solo descarta lo que realmente reprodujo.
+
+### Arreglo
+
+Aceptar `Busy` como resultado válido en el test — es lo que la API documenta
+bajo carga. La alternativa (subir el `enqueue_timeout`) solo mueve el umbral y
+vuelve a fallar en un runner más lento.
+
+Mientras tanto, para correr la suite en una máquina cargada:
+
+```
+cargo nextest run --all-features -E 'not test(concurrent_close_persists_exactly_all_accepted_jobs)'
+```
