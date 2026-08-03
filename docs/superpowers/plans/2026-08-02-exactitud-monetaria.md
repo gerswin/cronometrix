@@ -606,6 +606,68 @@ git commit -m "fix(reports): build the report from employment validity, not from
 
 ---
 
+### Task 5: El formulario de empleados envía la unidad salarial (H-08, frontend)
+
+**Esta tarea debe entrar en el mismo PR que la Tarea 1.** No es trabajo posterior: en cuanto el backend exige `salary_kind`, el formulario actual devuelve **422 al crear un empleado**. Mergear la Tarea 1 sola rompe el producto.
+
+El plan original no incluía ni un archivo de frontend — omisión mía. C-03 y H-08 cambian un contrato de API y el consumidor está en `frontend/`.
+
+Estado comprobado: `frontend/src/types/api.ts` define `base_salary_cents` en dos interfaces y **`salary_kind` no aparece en ninguna parte del frontend**.
+
+**Files:**
+- Modify: `frontend/src/types/api.ts` (las dos interfaces con `base_salary_cents`)
+- Modify: el formulario de creación/edición de empleados en `frontend/src/components/employees/`
+- Test: los `__tests__` correspondientes en ese directorio
+
+**Interfaces:**
+- Consumes: `salary_kind: 'hourly' | 'daily' | 'monthly'` — los valores exactos que acepta el `CHECK` de la migración 024. Deben coincidir carácter por carácter.
+
+- [ ] **Step 1: Escribir la prueba que falla**
+
+En el archivo de pruebas del formulario de empleados, añadir un caso que exija que el envío incluya la unidad y que no se pueda enviar sin elegirla:
+
+```tsx
+it('requires an explicit salary unit before submitting', async () => {
+  // rellenar el formulario SIN elegir unidad -> el submit no debe dispararse
+  // elegir 'monthly' -> el payload enviado incluye salary_kind: 'monthly'
+})
+```
+
+- [ ] **Step 2: Correr y ver que falla**
+
+Run: `cd frontend && npx vitest run src/components/employees`
+Expected: falla — el campo no existe.
+
+- [ ] **Step 3: Añadir el tipo**
+
+En `frontend/src/types/api.ts`, añadir a **ambas** interfaces que hoy declaran `base_salary_cents`:
+
+```ts
+export type SalaryKind = 'hourly' | 'daily' | 'monthly'
+```
+
+y el campo `salary_kind: SalaryKind` donde corresponda (obligatorio en la request de creación).
+
+- [ ] **Step 4: Añadir el selector al formulario**
+
+Un selector con las tres opciones, **sin valor preseleccionado**. Un default reintroduce exactamente la ambigüedad que H-08 corrige: alguien acepta el formulario sin mirar y vuelve a haber un importe cuya unidad nadie eligió.
+
+Etiquetar en español, coherente con el resto de la interfaz, y dejando claro a qué se refiere el monto: por hora / diario / mensual. La etiqueta actual "Sueldo Base (USD)" debe pasar a decir la unidad elegida, porque era justo su ambigüedad la que causaba el defecto.
+
+- [ ] **Step 5: Verificar**
+
+Run: `cd frontend && npx vitest run --coverage`
+Expected: verde. El gate de cobertura del frontend también es duro (≥90% líneas / ≥85% ramas globales, ≥70%/≥60% por archivo).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add frontend/src/types/api.ts frontend/src/components/employees/
+git commit -m "feat(employees): require an explicit salary unit in the form (H-08)"
+```
+
+---
+
 ## Fuera de alcance
 
 - **H-07** — las anulaciones no recalculan las horas extra ni validan combinaciones imposibles. La Tarea 2 deja un comentario donde se nota.
