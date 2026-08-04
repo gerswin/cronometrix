@@ -436,3 +436,97 @@ async fn deactivate_covers_success_self_missing_and_version_conflict() {
     assert!(inactive.deleted_at.is_some());
     assert_eq!(inactive.version, 2);
 }
+
+// H-11: department scope is validated on create and is tri-state on update
+// (assign / clear / leave-as-is). Covers `ensure_department_exists` (both the
+// found and not-found branches) plus the create Some-branch and the update
+// Some(Some) / Some(None) match arms.
+#[tokio::test]
+async fn department_scope_is_validated_and_tri_state_on_update() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), config());
+
+    let dept_id = common::create_test_department_with_shift(
+        &db,
+        "Engineering",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+
+    // create() with a valid department -> ensure_department_exists happy path.
+    let mut scoped = request("scoped-user", "supervisor");
+    scoped.department_id = Some(dept_id.clone());
+    let created = service::create(&state, scoped).await.unwrap();
+
+    // create() with an unknown department -> DEPARTMENT_NOT_FOUND (not-found branch).
+    let mut bad = request("bad-dept-user", "supervisor");
+    bad.department_id = Some("does-not-exist".to_string());
+    assert_code(
+        service::create(&state, bad).await.unwrap_err(),
+        "DEPARTMENT_NOT_FOUND",
+    );
+
+    let change = |dept: Option<Option<String>>, version| UpdateUserRequest {
+        full_name: None,
+        role: None,
+        password: None,
+        status: None,
+        department_id: dept,
+        version,
+    };
+
+    // update() Some(Some(valid)) -> assign branch.
+    let assigned = service::update(
+        &state,
+        "admin",
+        &created.id,
+        change(Some(Some(dept_id.clone())), created.version),
+    )
+    .await
+    .unwrap();
+    assert_eq!(assigned.version, created.version + 1);
+
+    // update() Some(Some(unknown)) -> DEPARTMENT_NOT_FOUND before any write.
+    assert_code(
+        service::update(
+            &state,
+            "admin",
+            &created.id,
+            change(Some(Some("nope".to_string())), assigned.version),
+        )
+        .await
+        .unwrap_err(),
+        "DEPARTMENT_NOT_FOUND",
+    );
+
+    // update() Some(None) -> clear-to-org-wide branch (department_id = NULL).
+    let cleared = service::update(
+        &state,
+        "admin",
+        &created.id,
+        change(Some(None), assigned.version),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cleared.version, assigned.version + 1);
+    let dept_after: Option<String> = db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT department_id FROM users WHERE id = ?1",
+            libsql::params![created.id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert!(dept_after.is_none());
+}
