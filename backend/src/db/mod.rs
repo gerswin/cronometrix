@@ -115,6 +115,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "028_employee_audit_full_columns",
         include_str!("migrations/028_employee_audit_full_columns.sql"),
     ),
+    (
+        "029_retention_policy",
+        include_str!("migrations/029_retention_policy.sql"),
+    ),
 ];
 
 /// Initialize the database. If Turso URL is configured, builds an embedded

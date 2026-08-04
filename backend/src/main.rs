@@ -215,6 +215,15 @@ async fn main() -> anyhow::Result<()> {
     // in-memory state to compensate after the HTTP server stops).
     let push_drain_handle = tokio::spawn(push_drain::run(state.clone(), shutdown.clone()));
 
+    // Bloque 3 (H-10): configurable retention sweep over the evidence
+    // directories. Shares the general `shutdown` token like push_drain — it
+    // holds no in-memory state to compensate. The default policy is
+    // keep-everything, so this is inert until a retention period is configured.
+    tokio::spawn(crate::workers::retention::run(
+        state.clone(),
+        shutdown.clone(),
+    ));
+
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
     let purge_worker = PurgeWorker::new(state.clone(), shutdown.clone());
     let purge_handle = tokio::spawn(async move {

@@ -4,6 +4,7 @@ pub mod capture_cleanup;
 pub mod db_write;
 pub mod purge;
 pub mod push_drain;
+pub mod retention;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownSource {
