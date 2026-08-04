@@ -205,15 +205,15 @@ async fn worker_exits_on_shutdown() {
     assert!(r.unwrap().is_ok(), "worker must not panic");
 }
 
-/// Under a paused clock, advancing past the cadence fires a real sweep.
-#[tokio::test(start_paused = true)]
-async fn a_sweep_fires_after_the_cadence() {
+/// The worker actually fires a sweep on its cadence. Driven with a real short
+/// cadence and a generous real-time poll — deterministic under both nextest and
+/// `cargo test` (a paused clock racing real filesystem/DB I/O is not).
+#[tokio::test]
+async fn a_sweep_fires_on_the_cadence() {
     let db = common::test_db().await;
     let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
     set_events_retention(&state, 1).await;
 
-    // Age is measured against the real wall clock inside sweep_once; only the
-    // interval tick is driven by the paused tokio clock.
     let old = write_jpg_aged(
         &state.paths.events_root,
         "emp-1/old.jpg",
@@ -222,20 +222,20 @@ async fn a_sweep_fires_after_the_cadence() {
 
     let shutdown = CancellationToken::new();
     let child = shutdown.clone();
-    let handle = tokio::spawn(async move { retention::run(state, child).await });
+    let handle = tokio::spawn(async move {
+        retention::run_with_cadence(state, child, Duration::from_millis(10)).await
+    });
 
-    tokio::task::yield_now().await;
-    tokio::time::advance(retention::RETENTION_CADENCE + Duration::from_secs(1)).await;
-    for _ in 0..40 {
-        tokio::task::yield_now().await;
+    let mut gone = false;
+    for _ in 0..500 {
         if !old.exists() {
+            gone = true;
             break;
         }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-
-    assert!(!old.exists(), "the scheduled sweep deleted the over-age file");
+    assert!(gone, "the scheduled sweep deleted the over-age file");
 
     shutdown.cancel();
-    let r = tokio::time::timeout(Duration::from_secs(5), handle).await;
-    assert!(r.is_ok(), "worker exits after firing");
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }

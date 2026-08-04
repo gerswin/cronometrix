@@ -48,8 +48,15 @@ struct RetentionPolicy {
 /// Long-lived worker: sweep once per cadence until shutdown. Errors are logged,
 /// never fatal — a failed sweep must not take the process down.
 pub async fn run(state: AppState, shutdown: CancellationToken) {
+    run_with_cadence(state, shutdown, RETENTION_CADENCE).await
+}
+
+/// `run` with an injectable cadence so tests can drive a real (short) interval
+/// deterministically instead of racing a paused clock against real filesystem
+/// and DB I/O.
+pub async fn run_with_cadence(state: AppState, shutdown: CancellationToken, cadence: Duration) {
     tracing::info!("retention sweep worker started");
-    let mut interval = tokio::time::interval(RETENTION_CADENCE);
+    let mut interval = tokio::time::interval(cadence);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval.tick().await; // consume the immediate first tick
 
