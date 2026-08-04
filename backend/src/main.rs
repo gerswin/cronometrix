@@ -34,7 +34,7 @@ use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
 use cronometrix_api::users;
 use cronometrix_api::workers::{
-    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker, push_drain,
+    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker, push_drain, retention,
 };
 
 #[tokio::main]
@@ -219,10 +219,7 @@ async fn main() -> anyhow::Result<()> {
     // directories. Shares the general `shutdown` token like push_drain — it
     // holds no in-memory state to compensate. The default policy is
     // keep-everything, so this is inert until a retention period is configured.
-    tokio::spawn(crate::workers::retention::run(
-        state.clone(),
-        shutdown.clone(),
-    ));
+    tokio::spawn(retention::run(state.clone(), shutdown.clone()));
 
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
     let purge_worker = PurgeWorker::new(state.clone(), shutdown.clone());
