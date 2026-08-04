@@ -84,6 +84,7 @@ fn claims_serialize_deserialize_roundtrip() {
     let c = Claims {
         sub: "user-1".into(),
         role: Role::Admin,
+        department_id: None,
         exp: 1_700_000_000,
         iat: 1_700_000_000 - 1200,
         jti: uuid::Uuid::new_v4().to_string(),
@@ -104,6 +105,7 @@ fn claims_clone_preserves_fields() {
     let c = Claims {
         sub: "u".into(),
         role: Role::Viewer,
+        department_id: None,
         exp: 0,
         iat: 0,
         jti: uuid::Uuid::new_v4().to_string(),

@@ -84,6 +84,33 @@ pub fn test_access_token(user_id: &str, role: &str) -> String {
     .expect("Failed to create test token")
 }
 
+/// Like `test_access_token` but carries an optional department scope (H-11).
+/// `department_id = None` mints an unscoped (org-wide) token, matching the
+/// pre-scope behaviour; `Some(id)` scopes it to that department.
+pub fn test_access_token_scoped(user_id: &str, role: &str, department_id: Option<&str>) -> String {
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde_json::json;
+
+    let mut claims = json!({
+        "sub": user_id,
+        "role": role,
+        "exp": chrono::Utc::now().timestamp() + 3600,
+        "iat": chrono::Utc::now().timestamp(),
+        "jti": uuid::Uuid::new_v4().to_string(),
+        "token_type": "access"
+    });
+    if let Some(dept) = department_id {
+        claims["department_id"] = json!(dept);
+    }
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .expect("Failed to create scoped test token")
+}
+
 /// Create a test admin user directly in the database.
 /// Returns the user ID.
 pub async fn create_test_admin(db: &libsql::Database) -> String {

@@ -38,6 +38,7 @@ fn request(username: &str, role: &str) -> CreateUserRequest {
         full_name: format!("{username} User"),
         role: role.to_string(),
         password: "correct-horse-battery-staple".to_string(),
+        department_id: None,
     }
 }
 
@@ -55,6 +56,7 @@ fn admin_claims(sub: &str) -> Claims {
     Claims {
         sub: sub.to_string(),
         role: Role::Admin,
+        department_id: None,
         exp: chrono::Utc::now().timestamp() + 3600,
         iat: chrono::Utc::now().timestamp(),
         jti: uuid::Uuid::new_v4().to_string(),
@@ -74,6 +76,7 @@ async fn handlers_validate_and_execute_the_complete_user_lifecycle() {
             full_name: "Invalid User".to_string(),
             role: "viewer".to_string(),
             password: "secure-password".to_string(),
+            department_id: None,
         }),
     )
     .await
@@ -116,6 +119,7 @@ async fn handlers_validate_and_execute_the_complete_user_lifecycle() {
             role: None,
             password: Some("short".to_string()),
             status: None,
+            department_id: None,
             version: 1,
         }),
     )
@@ -132,6 +136,7 @@ async fn handlers_validate_and_execute_the_complete_user_lifecycle() {
             role: Some("supervisor".to_string()),
             password: None,
             status: None,
+            department_id: None,
             version: 1,
         }),
     )
@@ -257,6 +262,7 @@ async fn update_changes_all_mutable_fields_and_rotates_credentials() {
             role: Some("supervisor".into()),
             password: Some("new-secure-password".into()),
             status: Some("inactive".into()),
+            department_id: None,
             version: 1,
         },
     )
@@ -304,6 +310,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
                 role: Some("viewer".into()),
                 password: None,
                 status: None,
+                department_id: None,
                 version: 1,
             },
         )
@@ -321,6 +328,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
                 role: None,
                 password: None,
                 status: Some("inactive".into()),
+                department_id: None,
                 version: 1,
             },
         )
@@ -338,6 +346,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
                 role: None,
                 password: None,
                 status: Some("pending".into()),
+                department_id: None,
                 version: 1,
             },
         )
@@ -355,6 +364,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
             role: None,
             password: None,
             status: None,
+            department_id: None,
             version: 99,
         },
     )
@@ -375,6 +385,7 @@ async fn update_distinguishes_missing_rows_from_stale_versions() {
         role: None,
         password: None,
         status: None,
+        department_id: None,
         version,
     };
 

@@ -32,7 +32,7 @@ pub async fn login(
 
     let mut rows = conn
         .query(
-            "SELECT id, username, full_name, password_hash, role FROM users WHERE username = ?1 AND status = 'active'",
+            "SELECT id, username, full_name, password_hash, role, department_id FROM users WHERE username = ?1 AND status = 'active'",
             [body.username.clone()],
         )
         .await
@@ -49,6 +49,7 @@ pub async fn login(
     let full_name: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
     let password_hash: String = row.get(3).map_err(|e| AppError::Internal(e.into()))?;
     let role_str: String = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
+    let department_id: Option<String> = row.get(5).map_err(|e| AppError::Internal(e.into()))?;
 
     // Timing-safe comparison via Argon2id — T-01-05
     service::verify_password(&body.password, &password_hash)?;
@@ -58,8 +59,9 @@ pub async fn login(
         .map_err(|_| AppError::Internal(anyhow::anyhow!("Invalid role in database")))?;
 
     let secret = state.config.jwt_secret.as_bytes();
-    let access_token = service::issue_access_token(&user_id, &role, secret)?;
-    let refresh_token = service::issue_refresh_token(&user_id, &role, secret)?;
+    let dept = department_id.as_deref();
+    let access_token = service::issue_access_token(&user_id, &role, dept, secret)?;
+    let refresh_token = service::issue_refresh_token(&user_id, &role, dept, secret)?;
     let refresh_hash = service::hash_token(&refresh_token);
 
     state
@@ -124,7 +126,7 @@ pub async fn refresh(
     // Load the active user; the conditional write below is the sole hash comparison.
     let mut rows = conn
         .query(
-            "SELECT id, username, full_name, role FROM users WHERE id = ?1 AND status = 'active'",
+            "SELECT id, username, full_name, role, department_id FROM users WHERE id = ?1 AND status = 'active'",
             [claims.sub.clone()],
         )
         .await
@@ -140,14 +142,17 @@ pub async fn refresh(
     let username: String = row.get(1).map_err(|e| AppError::Internal(e.into()))?;
     let full_name: String = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
     let role_str: String = row.get(3).map_err(|e| AppError::Internal(e.into()))?;
+    let department_id: Option<String> = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
 
     let role: Role = role_str
         .parse()
         .map_err(|_| AppError::Internal(anyhow::anyhow!("Invalid role in database")))?;
 
-    // Issue new tokens (rotation)
-    let new_access_token = service::issue_access_token(&user_id, &role, secret)?;
-    let new_refresh_token = service::issue_refresh_token(&user_id, &role, secret)?;
+    // Issue new tokens (rotation). Department scope is re-read from the DB, so a
+    // scope change takes effect on the next refresh.
+    let dept = department_id.as_deref();
+    let new_access_token = service::issue_access_token(&user_id, &role, dept, secret)?;
+    let new_refresh_token = service::issue_refresh_token(&user_id, &role, dept, secret)?;
     let new_refresh_hash = service::hash_token(&new_refresh_token);
 
     let rows_affected = state

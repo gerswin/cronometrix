@@ -119,6 +119,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "029_retention_policy",
         include_str!("migrations/029_retention_policy.sql"),
     ),
+    (
+        "030_users_department_id",
+        include_str!("migrations/030_users_department_id.sql"),
+    ),
 ];
 
 /// M-05: open a read-only snapshot on `conn`. Under WAL, every read issued after
