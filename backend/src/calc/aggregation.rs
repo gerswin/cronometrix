@@ -1,9 +1,18 @@
-//! First-entry / last-exit aggregation (CALC-01, D-20).
+//! Window filtering + entry/exit bucketing (CALC-01, D-20), and — as of
+//! M-03 — punch pairing for worked-time computation.
 //!
 //! The window is `[shift_start - late_tol - bonus, shift_end + early_tol + bonus]`
 //! in the installation's timezone. Events outside the window are ignored. Events
 //! with `is_unknown=true` raise `UnknownFaceInWindow` but do not anchor
 //! canonical entry/exit.
+//!
+//! [`aggregate_events`] still exposes `canonical_entry` (earliest entry) and
+//! `canonical_exit` (latest exit) — those remain correct for `entry_at`/
+//! `exit_at` display, the first and last badge of the day. They are NOT used
+//! to compute `work_minutes` anymore: [`pair_work_intervals`] pairs every
+//! entry with its own exit so a long absence in the middle of the window, or
+//! several disjoint blocks of work, is handled correctly instead of being
+//! counted as one uninterrupted span (the pre-M-03 bug).
 //!
 //! Plan 03-02 routes shift-window construction through
 //! [`crate::calc::overnight::shift_window_overnight_aware`] so overnight shifts
@@ -167,6 +176,83 @@ pub fn aggregate_events(
     }
 }
 
+/// M-03: pairs `entries` with `exits` in chronological order to determine
+/// which spans of the window were actually worked.
+///
+/// This replaces the "first entry, last exit" extremes approach that
+/// [`aggregate_events`] still exposes via `canonical_entry`/`canonical_exit`
+/// (kept for `entry_at`/`exit_at` display — the first and last badge of the
+/// day are still meaningful to show). The extremes approach was wrong for
+/// computing *worked time*: a long absence in the middle of the window
+/// counted as work, and several disjoint blocks of work collapsed into one
+/// span covering the gaps between them.
+///
+/// Algorithm: merge-scan the two (already time-sorted) event streams as one
+/// timeline. An `entry` opens a pending interval; the matching `exit` closes
+/// it. Two decisions fall out of this that would otherwise be accidental:
+///
+/// - A second `entry` while one is already open (e.g. a duplicate badge, or
+///   the reader firing twice) is a no-op — it does not reopen or extend
+///   anything. Only the first entry of a pending interval anchors it.
+/// - An `exit` with nothing open (e.g. a stray duplicate exit tap, or an
+///   entry that fell outside the window) has nothing to close and is
+///   ignored — it does not fabricate a zero-length or negative interval.
+///
+/// No minimum-gap merge threshold is applied: every exit→entry gap the
+/// engine sees here is treated as unworked, however short. This is
+/// deliberate (see the M-03 task brief's third decision) — bounce/duplicate
+/// taps are already collapsed before an event reaches this function, by the
+/// 30-second dedup bucket in
+/// `events::service::persist_attendance_event_queued`
+/// ((employee_id, device_id, direction, captured_at/30) uniqueness). A gap
+/// that survives that filter represents a real door-open/close cycle, not
+/// sensor noise, so counting it as unworked is correct rather than punitive.
+///
+/// Returns `(closed_intervals, has_open_entry)`. `has_open_entry` is `true`
+/// when the scan ends with an entry that never got a matching exit — an odd
+/// number of punches (e.g. entry, exit, entry, and nothing else). This
+/// function only reports that fact; the caller ([`super::engine`]) decides
+/// the policy: the dangling entry is dropped from the worked-minutes sum
+/// (there is nothing to pair it with) and a `MISSING_EXIT` anomaly is raised
+/// — the same code used when the whole window lacks an exit, because from
+/// this entry's point of view it does.
+pub fn pair_work_intervals(
+    entries: &[AttendanceEventRow],
+    exits: &[AttendanceEventRow],
+) -> (Vec<(i64, i64)>, bool) {
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Entry,
+        Exit,
+    }
+
+    let mut timeline: Vec<(i64, Kind)> = Vec::with_capacity(entries.len() + exits.len());
+    timeline.extend(entries.iter().map(|e| (e.captured_at, Kind::Entry)));
+    timeline.extend(exits.iter().map(|e| (e.captured_at, Kind::Exit)));
+    timeline.sort_by_key(|(ts, _)| *ts);
+
+    let mut intervals = Vec::new();
+    let mut open_entry: Option<i64> = None;
+    for (ts, kind) in timeline {
+        match kind {
+            Kind::Entry => {
+                if open_entry.is_none() {
+                    open_entry = Some(ts);
+                }
+                // else: duplicate entry while already clocked in — ignored.
+            }
+            Kind::Exit => {
+                if let Some(start) = open_entry.take() {
+                    intervals.push((start, ts));
+                }
+                // else: orphan exit with nothing open — ignored.
+            }
+        }
+    }
+
+    (intervals, open_entry.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +304,80 @@ mod tests {
         let agg = aggregate_events(&events, 400, 1600);
         assert!(agg.unknown_in_window);
         assert_eq!(agg.canonical_entry, Some(500));
+    }
+
+    // =========================================================================
+    // pair_work_intervals — M-03
+    // =========================================================================
+    mod pair_work_intervals_tests {
+        use super::*;
+
+        fn entries(times: &[i64]) -> Vec<AttendanceEventRow> {
+            times
+                .iter()
+                .enumerate()
+                .map(|(i, t)| ev(&format!("en{i}"), "entry", *t, false))
+                .collect()
+        }
+
+        fn exits(times: &[i64]) -> Vec<AttendanceEventRow> {
+            times
+                .iter()
+                .enumerate()
+                .map(|(i, t)| ev(&format!("ex{i}"), "exit", *t, false))
+                .collect()
+        }
+
+        #[test]
+        fn single_pair_is_one_interval() {
+            let (intervals, open) = pair_work_intervals(&entries(&[100]), &exits(&[500]));
+            assert_eq!(intervals, vec![(100, 500)]);
+            assert!(!open);
+        }
+
+        #[test]
+        fn a_midday_gap_produces_two_disjoint_intervals_not_one_span() {
+            // entry, exit(lunch out), entry(lunch in), exit — the gap between
+            // pairs must not be summed into worked time.
+            let (intervals, open) =
+                pair_work_intervals(&entries(&[100, 900]), &exits(&[400, 1200]));
+            assert_eq!(intervals, vec![(100, 400), (900, 1200)]);
+            assert!(!open);
+        }
+
+        #[test]
+        fn trailing_unmatched_entry_is_reported_but_not_paired() {
+            // entry, exit, entry — odd number of punches.
+            let (intervals, open) = pair_work_intervals(&entries(&[100, 900]), &exits(&[400]));
+            assert_eq!(intervals, vec![(100, 400)]);
+            assert!(open, "trailing entry with no exit must be flagged");
+        }
+
+        #[test]
+        fn duplicate_entry_while_clocked_in_is_a_no_op() {
+            // entry, entry, exit — the second entry does not reopen anything.
+            let (intervals, open) =
+                pair_work_intervals(&entries(&[100, 150]), &exits(&[400]));
+            assert_eq!(intervals, vec![(100, 400)]);
+            assert!(!open);
+        }
+
+        #[test]
+        fn orphan_exit_with_nothing_open_is_ignored() {
+            // exit (no prior entry), entry, exit — the first exit has
+            // nothing to close.
+            let (intervals, open) =
+                pair_work_intervals(&entries(&[200]), &exits(&[100, 400]));
+            assert_eq!(intervals, vec![(200, 400)]);
+            assert!(!open);
+        }
+
+        #[test]
+        fn no_events_yields_no_intervals_and_no_open_entry() {
+            let (intervals, open) = pair_work_intervals(&[], &[]);
+            assert!(intervals.is_empty());
+            assert!(!open);
+        }
     }
 
     // =========================================================================
