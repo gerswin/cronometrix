@@ -15,7 +15,7 @@ use crate::devices::{
 };
 use crate::errors::AppError;
 use crate::state::AppState;
-use crate::storage::atomic_file::AtomicFileGuard;
+use crate::storage::atomic_file::{inspect_owned_file, remove_owned_file, AtomicFileGuard};
 
 use super::dispatcher::{AuthorizedAttempt, AuthorizedDispatchCommand, AuthorizedDispatchTarget};
 use super::models::{
@@ -42,6 +42,108 @@ fn checkpoint_state(value: &str) -> anyhow::Result<DeviceOperationState> {
         "manual" => Ok(DeviceOperationState::Manual),
         _ => anyhow::bail!("invalid device operation checkpoint state"),
     }
+}
+
+/// H-10 (Task 1): purge the enrolled face template(s) of an employee whose
+/// employment has ended. The purpose that justified holding the biometric
+/// template — recognising the person going forward — ends with the relationship,
+/// so every enrolled face photo on disk is deleted.
+///
+/// Deliberately UNCONDITIONAL with respect to the device-side revocation (which
+/// is best-effort and handled by `PurgeWorker`): the local template must not
+/// survive just because a reader was unreachable. It touches ONLY
+/// `enrollments_root`; attendance evidence under `events_root` / `leaves_root`
+/// is preserved (H-09). Every deletion passes through the `storage` module's
+/// path / ownership / symlink validations rather than a raw `std::fs` unlink.
+///
+/// The purge is recorded in the audit log as a `DELETE` on `face_enrollments`,
+/// with the removed paths captured in `old_data`. It is attributed to the
+/// SYSTEM (actor_id NULL): the purge is triggered by the deactivation, runs
+/// without a request-bound actor of its own, and this mirrors how the audit
+/// triggers already record worker/trigger-driven mutations (they too write a
+/// null actor). The correlating who/when lives on the employee-deactivation
+/// audit row for the same `record_id`.
+///
+/// Returns the number of face photos actually removed. Callers should treat a
+/// failure as loud-but-non-fatal: the employee is already deactivated and the
+/// purge can be retried, but the biometric data must not be assumed gone.
+pub async fn purge_enrolled_faces(state: &AppState, employee_id: &str) -> Result<u64, AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut rows = conn
+        .query(
+            "SELECT photo_path FROM face_enrollments WHERE employee_id = ?1",
+            params![employee_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut photo_paths: Vec<String> = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        let path: String = row.get(0).map_err(|e| AppError::Internal(e.into()))?;
+        photo_paths.push(path);
+    }
+    drop(rows);
+    drop(conn);
+
+    let mut removed: Vec<String> = Vec::new();
+    for rel in &photo_paths {
+        let abs = state.paths.enrollments_root.join(rel);
+        let Some(parent) = abs.parent() else {
+            tracing::warn!(employee_id, path = %rel, "purge: enrolled face path has no parent — skipping");
+            continue;
+        };
+        match inspect_owned_file(parent, &abs) {
+            Ok(inspection) => match remove_owned_file(parent, &abs, inspection.identity()) {
+                Ok(()) => removed.push(rel.clone()),
+                Err(e) => {
+                    tracing::warn!(employee_id, path = %rel, err = %e, "purge: failed to remove enrolled face file")
+                }
+            },
+            Err(e) => {
+                tracing::warn!(employee_id, path = %rel, err = %e, "purge: enrolled face file not present or not inspectable")
+            }
+        }
+    }
+
+    // Best-effort: drop the now-empty per-employee subdirectory. `remove_dir`
+    // only succeeds on an empty directory, so a stray file can never be reaped.
+    let subdir = state.paths.enrollments_root.join(employee_id);
+    let _ = tokio::fs::remove_dir(&subdir).await;
+
+    // Audit: a system-initiated DELETE against face_enrollments for this
+    // employee, with the purged paths recorded in old_data. actor_id NULL.
+    let audit_id = Uuid::new_v4().to_string();
+    let old_data = serde_json::json!({
+        "reason": "employment terminated (H-10): enrolled face template purged",
+        "trigger": "employee deactivation",
+        "purged_photo_count": removed.len(),
+        "purged_photo_paths": removed,
+        "enrollment_rows_seen": photo_paths.len(),
+    })
+    .to_string();
+    state
+        .db_write
+        .statement(
+            "enrollments.purge-faces-audit",
+            "INSERT INTO audit_log \
+             (id, table_name, record_id, operation, old_data, new_data, actor_id, created_at) \
+             VALUES (?1, 'face_enrollments', ?2, 'DELETE', ?3, NULL, NULL, unixepoch())",
+            vec![
+                libsql::Value::Text(audit_id),
+                libsql::Value::Text(employee_id.to_string()),
+                libsql::Value::Text(old_data),
+            ],
+        )
+        .await?;
+
+    Ok(removed.len() as u64)
 }
 
 pub fn enrollment_checkpoint_key(push_id: &str) -> String {

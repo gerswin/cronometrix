@@ -87,7 +87,19 @@ pub async fn deactivate_employee(
 ) -> Result<StatusCode, AppError> {
     service::deactivate_queued(&state, &id).await?;
 
-    // Publish purge request (D-15). None in test setups — silently skipped.
+    // H-10: purge the enrolled face template — its purpose ends with employment.
+    // Runs synchronously here (right after the row is set inactive) so there is
+    // no re-activation window, and is UNCONDITIONAL of the device-side revocation
+    // below (best-effort). Best-effort itself: deactivation already committed, so
+    // a purge failure is logged loudly but must not fail the response or
+    // un-deactivate the employee. Touches only enrollments_root — attendance
+    // evidence (H-09) is untouched.
+    if let Err(e) = crate::enrollments::service::purge_enrolled_faces(&state, &id).await {
+        tracing::error!(employee_id = %id, err = %e, "H-10: failed to purge enrolled face template on deactivation");
+    }
+
+    // Publish purge request (D-15) — revokes the face mapping on the readers.
+    // None in test setups — silently skipped.
     if let Some(tx) = &state.purge_tx {
         let _ = tx.send(crate::workers::purge::PurgeRequest {
             employee_id: id.clone(),
