@@ -193,7 +193,11 @@ Extender el respaldo a `enrollments_root`, `events_root`, `leaves_root` y `overr
 
 Una base restaurada sin sus archivos es peor que un fallo de restauración: parece funcionar. El respaldo debe llevar un manifiesto que permita comprobar, al restaurar, que base y archivos vienen del mismo momento.
 
-**El sistema está vivo mientras se respalda, así que define el orden.** No hay pausa: copiar la DB y los directorios en paralelo puede capturar archivos a medio escribir o filas que apuntan a archivos aún no copiados. Respalda **la DB primero** (backup consistente de SQLite) y **los archivos después**. Esto hace tolerable la única asimetría segura —archivos nuevos en disco que la DB respaldada todavía no referencia, que un `restore` simplemente ignora— y evita la peligrosa —filas restauradas que apuntan a archivos que nunca se copiaron. El manifiesto debe hacer detectable esta última.
+**El sistema está vivo mientras se respalda, así que el orden no basta: hay que aquietar los borrados.** Respalda **la DB primero** (backup consistente de SQLite) y **los archivos después**. Ese orden neutraliza las *creaciones* concurrentes —un archivo nuevo aparece en disco pero su fila aún no está en la DB respaldada, así que al restaurar queda como huérfano inofensivo que se ignora.
+
+Pero el orden **no** neutraliza los *borrados* concurrentes, y este bloque introduce dos fuentes de borrado —la purga de plantilla (Tarea 1) y el barrido de retención (Tarea 2)—. Si cualquiera borra un archivo **después del snapshot de la DB pero antes de que la copia llegue a él**, la DB restaurada conserva la fila y el archivo nunca se copió: es exactamente la inconsistencia peligrosa. Por eso el respaldo debe **aquietar los workers de borrado durante su ventana** (pausar purga y retención mientras corre, o correr el respaldo cuando no corren), de modo que ningún borrado curse entre el snapshot y la copia. Con los borrados aquietados y la DB primero, la única asimetría que queda es la segura (huérfanos por creación).
+
+El manifiesto es el **respaldo de última línea**, no el control principal: sirve para *detectar y rechazar/reintentar* un respaldo inconsistente si el aquietamiento falla, no para dejar pasar la inconsistencia con una nota.
 
 - [ ] **Step 4: Probar la restauración de verdad**
 
