@@ -84,7 +84,7 @@ Este bloque construye **mecanismo**, pero tres decisiones son de política y las
 | `users/models.rs`, `users/service.rs` | Asignar departamento al crear/editar usuario | 1 |
 | `auth/rbac.rs` (o `auth/scope.rs` nuevo) | Extractor de ámbito + predicado obligatorio, deny-by-default | 2 |
 | `employees/handlers.rs`, `employees/service.rs` | Lectura/escritura de empleado acotada | 3 |
-| `events/`, `leaves/`, `daily_records/` handlers+service | Lecturas acotadas por el departamento del empleado | 4 |
+| `events/`, `leaves/`, `daily_records/`, `reports/` handlers+service | Lecturas/reportes acotados por el departamento del empleado (incl. stream SSE) | 4 |
 | `main.rs` | Mover foto/evidencia fuera de `viewer_routes` (D2) | 5 |
 | `tests/` + `tests/common/mod.rs` | Dimensión de ámbito en helpers de token; pruebas negativas | todas |
 
@@ -98,7 +98,9 @@ Este bloque construye **mecanismo**, pero tres decisiones son de política y las
 - [ ] **Step 2: Correr y ver fallar.**
 - [ ] **Step 3: Migración** — `ALTER TABLE users ADD COLUMN department_id TEXT REFERENCES departments(id)` (nullable). Registrar la tupla en `db/mod.rs`. **NULL por defecto** (D1: NULL = org-wide).
 - [ ] **Step 4: `Claims` + JWT** — `Claims.department_id: Option<String>`; `issue_access_token` lo incluye; `verify_access_token` lo decodifica. Cuidado: cambiar la forma de `Claims` toca todos los `test_access_token(...)` (los helpers ganan un parámetro opcional de departamento — mantén una variante compatible).
-- [ ] **Step 5: Crear/editar usuario con departamento** — `CreateUserRequest`/`UpdateUserRequest` ganan `department_id: Option<String>`; `users/service.rs` lo persiste y valida que exista (FK). Solo admin gestiona usuarios (sin cambio de gate).
+- [ ] **Step 5: Crear/editar usuario con departamento** — `CreateUserRequest` gana `department_id: Option<String>`; `users/service.rs` lo persiste y valida que exista (FK). Solo admin gestiona usuarios (sin cambio de gate).
+
+  **PATCH tri-estado (obligatorio):** `UpdateUserRequest.department_id` debe ser `Option<Option<String>>`, no `Option<String>`. El patrón de update actual solo aplica campos `Some`, así que `Option<String>` no puede distinguir "campo omitido" de "`null` explícito" — un admin podría asignar un departamento pero **nunca volver a dejarlo en NULL (org-wide, D1)**. `None` = no tocar; `Some(None)` = limpiar a NULL; `Some(Some(id))` = asignar. Probar **ambos**: omisión y limpieza explícita. (Requiere `#[serde(default, deserialize_with = ...)]` o el patrón de doble-Option que use el repo.)
 - [ ] **Step 6: Verificar y commitear.**
 
 ---
@@ -114,27 +116,31 @@ Este bloque construye **mecanismo**, pero tres decisiones son de política y las
 
 ---
 
-### Task 3: Empleados acotados (lectura y escritura)
+### Task 3: Empleados acotados (lectura y escritura, incluida la creación)
 
 **Files:** `employees/handlers.rs`, `employees/service.rs`, `tests/employee_scope_test.rs` (crear).
 
-- [ ] **Step 1: Pruebas que fallan** — un supervisor de Dept-A: `GET /employees` solo lista los de A; `GET/PATCH /employees/{id-de-B}` responde **404** (no 403 — no filtrar existencia); un supervisor de A sí edita a los de A. Un admin ve/edita todos.
+- [ ] **Step 1: Pruebas que fallan** — un supervisor de Dept-A: `GET /employees` solo lista los de A; `GET/PATCH /employees/{id-de-B}` responde **404** (no 403 — no filtrar existencia); un supervisor de A sí edita a los de A. **`POST /employees` con `department_id = B` es rechazado** (403/422) o forzado a A — un supervisor no crea fuera de su ámbito. Un admin ve/edita/crea en cualquiera.
 - [ ] **Step 2: Correr y ver fallar.**
-- [ ] **Step 3: Aplicar** — `list_employees`/`get_employee`/`update_employee`/`deactivate_employee` extraen `AuthUser(claims)` → `ActorScope`. `list` añade el predicado de ámbito **además** de los filtros del llamador. `get`/`update`/`deactivate` verifican el departamento del empleado contra el ámbito y devuelven `404` si no coincide. **`update_employee` por fin extrae claims.**
+- [ ] **Step 3: Aplicar** — `create_employee`/`list_employees`/`get_employee`/`update_employee`/`deactivate_employee` extraen `AuthUser(claims)` → `ActorScope`. `list` añade el predicado de ámbito **además** de los filtros del llamador. `get`/`update`/`deactivate` verifican el departamento del empleado contra el ámbito y devuelven `404` si no coincide. **`update_employee` y `create_employee` por fin extraen claims.**
 
-  **404, no 403:** para un recurso fuera de ámbito, responder 404 evita filtrar su existencia. Documentarlo.
+  **Creación acotada (Codex P1):** hoy `create_employee` (`handlers.rs:18-29`) no extrae claims y pasa el `department_id` del request directo al servicio. Un supervisor acotado **no** puede crear en otro departamento: si el actor está acotado, el `department_id` del empleado se **impone** desde el ámbito del actor (o se rechaza si el request pide otro), nunca se confía en el request.
+
+  **404, no 403** (para recursos existentes fuera de ámbito): responder 404 evita filtrar su existencia. Documentarlo.
 - [ ] **Step 4: Verificar y commitear.**
 
 ---
 
-### Task 4: Eventos, permisos y registros diarios acotados
+### Task 4: Eventos, permisos, registros diarios, stream SSE y reportes acotados
 
-**Files:** `events/`, `leaves/`, `daily_records/` (handlers+service); `tests/`.
+**Files:** `events/`, `leaves/`, `daily_records/`, `reports/` (handlers+service); `main.rs` (stream); `tests/`.
 
 - [ ] **Step 1: Pruebas que fallan** — un supervisor/viewer de A solo ve eventos/permisos/registros de empleados de A; los de B no aparecen (y `GET .../{id}` de B → 404).
 - [ ] **Step 2: Correr y ver fallar.**
-- [ ] **Step 3: Aplicar** — cada consulta de lista/detalle une con `employees` y filtra por el ámbito del actor. Reusar el predicado de la Tarea 2. Cuidado con las consultas que hoy no unen `employees` — puede requerir un JOIN nuevo (verificar que no rompa agregaciones existentes).
-- [ ] **Step 4: Verificar y commitear.**
+- [ ] **Step 3: Aplicar (list/detail)** — cada consulta de lista/detalle une con `employees` y filtra por el ámbito del actor. Reusar el predicado de la Tarea 2. Cuidado con las consultas que hoy no unen `employees` — puede requerir un JOIN nuevo (verificar que no rompa agregaciones existentes).
+- [ ] **Step 4: El stream SSE (Codex P1)** — `GET /events/stream` (`events/handlers.rs:35-54`) hoy verifica el token pero **descarta los claims** y reenvía el broadcast compartido —cuyo payload incluye id/nombre/departamento del empleado— a **todos** los suscriptores. Un viewer/supervisor acotado seguiría recibiendo PII de asistencia en vivo de otros departamentos. Extraer los claims → `ActorScope` y **filtrar por suscriptor**: no emitir eventos de empleados fuera del ámbito. El payload ya trae `department` (o se resuelve al enriquecer). Prueba de stream cross-department: un suscriptor de A no recibe el evento de un empleado de B.
+- [ ] **Step 5: Reportes (Codex P1)** — `POST /reports/json|excel` (`reports/service.rs::compute_report`) hoy confía en el `department_ids` **opcional que elige el llamador**; un supervisor acotado puede **omitirlo** y descargar la nómina de todos los departamentos. Imponer el ámbito del actor **independiente** del filtro del request: si el actor está acotado, su departamento se **intersecta/impone** sobre cualquier `department_ids` pedido (o lo reemplaza), nunca se confía en el request. Reusar el predicado de la Tarea 2 en las consultas del reporte. Prueba negativa: un supervisor de A que omite `department_ids` obtiene solo A; si pide B, no obtiene B.
+- [ ] **Step 6: Verificar y commitear.**
 
 ---
 
