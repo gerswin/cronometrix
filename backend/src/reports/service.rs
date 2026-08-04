@@ -664,6 +664,23 @@ pub async fn compute_report(
         leave_predicates.push(format!("e.id = ?{}", leave_values.len() + 1));
         leave_values.push(libsql::Value::Text(eid.clone()));
     }
+    // M-04: the main query's `shift_type` filter (see the `shift_type_on_clause`
+    // comment above) was never mirrored here, so a report filtered to a single
+    // shift silently pulled in leave days from every other shift. Unlike the
+    // main query, this predicate is safe to add straight to the WHERE-built
+    // `leave_predicates` list: this query INNER JOINs `departments d` (no
+    // LEFT JOIN to degrade — every leave row necessarily has an employee and
+    // a department), so `d.shift_type = ?` never turns a real row NULL the
+    // way `dr.shift_type = ?` would on the LEFT-JOINed `daily_records`. This
+    // query also has no per-day `daily_records` row to read a per-day actual
+    // shift from — `d.shift_type` (department policy) is the same value
+    // already used as the display fallback for leave-only employees a few
+    // lines below (`l_dept_shift`), so filtering on it keeps both uses of
+    // "shift" for a leave-only day consistent with each other.
+    if let Some(st) = &params.shift_type {
+        leave_predicates.push(format!("d.shift_type = ?{}", leave_values.len() + 1));
+        leave_values.push(libsql::Value::Text(st.clone()));
+    }
     let leave_where = format!("WHERE {}", leave_predicates.join(" AND "));
 
     let leave_sql = format!(
