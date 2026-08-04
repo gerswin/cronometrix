@@ -131,6 +131,17 @@ pub async fn compute_report(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
 
+    // M-05: read the whole report from a single consistent snapshot. The three
+    // queries below run in autocommit otherwise, so a write committed between
+    // them can split the report across two states (e.g. leave counts that the
+    // main aggregation never saw). Under WAL this BEGIN gives one stable view
+    // for every read until the COMMIT before we return, and does not block the
+    // single writer. On any early `?` return the snapshot is rolled back when
+    // `conn` drops.
+    crate::db::begin_read_snapshot(&conn)
+        .await
+        .map_err(AppError::Internal)?;
+
     // 2. Fetch tenant_info for the branding header (D-28).
     let mut tenant_rows = conn
         .query(
@@ -844,6 +855,11 @@ pub async fn compute_report(
             })
         })
         .collect();
+
+    // M-05: close the consistent-read snapshot now that every query has run.
+    crate::db::commit_read_snapshot(&conn)
+        .await
+        .map_err(AppError::Internal)?;
 
     Ok(ReportPayload {
         header,

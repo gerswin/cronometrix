@@ -121,6 +121,28 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// M-05: open a read-only snapshot on `conn`. Under WAL, every read issued after
+/// this and before [`commit_read_snapshot`] sees one stable view of the
+/// database, so a multi-query read (e.g. a report) cannot be split across a
+/// concurrent commit and produce an internally contradictory result.
+///
+/// It lives here because the db-write-boundary gate forbids `execute` and
+/// `transaction` outside the db layer; this is a read-only `BEGIN` and, unlike
+/// routing the reads through the single-writer queue, it does not block writers
+/// (WAL lets the writer keep committing while this reader holds its snapshot).
+pub async fn begin_read_snapshot(conn: &libsql::Connection) -> Result<()> {
+    conn.execute("BEGIN DEFERRED", ()).await?;
+    Ok(())
+}
+
+/// Close the snapshot opened by [`begin_read_snapshot`]. Read-only, so if it is
+/// skipped on an error path the transaction is simply rolled back when the
+/// connection is dropped.
+pub async fn commit_read_snapshot(conn: &libsql::Connection) -> Result<()> {
+    conn.execute("COMMIT", ()).await?;
+    Ok(())
+}
+
 /// Initialize the database. If Turso URL is configured, builds an embedded
 /// replica with cloud sync. Otherwise falls back to local-only mode (for
 /// development without Turso credentials).
