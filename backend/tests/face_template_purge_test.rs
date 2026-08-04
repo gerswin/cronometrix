@@ -164,6 +164,39 @@ async fn deactivating_an_employee_keeps_the_attendance_evidence() {
     );
 }
 
+/// Robustness: an enrollment row whose file is already gone does not abort the
+/// purge — it removes what it can, counts zero, and still audits.
+#[tokio::test]
+async fn purge_tolerates_a_missing_file_and_still_audits() {
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    let conn = state.db.connect().unwrap();
+    let emp = seed_employee(&conn).await;
+    // Insert the DB row but DELETE the file so inspect fails.
+    let photo = seed_enrolled_face(&conn, &state.paths.enrollments_root, &emp, &admin).await;
+    drop(conn);
+    std::fs::remove_file(&photo).unwrap();
+
+    let removed = enrollment_service::purge_enrolled_faces(&state, &emp)
+        .await
+        .expect("purge still succeeds when the file is already gone");
+    assert_eq!(removed, 0, "nothing on disk to remove");
+
+    let conn = state.db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM audit_log \
+             WHERE table_name = 'face_enrollments' AND operation = 'DELETE' AND record_id = ?1",
+            params![emp.clone()],
+        )
+        .await
+        .unwrap();
+    let n: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(n, 1, "the purge is audited even when nothing was on disk");
+}
+
 /// The purge is auditable: a DELETE row on face_enrollments for the employee.
 #[tokio::test]
 async fn the_purge_is_recorded_in_the_audit_log() {
