@@ -73,17 +73,26 @@ new digests. Mutable tags such as `latest` are never used.
 ## Transaction and rollback
 
 Before an upgrade, the installer saves the current Compose file, Nginx file,
-manifest, runtime environment, container image inventory, and a consistent
-SQLite backup under `/opt/cronometrix/releases/rollback/<UTC timestamp>/`.
-Candidate files are installed atomically. The installer validates Compose,
-pulls all four pinned images, starts the API, then web and gateway, and keeps
-Cloudflare stopped until local health, setup, upload-limit, and container
-health probes pass.
+manifest, runtime environment, container image inventory, a consistent SQLite
+backup, and — since Bloque 3 (H-14) — the attendance-evidence directories
+(`enrollments`, `events`, `leaves`, `overrides`) under
+`/opt/cronometrix/releases/rollback/<UTC timestamp>/`. The database is
+snapshotted first and the evidence directories second, and a
+`backup-manifest.txt` records the DB's SHA-256 so a restore can prove the
+database and files came from the same backup. Candidate files are installed
+atomically. The installer validates Compose, pulls all four pinned images,
+starts the API, then web and gateway, and keeps Cloudflare stopped until local
+health, setup, upload-limit, and container health probes pass.
 
-If any candidate step fails, the installer stops it, restores the prior files
-and SQLite database, restarts the previous release, checks gateway health, and
-returns a non-zero status. Only the two newest rollback directories are kept,
-and pruning occurs only after candidate health succeeds.
+If any candidate step fails, the installer stops it, restores the prior files,
+SQLite database, and evidence directories, restarts the previous release, checks
+gateway health, and returns a non-zero status. Only the two newest rollback
+directories are kept, and pruning occurs only after candidate health succeeds.
+
+Backing up the database without its images would be loss, not degradation: the
+restored rows would point at face, event, and leave files that no longer exist.
+The evidence backup closes that gap (H-14), and the round-trip is exercised by
+`deploy/tests/backup-restore-test.sh` (run in the Container Smoke CI job).
 
 For an operator-initiated rollback, choose a timestamp and restore its files
 while the stack is stopped:
@@ -96,6 +105,11 @@ sudo cp releases/rollback/TIMESTAMP/docker-compose.yml docker-compose.yml
 sudo cp releases/rollback/TIMESTAMP/release-manifest.env release-manifest.env
 sudo cp releases/rollback/TIMESTAMP/nginx.conf nginx.conf
 sudo cp releases/rollback/TIMESTAMP/cronometrix.db data/cronometrix.db
+# Evidence directories (H-14) — restore any that the backup captured:
+for d in enrollments events leaves overrides; do
+  [ -d "releases/rollback/TIMESTAMP/$d" ] && sudo rm -rf "data/$d" && \
+    sudo cp -a "releases/rollback/TIMESTAMP/$d" "data/$d"
+done
 sudo DOCKER_CONFIG=/opt/cronometrix/.docker \
   docker compose --env-file .env --env-file release-manifest.env up -d
 curl -fsS http://127.0.0.1:8080/api/v1/health

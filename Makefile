@@ -38,6 +38,7 @@ coverage-frontend:
 	@echo "Frontend HTML: frontend/coverage/index.html"
 
 container-smoke:
+	bash deploy/tests/backup-restore-test.sh
 	bash deploy/tests/compose-smoke.sh
 
 .PHONY: e2e e2e-install e2e-build
