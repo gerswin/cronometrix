@@ -530,3 +530,23 @@ async fn department_scope_is_validated_and_tri_state_on_update() {
         .unwrap();
     assert!(dept_after.is_none());
 }
+
+// H-11: the tri-state department_id on UpdateUserRequest is driven by the
+// `double_option` serde helper. Exercise it over JSON so an omitted field, an
+// explicit null, and a value each decode to the intended variant.
+#[test]
+fn update_request_department_id_is_tri_state_over_json() {
+    // Field present as an explicit null -> Some(None) (clear to org-wide).
+    let clear: UpdateUserRequest =
+        serde_json::from_str(r#"{"department_id": null, "version": 1}"#).unwrap();
+    assert_eq!(clear.department_id, Some(None));
+
+    // Field present with a value -> Some(Some(id)) (assign).
+    let assign: UpdateUserRequest =
+        serde_json::from_str(r#"{"department_id": "dept-1", "version": 1}"#).unwrap();
+    assert_eq!(assign.department_id, Some(Some("dept-1".to_string())));
+
+    // Field omitted -> None (leave as-is).
+    let omitted: UpdateUserRequest = serde_json::from_str(r#"{"version": 1}"#).unwrap();
+    assert_eq!(omitted.department_id, None);
+}
