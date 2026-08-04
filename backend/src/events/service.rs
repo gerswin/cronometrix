@@ -3,6 +3,8 @@ use std::path::Path;
 use chrono::{TimeZone, Utc};
 use libsql::{params, Connection};
 
+use crate::calc::aggregation::anchor_dates_for_instant;
+use crate::calc::models::{DepartmentConfig, GlobalRulesRow};
 use crate::common::{epoch_to_iso, PaginatedResponse};
 use crate::errors::AppError;
 use crate::recompute::RecomputeRequest;
@@ -18,6 +20,121 @@ pub fn publish_recompute_if_employee(state: &AppState, event: &NewAttendanceEven
     // this compatibility entry point for the ISAPI stream without duplicating
     // the request after a successful insert.
     let _ = (state, event);
+}
+
+/// Department shift config + global tolerance rules for one employee — the
+/// minimum an H-02 anchor decision needs. A single indexed read: `employees`
+/// by primary key, `departments` by its FK, `global_rules` by its fixed
+/// singleton id. Returns `None` when the employee row is missing (e.g.
+/// deleted between event capture and this lookup) so the caller can fall back
+/// to the event's own local date rather than fail ingestion.
+async fn fetch_shift_context(
+    conn: &Connection,
+    employee_id: &str,
+) -> Result<Option<(DepartmentConfig, GlobalRulesRow)>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT d.id, d.shift_start_time, d.shift_end_time, d.shift_type, \
+             d.is_overnight_shift, d.ordinary_daily_minutes, d.lunch_mode, d.lunch_duration_min, \
+             gr.late_arrival_tolerance_min, gr.early_departure_tolerance_min, gr.bonus_minutes \
+             FROM employees e \
+             JOIN departments d ON d.id = e.department_id \
+             JOIN global_rules gr ON gr.id = 'singleton' \
+             WHERE e.id = ?1",
+            params![employee_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    else {
+        return Ok(None);
+    };
+
+    let is_overnight: i64 = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
+    let dept = DepartmentConfig {
+        id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+        shift_start_time: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+        shift_end_time: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
+        shift_type: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
+        is_overnight_shift: is_overnight != 0,
+        ordinary_daily_minutes: row.get(5).map_err(|e| AppError::Internal(e.into()))?,
+        lunch_mode: row.get(6).map_err(|e| AppError::Internal(e.into()))?,
+        lunch_duration_min: row.get(7).map_err(|e| AppError::Internal(e.into()))?,
+    };
+    let rules = GlobalRulesRow {
+        late_arrival_tolerance_min: row.get(8).map_err(|e| AppError::Internal(e.into()))?,
+        early_departure_tolerance_min: row.get(9).map_err(|e| AppError::Internal(e.into()))?,
+        bonus_minutes: row.get(10).map_err(|e| AppError::Internal(e.into()))?,
+    };
+    Ok(Some((dept, rules)))
+}
+
+/// Resolve every `RecomputeRequest::Day` an ingested event must publish
+/// (H-02). Almost always one request; two when an overnight instant lands in
+/// the overlap of two candidate windows (see
+/// [`anchor_dates_for_instant`](crate::calc::aggregation::anchor_dates_for_instant)).
+///
+/// This is the one place H-02 costs an extra read on the ingest path: a
+/// single indexed `fetch_shift_context` query, on a fresh read connection
+/// (never the serialized single-writer connection), executed only for events
+/// that resolved to a known employee. Best-effort — any failure here falls
+/// back to the event's own local date (the pre-fix anchor) with a warning,
+/// rather than aborting an otherwise-successful ingest.
+async fn resolve_recompute_requests(
+    state: &AppState,
+    event: &NewAttendanceEvent,
+) -> Vec<RecomputeRequest> {
+    let Some(employee_id) = event.employee_id.as_ref() else {
+        return Vec::new();
+    };
+    let Some(own_date) = Utc
+        .timestamp_opt(event.captured_at, 0)
+        .single()
+        .map(|dt| dt.with_timezone(&state.config.timezone).date_naive())
+    else {
+        return Vec::new();
+    };
+
+    let anchors = match state.db.connect() {
+        Ok(conn) => match fetch_shift_context(&conn, employee_id).await {
+            Ok(Some((dept, rules))) => anchor_dates_for_instant(
+                event.captured_at,
+                own_date,
+                &dept,
+                &rules,
+                state.config.timezone,
+            ),
+            Ok(None) => vec![own_date],
+            Err(error) => {
+                tracing::warn!(
+                    employee_id = %employee_id,
+                    err = %error,
+                    "H-02 shift-context lookup failed; anchoring recompute to the event's own local date"
+                );
+                vec![own_date]
+            }
+        },
+        Err(error) => {
+            tracing::warn!(
+                employee_id = %employee_id,
+                err = %error,
+                "H-02 shift-context connection failed; anchoring recompute to the event's own local date"
+            );
+            vec![own_date]
+        }
+    };
+
+    anchors
+        .into_iter()
+        .map(|anchor_date| RecomputeRequest::Day {
+            employee_id: employee_id.clone(),
+            anchor_date,
+        })
+        .collect()
 }
 
 fn base_sse_payload(event: &NewAttendanceEvent, has_photo: bool) -> AttendanceEventSSEPayload {
@@ -162,16 +279,10 @@ pub async fn persist_attendance_event_queued(
 
     let queued_photo_relpath = photo_relpath.clone();
     let recompute_tx = state.recompute_tx.clone();
-    let recompute_request = event.employee_id.as_ref().and_then(|employee_id| {
-        Utc.timestamp_opt(event.captured_at, 0)
-            .single()
-            .map(|captured_at| RecomputeRequest::Day {
-                employee_id: employee_id.clone(),
-                anchor_date: captured_at
-                    .with_timezone(&state.config.timezone)
-                    .date_naive(),
-            })
-    });
+    // H-02: which day(s) to recompute depends on the employee's department
+    // shift (an overnight exit belongs to the day the shift started, not the
+    // event's own local date) — see `resolve_recompute_requests`.
+    let recompute_requests = resolve_recompute_requests(state, &event).await;
     let rows_affected = state
         .db_write
             .transact("events.ingest-attendance", move |tx| {
@@ -202,14 +313,15 @@ pub async fn persist_attendance_event_queued(
                             if let Some(guard) = photo_guard {
                                 guard.keep();
                             }
-                            if let (Some(sender), Some(request)) =
-                                (recompute_tx, recompute_request)
-                            {
-                                if sender.send(request).is_err() {
-                                    tracing::warn!(
-                                        operation = "events.ingest-attendance",
-                                        "post-commit recompute unavailable; identifiers omitted"
-                                    );
+                            if let Some(sender) = recompute_tx {
+                                for request in recompute_requests {
+                                    if sender.send(request).is_err() {
+                                        tracing::warn!(
+                                            operation = "events.ingest-attendance",
+                                            "post-commit recompute unavailable; identifiers omitted"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
                         });

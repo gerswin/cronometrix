@@ -6,7 +6,7 @@
 
 use chrono::Datelike;
 
-use super::aggregation::{aggregate_events, shift_window_with_ambiguity};
+use super::aggregation::{aggregate_events, pair_work_intervals, shift_window_with_ambiguity};
 use super::anomalies::AnomalyCode;
 use super::lunch::compute_lunch_deduction;
 use super::models::{DailyRecordOutput, EngineInput};
@@ -67,8 +67,31 @@ pub fn compute_daily_record(input: &EngineInput) -> DailyRecordOutput {
             (0_i64, 0_i64, 0_i64)
         }
         (Some(ent), Some(exi)) => {
-            let raw_minutes = ((exi - ent) / 60).max(0);
-            let (lunch_ded, lunch_anom) = compute_lunch_deduction(&agg, &input.dept);
+            // M-03: pair every entry with its exit instead of taking the
+            // window's extremes — a long absence in the middle of the day
+            // (e.g. entry, exit-at-noon, entry, exit-at-close) must not be
+            // counted as worked time, and several disjoint blocks of work
+            // must not collapse into one span covering the gaps between
+            // them. See `aggregation::pair_work_intervals` for the full
+            // policy, including the two decisions below.
+            let (intervals, has_open_entry) =
+                pair_work_intervals(&agg.entries_in_window, &agg.exits_in_window);
+
+            // M-03 odd-punch decision: entry, exit, entry, and no final exit
+            // is a defined outcome, not an accident of the pairing scan. The
+            // dangling entry has nothing to pair with, so it contributes no
+            // worked minutes; MISSING_EXIT is raised — the same code used
+            // when the whole window lacks an exit, because from this
+            // entry's point of view it does.
+            if has_open_entry {
+                anomalies.push(AnomalyCode::MissingExit);
+            }
+
+            let raw_seconds: i64 = intervals.iter().map(|(s, e)| (e - s).max(0)).sum();
+            let raw_minutes = (raw_seconds / 60).max(0);
+            let had_mid_shift_break = intervals.len() > 1;
+            let (lunch_ded, lunch_anom) =
+                compute_lunch_deduction(raw_minutes, had_mid_shift_break, &input.dept);
             if let Some(a) = lunch_anom {
                 anomalies.push(a);
             }
