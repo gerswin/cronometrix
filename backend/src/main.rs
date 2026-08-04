@@ -249,12 +249,50 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // H-12 / L-01: the public, unauthenticated authentication surface gets
+    // rate limiting, keyed per client (see middleware::rate_limit module
+    // docs for why naive peer-IP or naive X-Forwarded-For keying are both
+    // wrong behind this deployment's nginx + Cloudflare Tunnel topology).
+    // Two tiers, not one — `/setup/status` is called on every protected-route
+    // navigation by the frontend (see module docs), so it needs a much more
+    // generous budget than the genuinely rare `/auth/login` /
+    // `/setup/init`. Each tier is isolated into its own router so the layer
+    // only wraps the routes it covers — not the SSE stream or the device
+    // push webhook, which have their own, different traffic shapes.
+    let (login_init_rate_limit_layer, login_init_rate_limit_limiter) =
+        cronometrix_api::middleware::rate_limit::login_and_init_rate_limit();
+    let (status_rate_limit_layer, status_rate_limit_limiter) =
+        cronometrix_api::middleware::rate_limit::status_rate_limit();
+
+    let rate_limited_public_routes = Router::new()
+        .route("/auth/login", post(auth::handlers::login))
+        .route("/setup/init", post(setup::handlers::setup_init))
+        .route_layer(login_init_rate_limit_layer)
+        .merge(
+            Router::new()
+                .route("/setup/status", get(setup::handlers::setup_status))
+                .route_layer(status_rate_limit_layer),
+        );
+
+    let rate_limit_cleanup_handle = tokio::spawn({
+        let cancel = shutdown.clone();
+        async move {
+            tokio::join!(
+                cronometrix_api::middleware::rate_limit::run_cleanup(
+                    login_init_rate_limit_limiter,
+                    cancel.clone(),
+                ),
+                cronometrix_api::middleware::rate_limit::run_cleanup(
+                    status_rate_limit_limiter,
+                    cancel,
+                ),
+            );
+        }
+    });
+
     // Public routes — no auth required
     let public_routes = Router::new()
         .route("/health", get(health))
-        .route("/auth/login", post(auth::handlers::login))
-        .route("/setup/status", get(setup::handlers::setup_status))
-        .route("/setup/init", post(setup::handlers::setup_init))
         .route("/setup/activate", post(setup::handlers::setup_activate))
         // SSE stream: EventSource cannot send Bearer headers (T-4-02), so auth is
         // handled inside the handler via ?token=<jwt> query param.
@@ -265,7 +303,8 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/devices/{device_id}/push/{token}",
             post(devices::push::receive_push),
-        );
+        )
+        .merge(rate_limited_public_routes);
 
     // Cookie-authenticated routes (refresh/logout validate via refresh cookie, not Bearer)
     // License gate is applied here too: an unlicensed install must not refresh sessions.
@@ -502,18 +541,25 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Cronometrix API listening on {}", addr);
-    axum::serve(listener, app)
-        .with_graceful_shutdown({
-            let shutdown = shutdown.clone();
-            async move {
-                match cronometrix_api::workers::shutdown_signal().await {
-                    Ok(source) => tracing::info!(?source, "shutdown signal received"),
-                    Err(error) => tracing::error!(%error, "failed to install shutdown signal"),
-                }
-                shutdown.cancel();
+    // `into_make_service_with_connect_info` publishes the TCP peer address as
+    // a `ConnectInfo<SocketAddr>` request extension — the rate-limit key
+    // extractor's fallback for topologies with no proxy hop in front (local
+    // dev, `make e2e`; see middleware::rate_limit module docs).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown({
+        let shutdown = shutdown.clone();
+        async move {
+            match cronometrix_api::workers::shutdown_signal().await {
+                Ok(source) => tracing::info!(?source, "shutdown signal received"),
+                Err(error) => tracing::error!(%error, "failed to install shutdown signal"),
             }
-        })
-        .await?;
+            shutdown.cancel();
+        }
+    })
+    .await?;
 
     fn remember_shutdown_error(
         first: &mut Option<anyhow::Error>,
@@ -541,6 +587,11 @@ async fn main() -> anyhow::Result<()> {
         &mut first_shutdown_error,
         watchdog_handle.await.map_err(anyhow::Error::from),
         "join watchdog",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        rate_limit_cleanup_handle.await.map_err(anyhow::Error::from),
+        "join rate limit cleanup",
     );
     remember_shutdown_error(
         &mut first_shutdown_error,

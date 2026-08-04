@@ -17,6 +17,7 @@ pub mod http_trace;
 pub mod isapi;
 pub mod leaves;
 pub mod license;
+pub mod middleware;
 pub mod recompute;
 pub mod reports;
 pub mod rules;
