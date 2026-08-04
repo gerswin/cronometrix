@@ -120,12 +120,36 @@ pub async fn recompute_for_day(
     let (window_start, window_end, _ns, _ne) =
         calc::aggregation::shift_window(anchor_date, &dept, &rules, tz);
 
+    //    M-02: an unknown-face event used to be pulled into *every* employee's
+    //    recompute for the window, tied to nothing but the timestamp — one
+    //    stranger's face could raise UNKNOWN_FACE_IN_WINDOW on dozens of
+    //    workers at once, which trains operators to ignore the anomaly.
+    //    Scope it: only pull an unknown event whose `device_id` also appears
+    //    among this employee's own events in the same window (the inner
+    //    SELECT). That set can be empty — the employee has no events in the
+    //    window at all, e.g. they were absent. In that case the anomaly is
+    //    SUPPRESSED, not emitted: there is no device to compare against, and
+    //    emitting anyway would recreate the original defect (flagging every
+    //    absent employee in the installation with one stranger's face). The
+    //    tradeoff is that an unknown face at a device nobody clocked into
+    //    that day goes unreported for this employee — acceptable, because it
+    //    is still reported for whichever employees *did* share that device
+    //    and window.
     let mut ev_rows = conn
         .query(
             "SELECT id, employee_id, device_id, direction, captured_at, is_unknown \
              FROM attendance_events \
-             WHERE (employee_id = ?1 OR (employee_id IS NULL AND is_unknown = 1)) \
-               AND captured_at BETWEEN ?2 AND ?3",
+             WHERE captured_at BETWEEN ?2 AND ?3 \
+               AND ( \
+                 employee_id = ?1 \
+                 OR ( \
+                   employee_id IS NULL AND is_unknown = 1 \
+                   AND device_id IN ( \
+                     SELECT device_id FROM attendance_events \
+                     WHERE employee_id = ?1 AND captured_at BETWEEN ?2 AND ?3 \
+                   ) \
+                 ) \
+               )",
             params![employee_id.to_string(), window_start, window_end],
         )
         .await
