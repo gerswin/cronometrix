@@ -35,6 +35,7 @@ digest_auth = "0.3.1"
 diqwest = "3.2.0"
 dotenvy = "0.15"
 futures = "0.3"
+governor = "0.10.4"
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto", "use_pem"] }
 libsql = "0.9.30"
 multer = "3.1.0"
@@ -54,6 +55,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7.18"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout", "limit"] }
+tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
