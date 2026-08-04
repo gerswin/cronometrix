@@ -153,6 +153,48 @@ async fn nightly_task_schedules_same_day_when_local_time_is_before_2am() {
     assert!(result.unwrap().is_ok(), "nightly task must not panic");
 }
 
+#[tokio::test(start_paused = true, flavor = "current_thread")]
+async fn nightly_task_schedules_next_day_when_local_time_is_after_2am() {
+    // Mirror of the before-02:00 test for the OTHER arm of `today_2am`'s match.
+    // `seconds_until_next_2am` branches on the real wall clock, so which arm runs
+    // depends on the time of day CI executes — leaving one arm uncovered for a
+    // ~2h window every night and flaking the per-file branch floor. Pin the
+    // "today 02:00 already passed → schedule tomorrow" (`_`) arm deterministically
+    // by choosing a fixed-offset zone whose current local hour is safely after
+    // 02:00, independent of the process clock or the runner TZ.
+    let db = common::test_db().await;
+    let (state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), make_config());
+
+    let utc_hour = chrono::Utc::now().hour() as i32;
+    // Offset (in (-12, 12]) that lands local time near 12:00.
+    let offset_hours = (24 - utc_hour).rem_euclid(24) - 12;
+    let zone_name = match offset_hours.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("Etc/GMT-{}", offset_hours),
+        std::cmp::Ordering::Less => format!("Etc/GMT+{}", -offset_hours),
+        std::cmp::Ordering::Equal => "UTC".to_string(),
+    };
+    let tz: chrono_tz::Tz = zone_name.parse().expect("fixed-offset timezone");
+    assert!(
+        chrono::Utc::now().with_timezone(&tz).hour() >= 3,
+        "chosen timezone must stay safely after 02:00 across an hour rollover"
+    );
+
+    let shutdown = CancellationToken::new();
+    let child_shutdown = shutdown.clone();
+    let handle = tokio::spawn(async move {
+        nightly_reconcile_task(state, tz, child_shutdown).await;
+    });
+
+    // One loop iteration computes seconds_until_next_2am (exercising the `_`
+    // arm), then parks on the long sleep; cancel breaks it out without firing.
+    tokio::task::yield_now().await;
+    shutdown.cancel();
+
+    let r = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(r.is_ok(), "task must exit promptly on cancel");
+    assert!(r.unwrap().is_ok(), "task must not panic");
+}
+
 // =============================================================================
 // Cancellation under paused clock — exit before scheduled fire.
 // =============================================================================

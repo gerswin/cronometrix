@@ -4,7 +4,9 @@
 
 **Goal:** Resolver el choque entre H-10 (borrar datos biométricos y médicos) y H-09 (preservar evidencia de jornada), purgar la plantilla facial al terminar la relación laboral —que hoy no ocurre—, hacer que el respaldo cubra los archivos (H-14) y dar al reporte una lectura consistente (M-05).
 
-**Architecture:** Cuatro tareas. La primera separa las dos clases de dato que hoy se tratan como una; las demás dependen de esa separación o son independientes. **Construye mecanismo, no política**: los plazos de retención se configuran, no se cablean, porque dependen de una consulta laboral aún sin responder.
+**Architecture:** Cuatro tareas. La primera separa las dos clases de dato que hoy se tratan como una. Solo la Tarea 2 (retención) se apoya conceptualmente en esa separación; **las Tareas 3 (respaldo) y 4 (reporte) son independientes de la Tarea 1 y entre sí**, y pueden ejecutarse en paralelo. **Construye mecanismo, no política**: los plazos de retención se configuran, no se cablean, porque dependen de una consulta laboral aún sin responder.
+
+**Orden de valor y desprendimiento.** El valor alto está en las Tareas 1–3 (privacidad y preservación de evidencia). La Tarea 4 (M-05) es la única de severidad media y la más arriesgada de reproducir: **es desprendible**. Si la reproducción de la carrera o la lectura consistente no salen limpias bajo las restricciones de este bloque, difiere la Tarea 4 sin retener a las otras tres —cada tarea commitea por separado justamente para permitir esto.
 
 **Tech Stack:** Rust/Axum 0.8, libSQL/SQLite, filesystem, `cargo nextest`.
 
@@ -102,11 +104,13 @@ async fn the_purge_is_recorded_in_the_audit_log() { }
 
 - [ ] **Step 3: Purgar solo la plantilla**
 
-Extender `purge.rs` para borrar el rostro enrolado del directorio de enrolamientos, además de revocarlo en el lector.
+Extender `purge.rs` para borrar el rostro enrolado del directorio de enrolamientos, además de revocarlo en el lector. La plantilla viva vive en `enrollments_root/{employee_id}/{enrollment_id}.jpg` (confirmado en `enrollments/service.rs`), separada de `events_root` y `leaves_root`.
 
 **Lee primero qué hay en cada directorio.** `enrollments_root`, `events_root` y `leaves_root` guardan cosas distintas y solo uno de ellos es plantilla viva. Si al leerlos descubres que un directorio mezcla ambas clases, **para y repórtalo**: significa que la separación que este plan asume no existe en disco, y eso cambia el trabajo.
 
-Registrar la purga en auditoría con el empleado, el momento y qué se borró.
+**El borrado del archivo local es incondicional respecto al lector.** `purge.rs` hoy tiene una máquina de estados por *mapping* (checkpoints, `pending_delete`, recuperación manual) para la revocación remota, que es best-effort. La finalidad de la plantilla desaparece con la relación laboral, no con el éxito de la llamada al dispositivo: si la revocación queda en `pending_delete`, **el `.jpg` local se borra igual**. El borrado local es por empleado (una vez), no por mapping. Pero **respeta el guard de re-activación (Pitfall 10)**: si el empleado dejó de estar `inactive`, no borres nada —igual que la revocación aborta el lote.
+
+Registrar la purga en auditoría con el empleado, el momento y qué se borró. **Define el actor explícitamente:** la purga corre en un worker de background sin contexto de request, así que el "quién" no es un usuario en el momento del borrado. Decide y documenta si la entrada se atribuye a `system` (el worker) o se ata al actor que desactivó al empleado en su momento —no lo dejes implícito, porque el test lo exige.
 
 - [ ] **Step 4: Verificar y commitear**
 
@@ -189,6 +193,12 @@ Extender el respaldo a `enrollments_root`, `events_root`, `leaves_root` y `overr
 
 Una base restaurada sin sus archivos es peor que un fallo de restauración: parece funcionar. El respaldo debe llevar un manifiesto que permita comprobar, al restaurar, que base y archivos vienen del mismo momento.
 
+**El sistema está vivo mientras se respalda, así que el orden no basta: hay que aquietar los borrados.** Respalda **la DB primero** (backup consistente de SQLite) y **los archivos después**. Ese orden neutraliza las *creaciones* concurrentes —un archivo nuevo aparece en disco pero su fila aún no está en la DB respaldada, así que al restaurar queda como huérfano inofensivo que se ignora.
+
+Pero el orden **no** neutraliza los *borrados* concurrentes, y este bloque introduce dos fuentes de borrado —la purga de plantilla (Tarea 1) y el barrido de retención (Tarea 2)—. Si cualquiera borra un archivo **después del snapshot de la DB pero antes de que la copia llegue a él**, la DB restaurada conserva la fila y el archivo nunca se copió: es exactamente la inconsistencia peligrosa. Por eso el respaldo debe **aquietar los workers de borrado durante su ventana** (pausar purga y retención mientras corre, o correr el respaldo cuando no corren), de modo que ningún borrado curse entre el snapshot y la copia. Con los borrados aquietados y la DB primero, la única asimetría que queda es la segura (huérfanos por creación).
+
+El manifiesto es el **respaldo de última línea**, no el control principal: sirve para *detectar y rechazar/reintentar* un respaldo inconsistente si el aquietamiento falla, no para dejar pasar la inconsistencia con una nota.
+
 - [ ] **Step 4: Probar la restauración de verdad**
 
 Respaldar, borrar, restaurar, y comprobar que las imágenes vuelven. **Un respaldo que nunca se ha restaurado es una suposición.**
@@ -204,7 +214,9 @@ git commit -m "fix(deploy): back up and restore the evidence directories, not ju
 
 ### Task 4: El reporte lee un estado consistente (M-05)
 
-`backend/src/reports/service.rs` ejecuta varias consultas secuenciales en autocommit. Una escritura concurrente entre ellas produce un reporte internamente contradictorio.
+`backend/src/reports/service.rs` ejecuta varias consultas secuenciales en autocommit (`compute_report` corre queries independientes sobre la misma conexión). Una escritura concurrente entre ellas produce un reporte internamente contradictorio.
+
+**Esta tarea es desprendible (ver Architecture).** Es la única severidad media del bloque y la más incierta: reproducir la carrera exige control del entrelazado, y la lectura consistente puede no tener un camino que el gate de identificadores acepte. Si cualquiera de las dos no sale limpia, **difiere esta tarea y entrega las otras tres** en vez de bloquear el bloque —no fuerces una prueba que pasa siempre ni un mecanismo que el gate rechaza.
 
 **Files:**
 - Modify: `backend/src/reports/service.rs`
