@@ -238,10 +238,12 @@ export default function DashboardPage() {
 
         {/* Row 1: KPI grid */}
         <div className="grid grid-cols-4 gap-4">
-          {/* KPI 1 — Dentro Ahora */}
+          {/* KPI 1 — Empleados Presentes
+              Title text is load-bearing per D-19 / e2e/dashboard.spec.ts:93
+              ("Spanish copy (load-bearing per D-19)") — do not rename. */}
           <KPITile
             testId="kpi-empleados-presentes"
-            title="Dentro Ahora"
+            title="Empleados Presentes"
             value={presenceData?.inside_now ?? 0}
             valueColor="#1A1A1A"
             sub={presentSub}
