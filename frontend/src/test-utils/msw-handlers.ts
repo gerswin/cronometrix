@@ -11,6 +11,8 @@ const API_BASE = 'http://localhost:3001/api/v1'
 
 const EMPTY_AGG = {
   work_min: 0,
+  expected_min: 0,
+  deficit_min: 0,
   ot_min: 0,
   late_min: 0,
   days_worked: 0,

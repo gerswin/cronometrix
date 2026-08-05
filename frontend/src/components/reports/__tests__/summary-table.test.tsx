@@ -5,6 +5,8 @@ import type { ReportPayload, EmployeeReportRow } from '@/types/api'
 
 const EMPTY_AGG = {
   work_min: 0,
+  expected_min: 0,
+  deficit_min: 0,
   ot_min: 0,
   late_min: 0,
   days_worked: 0,
@@ -90,6 +92,8 @@ const EXPECTED_HEADERS = [
   'Departamento',
   'Cargo',
   'Min Trab',
+  'Min Esperados',
+  'Min Déficit',
   'Min Extra',
   'Min Retraso',
   'Días Trab',
@@ -135,7 +139,7 @@ describe('buildTableRows', () => {
 })
 
 describe('<SummaryTable>', () => {
-  it('renders all 19 column headers', () => {
+  it('renders all 21 column headers', () => {
     render(
       <SummaryTable
         payload={PAYLOAD}
@@ -146,6 +150,31 @@ describe('<SummaryTable>', () => {
     for (const header of EXPECTED_HEADERS) {
       expect(screen.getByText(header)).toBeInTheDocument()
     }
+  })
+
+  it('shows expected and deficit minutes next to worked minutes', () => {
+    const payload: ReportPayload = {
+      ...PAYLOAD,
+      rows: [
+        makeRow({
+          employee_id: 'e1',
+          cedula: '11111',
+          nombre: 'Anita',
+          work_min: 1260,
+          expected_min: 2400,
+          deficit_min: 1140,
+        }),
+      ],
+      dept_subtotals: [],
+    }
+    render(
+      <SummaryTable payload={payload} isLoading={false} onDrillDown={() => {}} />,
+    )
+
+    expect(screen.getByText('Min Esperados')).toBeInTheDocument()
+    expect(screen.getByText('Min Déficit')).toBeInTheDocument()
+    expect(screen.getByText('2400')).toBeInTheDocument()
+    expect(screen.getByText('1140')).toBeInTheDocument()
   })
 
   it('shows empty placeholder when no payload', () => {

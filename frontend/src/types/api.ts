@@ -187,6 +187,8 @@ export interface BrandingHeader {
 
 export interface Aggregates {
   work_min: number
+  expected_min: number
+  deficit_min: number
   ot_min: number
   late_min: number
   days_worked: number

@@ -46,7 +46,7 @@ const server = setupServer(
 
 function zeros() {
   return {
-    work_min: 0, ot_min: 0, late_min: 0, days_worked: 0, days_absent: 0,
+    work_min: 0, expected_min: 0, deficit_min: 0, ot_min: 0, late_min: 0, days_worked: 0, days_absent: 0,
     work_pay_cents: 0, ot_pay_cents: 0, night_premium_cents: 0,
     rest_day_surcharge_cents: 0, late_deduction_cents: 0, total_a_pagar_cents: 0,
     days_ivss: 0, days_vacation: 0, days_permission: 0, days_unpaid: 0,

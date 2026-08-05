@@ -102,6 +102,16 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
         cell: ({ getValue }) => String(getValue() ?? 0),
       },
       {
+        accessorKey: 'expected_min',
+        header: 'Min Esperados',
+        cell: ({ getValue }) => String(getValue() ?? 0),
+      },
+      {
+        accessorKey: 'deficit_min',
+        header: 'Min Déficit',
+        cell: ({ getValue }) => String(getValue() ?? 0),
+      },
+      {
         accessorKey: 'ot_min',
         header: 'Min Extra',
         cell: ({ getValue }) => String(getValue() ?? 0),
