@@ -93,6 +93,10 @@ struct AccRow {
     anomaly_codes_set: BTreeSet<String>,
     worked_dates: HashSet<NaiveDate>,
     leave_dates: HashSet<NaiveDate>,
+    /// Minutos efectivamente trabajados por día — única fuente que consulta
+    /// el cálculo de `deficit_min` (sección 5). Separado de `worked_dates`
+    /// porque este último solo registra días con minutos > 0.
+    worked_by_date: BTreeMap<NaiveDate, i64>,
     /// C-05: employment window bounds for días_ausentes. `None` hire_date is
     /// NOT treated as "no lower bound forever" silently — the días_ausentes
     /// loop below flags it with an anomaly, since an employee with an
@@ -410,6 +414,7 @@ pub async fn compute_report(
             anomaly_codes_set: BTreeSet::new(),
             worked_dates: HashSet::new(),
             leave_dates: HashSet::new(),
+            worked_by_date: BTreeMap::new(),
             hire_date: hire_date_opt,
             terminated_on: terminated_on_opt,
             ordinary_daily_minutes,
@@ -617,16 +622,13 @@ pub async fn compute_report(
                     entry.agg.days_worked += 1;
                     entry.worked_dates.insert(anchor_date);
                 }
-                // Déficit por día, nunca neteado por otro día: las extras de
-                // hoy no compensan lo corto de mañana. `has_leave = false`
-                // porque esta rama es exactamente la de un día sin overlay de
-                // permiso (los demás brazos del match insertan en
-                // `leave_dates` y no llegan aquí).
-                let day_expected =
-                    crate::calc::expected::expected_minutes(entry.ordinary_daily_minutes, anchor_date, false);
-                entry.agg.deficit_min = entry.agg.deficit_min.saturating_add(
-                    crate::calc::expected::deficit_minutes(day_expected, effective_work_min),
-                );
+                // Single source of truth for the déficit calculation below
+                // (section 5): record what was actually worked THIS day,
+                // independent of `worked_dates` (which only tracks days with
+                // > 0 minutes and would otherwise make a 0-minute
+                // MissingEntry/MissingExit day invisible here and re-counted
+                // as absent — Critical 1).
+                entry.worked_by_date.insert(anchor_date, effective_work_min);
                 // Update display shift_type to the most recent day seen.
                 entry.shift_type = day_shift_type.clone();
             }
@@ -789,6 +791,7 @@ pub async fn compute_report(
             anomaly_codes_set: BTreeSet::new(),
             worked_dates: HashSet::new(),
             leave_dates: HashSet::new(),
+            worked_by_date: BTreeMap::new(),
             hire_date: l_hire_date,
             terminated_on: l_terminated_on,
             ordinary_daily_minutes: l_ord,
@@ -838,23 +841,36 @@ pub async fn compute_report(
             .count() as i64;
         entry.agg.days_absent = absent;
 
-        let expected_days = weekdays_in_period
+        // expected_min / deficit_min — single source of truth: walk the same
+        // weekdays-in-employment-window set (hire_date/terminated_on bound,
+        // like `absent` above), excluding EVERY leave day regardless of
+        // which of the two sources populated `leave_dates` (the overlay
+        // branch in the main loop above, or the W-5 `leaves` aggregation —
+        // both write into the same `entry.leave_dates` set, and by this
+        // point in the function both loops have already run). For each
+        // remaining day, `calc::expected::expected_minutes` gives the real
+        // daily rule (0 on weekends is moot here since `weekdays_in_period`
+        // already excludes them) and `deficit_minutes` compares it against
+        // what was ACTUALLY worked that specific day (`worked_by_date`, 0 if
+        // there is no entry — i.e. no daily_record at all, an absence).
+        // Computing both fields from the same per-day walk makes
+        // `deficit_min > expected_min` structurally impossible, and avoids
+        // ever counting a day's shortfall twice.
+        for d in weekdays_in_period
             .iter()
             .filter(|d| entry.hire_date.is_none_or(|h| **d >= h))
             .filter(|d| entry.terminated_on.is_none_or(|t| **d <= t))
             .filter(|d| !entry.leave_dates.contains(d))
-            .count() as i64;
-        // expected_minutes ya devuelve 0 en fin de semana; weekdays_in_period
-        // solo trae días hábiles, así que basta multiplicar.
-        entry.agg.expected_min = expected_days.saturating_mul(entry.ordinary_daily_minutes.max(0));
-        // Un día ausente (sin fila alguna en el LEFT JOIN) no pasó por la
-        // rama de arriba, así que su déficit — la jornada completa — se suma
-        // aquí. Los días trabajados ya acumularon su propio déficit por día
-        // en el bucle principal; sumar eso de nuevo lo duplicaría.
-        entry.agg.deficit_min = entry
-            .agg
-            .deficit_min
-            .saturating_add(absent.saturating_mul(entry.ordinary_daily_minutes.max(0)));
+        {
+            let day_expected =
+                crate::calc::expected::expected_minutes(entry.ordinary_daily_minutes, *d, false);
+            entry.agg.expected_min = entry.agg.expected_min.saturating_add(day_expected);
+            let worked = entry.worked_by_date.get(d).copied().unwrap_or(0);
+            entry.agg.deficit_min = entry
+                .agg
+                .deficit_min
+                .saturating_add(crate::calc::expected::deficit_minutes(day_expected, worked));
+        }
     }
 
     // 6. Build EmployeeReportRow vec, dept_subtotals, grand_total.

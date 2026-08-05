@@ -140,3 +140,156 @@ async fn overtime_does_not_offset_a_short_day() {
     assert_eq!(payload.rows[0].aggregates.expected_min, 2400);
     assert_eq!(payload.rows[0].aggregates.deficit_min, 1140);
 }
+
+/// Regresión Critical 1 (code review de Task 3): un `daily_record` con
+/// `work_minutes = 0` es el caso real de `MissingEntry`/`MissingExit`
+/// (`calc/engine.rs:60-68`) — el motor SÍ escribe una fila ese día, solo que
+/// con 0 minutos. Antes del fix, esa fila pasaba por la rama de "día
+/// trabajado" (sumando 480 de déficit) Y, como `worked_dates` solo se puebla
+/// cuando `effective_work_min > 0`, el mismo día también caía en el filtro de
+/// "ausente" del bloque de días 5 (otros 480 más) — doble conteo: 1620 en vez
+/// de 1140. `worked_by_date` es ahora la única fuente que consulta el bucle
+/// de `expected_min`/`deficit_min`, así que un día con fila-pero-0-minutos
+/// aporta su déficit UNA sola vez.
+#[tokio::test]
+async fn a_zero_minute_record_is_not_double_counted_as_deficit_and_absence() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed(&conn).await;
+    // Jueves 08-06: fila real con 0 minutos (MissingEntry/MissingExit), NO
+    // una ausencia sin fila. Viernes 08-07 sigue siendo una ausencia real
+    // (sin fila alguna), tal como en `seed()`.
+    conn.execute(
+        "INSERT INTO daily_records (id, employee_id, department_id, anchor_date, \
+         shift_type, work_minutes, overtime_minutes, late_minutes, \
+         early_departure_minutes, is_rest_day_worked, computed_at, created_at, updated_at) \
+         VALUES ('rec-4', 'emp-1', 'dept-A', '2026-08-06', 'day', 0, 0, 0, 0, 0, \
+         unixepoch(), unixepoch(), unixepoch())",
+        (),
+    )
+    .await
+    .unwrap();
+    let (state, _tmp) = make_state(db);
+
+    let payload = service::compute_report(&state, &params()).await.unwrap();
+    let row = &payload.rows[0];
+
+    assert_eq!(row.aggregates.expected_min, 2400);
+    // work_min sin cambios: la fila de 0 minutos no aporta minutos trabajados.
+    assert_eq!(row.aggregates.work_min, 1260);
+    // Jueves (0 min, con fila) aporta 480 UNA vez, no dos: 1140, exactamente
+    // el mismo total que el test base — sin la fila de jueves habría sido
+    // una ausencia sin fila y hubiera aportado los mismos 480 por ese camino.
+    assert_eq!(row.aggregates.deficit_min, 1140);
+}
+
+/// Regresión Critical 2 (code review de Task 3): `expected_min` ya filtraba
+/// por `hire_date`/`terminated_on`, pero `deficit_min` se calculaba aparte
+/// sin ese filtro — un registro anterior a la contratación (dato espurio o
+/// de prueba) inflaba el déficit por un día que ni siquiera cuenta como
+/// esperado. Ahora ambos campos recorren la MISMA ventana de empleo en el
+/// mismo bucle, así que un día fuera de ventana no puede contribuir a
+/// ninguno de los dos.
+#[tokio::test]
+async fn deficit_respects_the_employment_window_like_expected_does() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    conn.execute(
+        "INSERT INTO departments (id, name, base_salary_cents, shift_start_time, \
+         shift_end_time, lunch_mode, lunch_duration_min, ordinary_daily_minutes, \
+         status, version, created_at, updated_at) \
+         VALUES ('dept-B', 'Producción', 100000, '08:00', '17:00', 'fixed', 60, 480, \
+         'active', 1, unixepoch(), unixepoch())",
+        (),
+    )
+    .await
+    .unwrap();
+    // Contratada el martes 08-04: el lunes 08-03 queda fuera de la ventana de
+    // empleo, aunque exista (espuriamente) una fila de daily_record ese día.
+    conn.execute(
+        "INSERT INTO employees (id, employee_code, name, department_id, status, version, \
+         base_salary_cents, salary_kind, hire_date, created_at, updated_at) \
+         VALUES ('emp-2', 'EMP002', 'Luis Gómez', 'dept-B', 'active', 1, 100000, \
+         'monthly', unixepoch('2026-08-04'), unixepoch(), unixepoch())",
+        (),
+    )
+    .await
+    .unwrap();
+    for (id, date, work) in [
+        ("rec-b1", "2026-08-03", 300), // fuera de ventana — no debe contar
+        ("rec-b2", "2026-08-04", 480), // dentro de ventana, completo
+        ("rec-b3", "2026-08-05", 480), // dentro de ventana, completo
+                                       // 08-06 y 08-07 ausentes, ambos dentro de la ventana de empleo.
+    ] {
+        conn.execute(
+            "INSERT INTO daily_records (id, employee_id, department_id, anchor_date, \
+             shift_type, work_minutes, overtime_minutes, late_minutes, \
+             early_departure_minutes, is_rest_day_worked, computed_at, created_at, updated_at) \
+             VALUES (?1, 'emp-2', 'dept-B', ?2, 'day', ?3, 0, 0, 0, 0, unixepoch(), \
+             unixepoch(), unixepoch())",
+            (id, date, work),
+        )
+        .await
+        .unwrap();
+    }
+    let (state, _tmp) = make_state(db);
+
+    let payload = service::compute_report(&state, &params()).await.unwrap();
+    let row = &payload.rows[0];
+
+    // 4 días hábiles dentro de la ventana (mar-vie) × 480; el lunes fuera de
+    // ventana no cuenta como esperado.
+    assert_eq!(row.aggregates.expected_min, 1920);
+    // work_min SÍ incluye el lunes espurio — es un total crudo, no filtrado
+    // por ventana; solo expected_min/deficit_min lo están.
+    assert_eq!(row.aggregates.work_min, 1260);
+    // martes y miércoles completos (0 + 0), jueves y viernes ausentes dentro
+    // de ventana (480 + 480) = 960. El lunes fuera de ventana NUNCA se visita
+    // en este bucle, así que sus 300 min ni reducen ni inflan el déficit.
+    assert_eq!(row.aggregates.deficit_min, 960);
+}
+
+/// Regresión Important 1 (code review de Task 3): `has_leave` estaba cableado
+/// a `false` en la rama de día trabajado del bucle principal, que solo ve
+/// permisos adjuntos como overlay a un `daily_record`. Un permiso que existe
+/// SOLO en la tabla `leaves` (agregación W-5, sin `daily_record` ese día) se
+/// escribe en `entry.leave_dates` en un bucle posterior — el bucle de
+/// `expected_min`/`deficit_min` corre después de AMBAS fuentes y filtra por
+/// `leave_dates` sin importar cuál de las dos lo pobló.
+#[tokio::test]
+async fn deficit_excludes_a_leave_day_that_only_exists_in_the_leaves_table() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed(&conn).await;
+    // Un usuario para satisfacer el FK created_by de `leaves`.
+    conn.execute(
+        "INSERT INTO users (id, username, full_name, password_hash, role, status, version, \
+         created_at, updated_at) VALUES ('user-1', 'admin1', 'Admin Uno', 'hash', 'admin', \
+         'active', 1, unixepoch(), unixepoch())",
+        (),
+    )
+    .await
+    .unwrap();
+    // Permiso 'manual' el jueves 08-06 — SIN daily_record ese día (W-5: solo
+    // vive en `leaves`). Viernes 08-07 sigue ausente de verdad.
+    conn.execute(
+        "INSERT INTO leaves (id, employee_id, from_date, to_date, leave_type, justification, \
+         evidence_path, created_by, status, version, created_at, updated_at) \
+         VALUES ('leave-1', 'emp-1', '2026-08-06', '2026-08-06', 'manual', 'test', NULL, \
+         'user-1', 'active', 1, unixepoch(), unixepoch())",
+        (),
+    )
+    .await
+    .unwrap();
+    let (state, _tmp) = make_state(db);
+
+    let payload = service::compute_report(&state, &params()).await.unwrap();
+    let row = &payload.rows[0];
+
+    // 4 días esperables (jueves excluido por permiso) × 480.
+    assert_eq!(row.aggregates.expected_min, 1920);
+    assert_eq!(row.aggregates.work_min, 1260);
+    // Lunes 0 + martes 180 + miércoles 0 + viernes ausente 480 = 660. El
+    // jueves con permiso no aporta déficit (queda fuera de la iteración).
+    assert_eq!(row.aggregates.deficit_min, 660);
+}
