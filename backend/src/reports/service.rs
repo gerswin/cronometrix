@@ -35,8 +35,25 @@ use super::{
     money, periods,
 };
 use crate::{
-    common::epoch_to_iso, employees::models::SalaryKind, errors::AppError, state::AppState,
+    auth::scope::ActorScope, common::epoch_to_iso, employees::models::SalaryKind,
+    errors::AppError, state::AppState,
 };
+
+/// H-11: the department filter a report must actually run with, given the
+/// actor's scope. A scoped actor is CONFINED to its own department regardless of
+/// what `department_ids` the request asked for (imposed, never trusted) — so a
+/// supervisor of A that omits the filter gets only A, and one that asks for B
+/// still gets only A (never B). An unscoped actor (admin / org-wide) keeps the
+/// request's filter as-is.
+pub fn scoped_department_ids(
+    scope: &ActorScope,
+    requested: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match scope.department_id() {
+        Some(dept) => Some(vec![dept.to_string()]),
+        None => requested,
+    }
+}
 
 /// H-08: a row cannot be monetized without a valid `salary_kind`. Callers use
 /// this only at the money-math call sites (the leave branches that never pay —

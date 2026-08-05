@@ -22,6 +22,11 @@ pub struct AttendanceEventSSEPayload {
     pub employee_id: Option<String>,
     pub employee_name: Option<String>,
     pub department: Option<String>,
+    /// H-11: the employee's department id, used to filter the SSE stream per
+    /// subscriber so a scoped actor never receives live events of employees
+    /// outside its department. `None` for unknown-face events (denied to scoped
+    /// subscribers). Distinct from `department` (the display name).
+    pub department_id: Option<String>,
     pub captured_at: String,
     pub direction: String,
     pub has_photo: bool,

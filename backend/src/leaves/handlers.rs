@@ -28,6 +28,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
+use crate::auth::scope::ActorScope;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
@@ -204,24 +205,42 @@ pub async fn create_leave(
 
 pub async fn list_leaves(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Query(q): Query<LeaveListQuery>,
 ) -> Result<Json<PaginatedResponse<LeaveResponse>>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::list(&conn, q).await?))
+    let scope = ActorScope::from_claims(&claims);
+    Ok(Json(service::list(&conn, q, &scope).await?))
 }
 
 pub async fn get_leave(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<LeaveResponse>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::get_by_id(&conn, &id).await?))
+    let leave = service::get_by_id(&conn, &id).await?;
+
+    // H-11: a scoped actor cannot see a leave outside its department; 404 (not
+    // 403) so the leave's existence is not leaked.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_leave(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "LEAVE_NOT_FOUND",
+                message: format!("Leave '{}' not found", id),
+            });
+        }
+    }
+
+    Ok(Json(leave))
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,6 +270,7 @@ pub async fn cancel_leave(
 /// an internal error.
 pub async fn get_leave_evidence(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let conn = state
@@ -258,6 +278,21 @@ pub async fn get_leave_evidence(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
     let leave = service::get_by_id(&conn, &id).await?;
+
+    // H-11 (D2): medical evidence is health data — supervisor+ only (enforced at
+    // the route layer) AND confined to the actor's department here; an
+    // out-of-scope leave's evidence is 404, never leaked.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_leave(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "LEAVE_EVIDENCE_NOT_FOUND",
+                message: "Evidence not available".into(),
+            });
+        }
+    }
+
     let relpath = leave.evidence_path.ok_or_else(|| AppError::NotFound {
         code: "LEAVE_EVIDENCE_NOT_FOUND",
         message: "Leave has no evidence attached".into(),

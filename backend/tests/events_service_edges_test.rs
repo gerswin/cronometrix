@@ -197,6 +197,8 @@ async fn list_and_single_record_reads_cover_unknown_and_photo_edges() {
             to: Some(1100),
             include_unknown: Some(false),
         },
+        // H-11: unscoped list preserves this edge-case test's original behaviour.
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();

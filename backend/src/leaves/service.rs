@@ -14,6 +14,7 @@ use chrono::NaiveDate;
 use libsql::{params, Connection};
 use uuid::Uuid;
 
+use crate::auth::scope::ActorScope;
 use crate::calc::models::LeaveRow;
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
 use crate::errors::AppError;
@@ -194,6 +195,31 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> Result<LeaveResponse, App
     row_to_leave(row)
 }
 
+/// H-11: the department the leave's employee belongs to. `None` when the
+/// employee row is gone or the leave does not exist — a scoped actor is denied.
+pub async fn department_of_leave(
+    conn: &Connection,
+    leave_id: &str,
+) -> Result<Option<String>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT e.department_id FROM leaves l \
+             LEFT JOIN employees e ON e.id = l.employee_id \
+             WHERE l.id = ?1",
+            params![leave_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    match rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        Some(row) => Ok(row.get(0).map_err(|e| AppError::Internal(e.into()))?),
+        None => Ok(None),
+    }
+}
+
 /// List leaves with filters + pagination. Filters: employee_id, leave_type,
 /// status, from_date, to_date. Default status filter is 'active'. Pagination
 /// via limit (clamp 1..=100, default 20) + offset (>= 0).
@@ -203,6 +229,7 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> Result<LeaveResponse, App
 pub async fn list(
     conn: &Connection,
     q: LeaveListQuery,
+    scope: &ActorScope,
 ) -> Result<PaginatedResponse<LeaveResponse>, AppError> {
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let offset = q.offset.unwrap_or(0).max(0);
@@ -216,6 +243,17 @@ pub async fn list(
     predicates.push(format!("status = ?{}", predicates.len() + 1));
     count_values.push(libsql::Value::Text(status.clone()));
     fetch_values.push(libsql::Value::Text(status));
+
+    // H-11: a scoped actor sees only leaves of employees in its department; an
+    // unscoped actor (admin / org-wide) adds no predicate.
+    if let Some(dept) = scope.department_id() {
+        predicates.push(format!(
+            "employee_id IN (SELECT id FROM employees WHERE department_id = ?{})",
+            predicates.len() + 1
+        ));
+        count_values.push(libsql::Value::Text(dept.to_string()));
+        fetch_values.push(libsql::Value::Text(dept.to_string()));
+    }
 
     if let Some(emp) = &q.employee_id {
         predicates.push(format!("employee_id = ?{}", predicates.len() + 1));

@@ -2,6 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Estado de ejecución (2026-08-05)
+
+**Completo.** Todo el bloque está implementado y en verde en CI.
+
+- **Tarea 1** — fundamento (`users.department_id` + `Claims` + JWT): mergeada en `main` vía PR #35.
+- **Tareas 2–6** — aplicación del ámbito: PR #36 (rama `claude/bloque-3-plan-review-pos467`).
+
+| Tarea | Contenido | Commit |
+|-------|-----------|--------|
+| 2 | `auth::scope::ActorScope` (deny-by-default derivado de `Claims`) | `edfea96` |
+| 3 | Empleados acotados (list impone ámbito; get/update → 404 fuera de ámbito; create/move rechazado 403) | `349dfce` |
+| 4a | Eventos acotados (list/get; unknown-face denegado a scoped) | `ac5a998` |
+| 4b | Leaves + daily-records acotados | `1c5c3f9` |
+| 4c | Reports acotados (`scoped_department_ids` impone el departamento del actor sobre el request) | `2db7dd1` |
+| 4d + 5 | Stream SSE filtrado por suscriptor; foto biométrica + evidencia médica movidas a supervisor+ y acotadas (D2) | `6cee84d` |
+
+**Decisiones de política aplicadas (defaults del plan):** **D1** = `department_id` NULL es org-wide; **D2** = separación estricta (viewer no ve archivos biométricos/de salud); **D3** = un departamento por usuario.
+
+**Contrato de pruebas (Tarea 6):** las pruebas negativas viven junto a cada tarea — `access_scope_test`, `employee_scope_test`, `events_scope_test`, `leaves_daily_scope_test`, `reports_scope_test` — cubriendo lectura/escritura cross-department denegada, admin sin ámbito, y NULL-department org-wide (D1). Los tests RBAC preexistentes usan tokens sin ámbito, así que con D1 su comportamiento no cambia (no requirieron edición, solo se ajustaron las firmas de los callers de `service::list`).
+
 **Goal:** Reemplazar el RBAC puramente por rol global por un **modelo de ámbito** (matriz recurso/acción/ámbito). Hoy cualquier `viewer` autenticado lee toda la biometría, salud y PII de la instalación, y cualquier `supervisor` edita a cualquier empleado, sin ningún alcance departamental. Este bloque acota supervisor y viewer a su departamento, separa la biometría/salud, hace el filtrado **obligatorio en la consulta** (no elegido por el llamador), aplica **autorización denegada por defecto**, y añade **pruebas negativas**.
 
 **Architecture:** El ámbito vive en la **cadena de identidad** — `users.department_id` → `Claims.department_id` → aplicado en cada handler vía un extractor de ámbito y un **predicado de filtrado obligatorio** en la capa de servicio. No es un parche por endpoint: es una dimensión de autorización nueva que atraviesa lectura y escritura.
@@ -13,6 +33,10 @@
 ---
 
 ## Decisiones pendientes (política — requieren tu confirmación antes de ejecutar)
+
+> **RESUELTAS (2026-08-05):** el dueño aprobó ejecutar con los defaults recomendados
+> — **D1** NULL = org-wide, **D2** separación estricta, **D3** un departamento. La
+> tabla siguiente queda como referencia de las alternativas consideradas.
 
 Este bloque construye **mecanismo**, pero tres decisiones son de política y las decides tú. La recomendación de cada una es el default que implementaría si dices "adelante" sin especificar.
 

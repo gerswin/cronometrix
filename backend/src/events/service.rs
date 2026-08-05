@@ -3,6 +3,7 @@ use std::path::Path;
 use chrono::{TimeZone, Utc};
 use libsql::{params, Connection};
 
+use crate::auth::scope::ActorScope;
 use crate::calc::aggregation::anchor_dates_for_instant;
 use crate::calc::models::{DepartmentConfig, GlobalRulesRow};
 use crate::common::{epoch_to_iso, PaginatedResponse};
@@ -143,6 +144,7 @@ fn base_sse_payload(event: &NewAttendanceEvent, has_photo: bool) -> AttendanceEv
         employee_id: event.employee_id.clone(),
         employee_name: None,
         department: None,
+        department_id: None,
         captured_at: epoch_to_iso(event.captured_at),
         direction: event.direction.clone(),
         has_photo,
@@ -163,7 +165,7 @@ pub async fn build_sse_payload(
 
     let mut rows = conn
         .query(
-            "SELECT e.name, d.name \
+            "SELECT e.name, d.name, e.department_id \
              FROM employees e \
              LEFT JOIN departments d ON d.id = e.department_id \
              WHERE e.id = ?1",
@@ -181,6 +183,10 @@ pub async fn build_sse_payload(
             .map_err(|error| AppError::Internal(error.into()))?;
         payload.department = row
             .get(1)
+            .map_err(|error| AppError::Internal(error.into()))?;
+        // H-11: department id drives the per-subscriber SSE scope filter.
+        payload.department_id = row
+            .get(2)
             .map_err(|error| AppError::Internal(error.into()))?;
     }
     Ok(payload)
@@ -416,6 +422,7 @@ pub async fn lookup_employee_for_event(
 pub async fn list(
     conn: &Connection,
     q: EventListQuery,
+    scope: &ActorScope,
 ) -> Result<PaginatedResponse<AttendanceEventResponse>, AppError> {
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let offset = q.offset.unwrap_or(0).max(0);
@@ -423,6 +430,19 @@ pub async fn list(
     let mut predicates: Vec<String> = Vec::new();
     let mut count_values: Vec<libsql::Value> = Vec::new();
     let mut fetch_values: Vec<libsql::Value> = Vec::new();
+
+    // H-11: a scoped actor sees only events whose employee is in its department.
+    // Unknown-face events (NULL employee_id) never match this subquery, so a
+    // scoped actor never sees them (deny-by-default). An unscoped actor (admin /
+    // org-wide) adds no predicate and sees every event.
+    if let Some(dept) = scope.department_id() {
+        predicates.push(format!(
+            "employee_id IN (SELECT id FROM employees WHERE department_id = ?{})",
+            predicates.len() + 1
+        ));
+        count_values.push(libsql::Value::Text(dept.to_string()));
+        fetch_values.push(libsql::Value::Text(dept.to_string()));
+    }
 
     if let Some(emp) = &q.employee_id {
         predicates.push(format!("employee_id = ?{}", predicates.len() + 1));
@@ -524,6 +544,33 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> Result<AttendanceEventRes
         })?;
 
     row_to_event(row)
+}
+
+/// H-11: the department the event's (known) employee belongs to. `None` when the
+/// event is an unknown-face capture, its employee row is gone, or the event does
+/// not exist — a scoped actor is denied all three (deny-by-default). The caller
+/// establishes event existence separately (via `get_by_id`) for the 404 body.
+pub async fn department_of_event(
+    conn: &Connection,
+    event_id: &str,
+) -> Result<Option<String>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT e.department_id FROM attendance_events ae \
+             LEFT JOIN employees e ON e.id = ae.employee_id \
+             WHERE ae.id = ?1",
+            params![event_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    match rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        Some(row) => Ok(row.get(0).map_err(|e| AppError::Internal(e.into()))?),
+        None => Ok(None),
+    }
 }
 
 /// Fetch the relative photo path for an event. Returns:
