@@ -7,8 +7,9 @@
 //! - Sheet name = 'Resumen'.
 //! - Branding header rows 0-2 (D-28) — title, client_name+RIF, period+generated_at.
 //! - Branding header dashes when tenant_info empty (D-28 fallback).
-//! - 19-column header row at row 4 (D-14; Critical 2 dropped the
-//!   'Descuento Retraso' money column).
+//! - 21-column header row at row 4 (D-14; Critical 2 dropped the
+//!   'Descuento Retraso' money column; Min Esperados/Min Déficit appended
+//!   at the end per Task 4).
 //! - Per-dept subtotal rows + grand total row (D-27).
 //! - Anomaly column data preserved (D-16 column population — tint is visual-only).
 //! - RBAC: Viewer 403, Admin 200.
@@ -413,6 +414,8 @@ async fn excel_column_headers_present() {
         "Días Permiso",
         "Días No Remunerado",
         "Anomalías",
+        "Min Esperados",
+        "Min Déficit",
     ];
     for (i, label) in expected.iter().enumerate() {
         let cell = cell_string(&range, 4, i as u32);
@@ -848,6 +851,59 @@ async fn bench_1000_employees_under_5s() {
         "1000-employee report took {:?}, expected <5s (D-22)",
         elapsed
     );
+}
+
+// -----------------------------------------------------------------------------
+// 13. Horas esperadas y déficit (columnas 19-20)
+// -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn expected_and_deficit_columns_carry_their_values() {
+    // Own fixture: ordinary daily minutes = 480, employee works a single day
+    // for 240 min in a 30-day monthly period with no hire_date (NULL means
+    // "employed the whole period" per seed_employee), so expected_min far
+    // exceeds work_min and a positive deficit is guaranteed.
+    let db = common::test_db().await;
+    let admin = create_test_admin(&db).await;
+    let token = test_access_token(&admin, "admin");
+    let dept = seed_dept(&db, "Eng", 100_000, 480, "day").await;
+    let emp = seed_employee(&db, "E-DEF", "Deficit Dan", &dept, "Dev").await;
+    let _ = seed_daily_record(&db, &emp, &dept, "2026-04-15", "day", 240, 0, 0, 0, None).await;
+
+    let (state, _tmp) = make_state(db);
+    let app = build_test_app(state);
+    let (status, _, bytes) = post_excel(
+        &app,
+        &token,
+        json!({
+            "period_type": "monthly",
+            "from_date": "2026-04-01",
+            "to_date": "2026-04-30",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let range = parse_xlsx(bytes);
+    let (n_rows, _) = range.get_size();
+
+    let mut found = false;
+    for r in 5..(n_rows as u32) {
+        if cell_string(&range, r, 1) == "Deficit Dan" {
+            let expected_min = cell_string(&range, r, 19);
+            let deficit_min = cell_string(&range, r, 20);
+            assert_ne!(expected_min, "", "columna Min Esperados vacía");
+            // La jornada esperada debe superar a la trabajada en este fixture.
+            let expected: f64 = expected_min.parse().expect("Min Esperados numérico");
+            let worked: f64 = cell_string(&range, r, 4).parse().expect("Min Trab numérico");
+            let deficit: f64 = deficit_min.parse().expect("Min Déficit numérico");
+            assert!(expected > worked, "el fixture debe tener déficit");
+            assert_eq!(deficit, expected - worked, "déficit = esperadas − trabajadas");
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "no se encontró la fila del empleado sembrado");
 }
 
 // -----------------------------------------------------------------------------

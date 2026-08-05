@@ -4,7 +4,7 @@
 //! - Rows 0-2: Branding header (D-28). Merged title, client name + RIF, period
 //!   range + generated timestamp.
 //! - Row 3: blank spacer.
-//! - Row 4: Column headers (19 columns indexed 0-18, D-14). Critical-2 fix:
+//! - Row 4: Column headers (21 columns indexed 0-20, D-14). Critical-2 fix:
 //!   the `late_deduction_cents` money column ("Descuento Retraso") was
 //!   removed from this sheet — it was rendered as a negative amount
 //!   immediately before "Total a Pagar" even though C-02 stopped subtracting
@@ -35,7 +35,7 @@ use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksh
 use super::models::{Aggregates, EmployeeReportRow, ReportPayload};
 use crate::errors::AppError;
 
-const N_COLS: u16 = 19;
+const N_COLS: u16 = 21;
 
 /// Build the xlsx workbook bytes for the given report payload.
 ///
@@ -150,6 +150,8 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
         "Días Permiso",
         "Días No Remunerado",
         "Anomalías",
+        "Min Esperados",
+        "Min Déficit",
     ];
     for (i, label) in cols.iter().enumerate() {
         sheet
@@ -306,6 +308,12 @@ fn write_employee_row(
     sheet
         .write_with_format(row, 18, emp.anomaly_codes.join(", "), plain)
         .map_err(map_err)?;
+    sheet
+        .write_with_format(row, 19, emp.aggregates.expected_min as f64, int_fmt)
+        .map_err(map_err)?;
+    sheet
+        .write_with_format(row, 20, emp.aggregates.deficit_min as f64, int_fmt)
+        .map_err(map_err)?;
     Ok(())
 }
 
@@ -365,6 +373,12 @@ fn write_aggregate_row(
         .map_err(map_err)?;
     sheet
         .write_with_format(row, 17, a.days_unpaid as f64, int_fmt)
+        .map_err(map_err)?;
+    sheet
+        .write_with_format(row, 19, a.expected_min as f64, int_fmt)
+        .map_err(map_err)?;
+    sheet
+        .write_with_format(row, 20, a.deficit_min as f64, int_fmt)
         .map_err(map_err)?;
     Ok(())
 }
