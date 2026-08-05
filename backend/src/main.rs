@@ -25,6 +25,7 @@ use cronometrix_api::events;
 use cronometrix_api::http_trace;
 use cronometrix_api::leaves;
 use cronometrix_api::license;
+use cronometrix_api::presence;
 use cronometrix_api::recompute::{self, RecomputeRequest};
 use cronometrix_api::reports;
 use cronometrix_api::rules;
@@ -344,6 +345,7 @@ async fn main() -> anyhow::Result<()> {
             "/daily-records/{id}",
             get(daily_records::handlers::get_daily_record),
         )
+        .route("/presence/today", get(presence::handlers::presence_today))
         .route("/leaves", get(leaves::handlers::list_leaves))
         .route("/leaves/{id}", get(leaves::handlers::get_leave))
         .route("/tenant-info", get(tenant_info::handlers::get_tenant_info))
