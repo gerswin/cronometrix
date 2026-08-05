@@ -13,6 +13,8 @@ use futures::Stream;
 use serde::Deserialize;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt as _};
 
+use crate::auth::rbac::AuthUser;
+use crate::auth::scope::ActorScope;
 use crate::auth::service as auth_service;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
@@ -58,26 +60,45 @@ pub async fn events_stream(
 /// (employee_id, device_id, from, to, include_unknown). Viewer and above per D-15.
 pub async fn list_events(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Query(q): Query<EventListQuery>,
 ) -> Result<Json<PaginatedResponse<AttendanceEventResponse>>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    let result = service::list(&conn, q).await?;
+    let scope = ActorScope::from_claims(&claims);
+    let result = service::list(&conn, q, &scope).await?;
     Ok(Json(result))
 }
 
 /// GET /api/v1/events/:id — single event by id. Viewer and above per D-15.
 pub async fn get_event(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<AttendanceEventResponse>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::get_by_id(&conn, &id).await?))
+    let event = service::get_by_id(&conn, &id).await?;
+
+    // H-11: a scoped actor cannot see an event outside its department; 404 (not
+    // 403) so the event's existence is not leaked. Unknown-face events resolve
+    // to no department and are denied to a scoped actor.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_event(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "EVENT_NOT_FOUND",
+                message: format!("Event '{}' not found", id),
+            });
+        }
+    }
+
+    Ok(Json(event))
 }
 
 /// GET /api/v1/events/:id/photo — stream the event JPEG.
