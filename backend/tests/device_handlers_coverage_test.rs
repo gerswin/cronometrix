@@ -52,6 +52,7 @@ fn admin_claims(actor_id: &str) -> Claims {
     Claims {
         sub: actor_id.into(),
         role: Role::Admin,
+        department_id: None,
         exp: now + 3600,
         iat: now,
         jti: uuid::Uuid::new_v4().to_string(),

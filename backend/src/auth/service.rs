@@ -19,11 +19,17 @@ pub fn verify_password(password: &str, hash: &str) -> Result<(), AppError> {
 }
 
 /// Issue a short-lived access JWT (20 minute expiry). token_type = "access".
-pub fn issue_access_token(user_id: &str, role: &Role, secret: &[u8]) -> Result<String, AppError> {
+pub fn issue_access_token(
+    user_id: &str,
+    role: &Role,
+    department_id: Option<&str>,
+    secret: &[u8],
+) -> Result<String, AppError> {
     let now = Utc::now().timestamp();
     let claims = Claims {
         sub: user_id.to_string(),
         role: role.clone(),
+        department_id: department_id.map(|s| s.to_string()),
         exp: now + 20 * 60, // 20 minutes
         iat: now,
         jti: uuid::Uuid::new_v4().to_string(),
@@ -40,11 +46,17 @@ pub fn issue_access_token(user_id: &str, role: &Role, secret: &[u8]) -> Result<S
 
 /// Issue a long-lived refresh JWT (7 day expiry). token_type = "refresh".
 /// The caller stores SHA-256(token) in the DB, not the raw token.
-pub fn issue_refresh_token(user_id: &str, role: &Role, secret: &[u8]) -> Result<String, AppError> {
+pub fn issue_refresh_token(
+    user_id: &str,
+    role: &Role,
+    department_id: Option<&str>,
+    secret: &[u8],
+) -> Result<String, AppError> {
     let now = Utc::now().timestamp();
     let claims = Claims {
         sub: user_id.to_string(),
         role: role.clone(),
+        department_id: department_id.map(|s| s.to_string()),
         exp: now + 7 * 24 * 60 * 60, // 7 days
         iat: now,
         jti: uuid::Uuid::new_v4().to_string(),
