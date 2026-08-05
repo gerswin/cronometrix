@@ -12,6 +12,7 @@ import { KPITile } from '@/components/dashboard/kpi-tile'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
 import { DeptChart } from '@/components/dashboard/dept-chart'
 import { PresenceTable } from '@/components/dashboard/presence-table'
+import { DeficitPanel } from '@/components/dashboard/deficit-panel'
 import type { PaginatedResponse, DailyRecord, Device, Department, RawAttendanceEvent, PresenceToday } from '@/types/api'
 
 const DEVICE_PAGE_LIMIT = 100
@@ -283,6 +284,8 @@ export default function DashboardPage() {
         </div>
 
         <PresenceTable rows={presenceData?.data ?? []} />
+
+        <DeficitPanel rows={presenceData?.data ?? []} />
 
         {/* Row 2: Activity + Donut */}
         <div className="flex gap-6 flex-1 min-h-[360px]">
