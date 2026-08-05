@@ -7,8 +7,13 @@ interface Props {
 }
 
 export function DeficitPanel({ rows }: Props) {
+  // C-02: solo quien YA SALIÓ puede haber incumplido la jornada. La jornada
+  // esperada es la del día completo, no prorrateada a la hora actual, así que
+  // sin el filtro por `status` todo empleado presente aparecía aquí con un
+  // déficit grande y rojo a media mañana. `deficit_min` es una regla válida
+  // sobre un periodo cerrado (reportes), no sobre un día en curso.
   const short = rows
-    .filter(r => r.deficit_min > 0)
+    .filter(r => r.status === 'left' && r.deficit_min > 0)
     .sort((a, b) => b.deficit_min - a.deficit_min)
 
   return (

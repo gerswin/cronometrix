@@ -106,6 +106,44 @@ describe('renderReportCsv', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:report')
   })
 
+  // Important 1: pantalla, Excel, CSV y PDF deben llevar las mismas columnas.
+  it('carries Min Esperados / Min Déficit (hábiles) right after Min Trabajados', async () => {
+    renderReportCsv({
+      ...payload,
+      rows: [
+        {
+          ...payload.rows[0],
+          nombre: 'Ana Garcia',
+          departamento: 'Operaciones',
+          anomaly_codes: [],
+          anomaly_count: 0,
+          work_min: 1260,
+          expected_min: 1920,
+          deficit_min: 960,
+        },
+      ],
+      grand_total: { ...ZERO_TOTALS, work_min: 1260, expected_min: 1920, deficit_min: 960 },
+    })
+
+    const csv = await readBlob(capturedBlob!)
+    const lines = csv.split('\n')
+    const headers = lines[0].split(',')
+    expect(headers[4]).toBe('Min Trabajados')
+    expect(headers[5]).toBe('Min Esperados')
+    expect(headers[6]).toBe('Min Déficit (hábiles)')
+    expect(headers[7]).toBe('Min Extra')
+
+    const dataCells = lines[1].split(',')
+    expect(dataCells[4]).toBe('1260')
+    expect(dataCells[5]).toBe('1920')
+    expect(dataCells[6]).toBe('960')
+
+    const totalCells = lines[lines.length - 1].split(',')
+    expect(totalCells[4]).toBe('1260')
+    expect(totalCells[5]).toBe('1920')
+    expect(totalCells[6]).toBe('960')
+  })
+
   it('renders an empty report without undefined placeholders', async () => {
     renderReportCsv({ ...payload, rows: [], grand_total: ZERO_TOTALS })
 

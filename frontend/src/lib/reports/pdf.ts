@@ -20,6 +20,8 @@ const COLUMN_HEADERS = [
   'Depto',
   'Cargo',
   'Min Trab',
+  'Min Esperados',
+  'Min Déficit (hábiles)',
   'Min Extra',
   'Min Retr',
   'Días T',
@@ -85,6 +87,8 @@ export function renderReportPdf(payload: ReportPayload): void {
         r.departamento,
         r.cargo || '—',
         r.work_min,
+        r.expected_min,
+        r.deficit_min,
         r.ot_min,
         r.late_min,
         r.days_worked,
@@ -109,6 +113,8 @@ export function renderReportPdf(payload: ReportPayload): void {
         '',
         '',
         sub.aggregates.work_min,
+        sub.aggregates.expected_min,
+        sub.aggregates.deficit_min,
         sub.aggregates.ot_min,
         sub.aggregates.late_min,
         sub.aggregates.days_worked,
@@ -134,6 +140,8 @@ export function renderReportPdf(payload: ReportPayload): void {
     '',
     '',
     g.work_min,
+    g.expected_min,
+    g.deficit_min,
     g.ot_min,
     g.late_min,
     g.days_worked,
@@ -166,7 +174,7 @@ export function renderReportPdf(payload: ReportPayload): void {
       const raw = hook.row.raw as (string | number)[]
       if (hook.section !== 'body') return
       const labelCell = String(raw[1] ?? '')
-      const anomalyText = String(raw[18] ?? '')
+      const anomalyText = String(raw[20] ?? '')
       if (labelCell === 'TOTAL GENERAL') {
         hook.cell.styles.fontStyle = 'bold'
         hook.cell.styles.fillColor = [219, 234, 254] // blue-100

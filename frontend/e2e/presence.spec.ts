@@ -231,12 +231,12 @@ test.describe('Presencia del dashboard y aislamiento por departamento', () => {
 
       // Every visible row must belong to dept-prod ("Producción") — none from
       // dept-admin ("Administración"), where María López was seeded.
+      // La aserción es incondicional a propósito: con `if (unique.size === 1)`
+      // un tablero de cero filas pasaba el test sin probar nada.
+      await expect(table.getByText('Ana Pérez')).toHaveCount(1)
       const departments = await table.locator('tbody tr td:nth-child(3)').allTextContents()
       const unique = new Set(departments.map(d => d.trim()).filter(Boolean))
-      expect(unique.size).toBeLessThanOrEqual(1)
-      if (unique.size === 1) {
-        expect([...unique]).toEqual(['Producción'])
-      }
+      expect([...unique]).toEqual(['Producción'])
       await expect(table.getByText('María López')).toHaveCount(0)
     } finally {
       await scopedPage.context().close()

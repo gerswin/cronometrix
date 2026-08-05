@@ -93,7 +93,7 @@ const EXPECTED_HEADERS = [
   'Cargo',
   'Min Trab',
   'Min Esperados',
-  'Min Déficit',
+  'Min Déficit (hábiles)',
   'Min Extra',
   'Min Retraso',
   'Días Trab',
@@ -172,7 +172,7 @@ describe('<SummaryTable>', () => {
     )
 
     expect(screen.getByText('Min Esperados')).toBeInTheDocument()
-    expect(screen.getByText('Min Déficit')).toBeInTheDocument()
+    expect(screen.getByText('Min Déficit (hábiles)')).toBeInTheDocument()
     expect(screen.getByText('2400')).toBeInTheDocument()
     expect(screen.getByText('1140')).toBeInTheDocument()
   })

@@ -1,5 +1,7 @@
 'use client'
-// Summary table — 20 columns per D-14 with synthetic per-dept subtotal
+// Summary table — 21 columns (D-14's 19, minus 'Descuento Retraso' per
+// Critical 2, plus 'Min Esperados' and 'Min Déficit (hábiles)') with
+// synthetic per-dept subtotal
 // rows (RESEARCH Pattern 7) and a final grand-total row. Anomaly rows
 // (anomaly_count > 0) get amber-50 tint; subtotal/grand-total rows are
 // bold and not clickable.
@@ -108,7 +110,7 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
       },
       {
         accessorKey: 'deficit_min',
-        header: 'Min Déficit',
+        header: 'Min Déficit (hábiles)',
         cell: ({ getValue }) => String(getValue() ?? 0),
       },
       {

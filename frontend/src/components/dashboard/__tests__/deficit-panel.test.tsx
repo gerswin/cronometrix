@@ -39,4 +39,21 @@ describe('DeficitPanel', () => {
     render(<DeficitPanel rows={[row('e3', 'María', 0)]} />)
     expect(screen.getByTestId('deficit-empty')).toBeInTheDocument()
   })
+
+  // C-02: la jornada esperada es la del día completo, no prorrateada a la
+  // hora actual. Quien sigue dentro no ha incumplido nada todavía.
+  it('does not accuse someone who is still inside', () => {
+    const inside: PresenceRow = { ...row('e4', 'Pedro', 270), status: 'inside', exit_at: null }
+    render(<DeficitPanel rows={[inside]} />)
+    expect(screen.queryByTestId('deficit-row-e4')).not.toBeInTheDocument()
+    expect(screen.getByTestId('deficit-empty')).toBeInTheDocument()
+  })
+
+  it('lists someone who already left with a deficit alongside people still inside', () => {
+    const inside: PresenceRow = { ...row('e4', 'Pedro', 270), status: 'inside', exit_at: null }
+    render(<DeficitPanel rows={[inside, row('e5', 'Rosa', 120)]} />)
+    const items = screen.getAllByTestId(/deficit-row-/)
+    expect(items).toHaveLength(1)
+    expect(within(items[0]).getByText('Rosa')).toBeInTheDocument()
+  })
 })
