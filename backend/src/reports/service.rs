@@ -100,6 +100,8 @@ struct AccRow {
     hire_date: Option<NaiveDate>,
     /// `None` = still employed (migration 026: nullable = sigue activo).
     terminated_on: Option<NaiveDate>,
+    /// Jornada ordinaria del departamento, para la esperada del periodo.
+    ordinary_daily_minutes: i64,
 }
 
 /// Convert an optional epoch-seconds (UTC midnight) column to an optional
@@ -410,6 +412,7 @@ pub async fn compute_report(
             leave_dates: HashSet::new(),
             hire_date: hire_date_opt,
             terminated_on: terminated_on_opt,
+            ordinary_daily_minutes,
         });
 
         // C-05: `dr.anchor_date` NULL means "no daily_record this day" — the
@@ -614,6 +617,16 @@ pub async fn compute_report(
                     entry.agg.days_worked += 1;
                     entry.worked_dates.insert(anchor_date);
                 }
+                // Déficit por día, nunca neteado por otro día: las extras de
+                // hoy no compensan lo corto de mañana. `has_leave = false`
+                // porque esta rama es exactamente la de un día sin overlay de
+                // permiso (los demás brazos del match insertan en
+                // `leave_dates` y no llegan aquí).
+                let day_expected =
+                    crate::calc::expected::expected_minutes(entry.ordinary_daily_minutes, anchor_date, false);
+                entry.agg.deficit_min = entry.agg.deficit_min.saturating_add(
+                    crate::calc::expected::deficit_minutes(day_expected, effective_work_min),
+                );
                 // Update display shift_type to the most recent day seen.
                 entry.shift_type = day_shift_type.clone();
             }
@@ -744,7 +757,7 @@ pub async fn compute_report(
         let l_dept_id: String = lr.get(7).map_err(|e| AppError::Internal(e.into()))?;
         let l_dept_name: String = lr.get(8).map_err(|e| AppError::Internal(e.into()))?;
         let _l_base: i64 = lr.get(9).map_err(|e| AppError::Internal(e.into()))?;
-        let _l_ord: i64 = lr.get(10).map_err(|e| AppError::Internal(e.into()))?;
+        let l_ord: i64 = lr.get(10).map_err(|e| AppError::Internal(e.into()))?;
         let l_dept_shift: String = lr.get(11).map_err(|e| AppError::Internal(e.into()))?;
         let l_hire_date = epoch_to_naive_date(lr.get(12).ok());
         let l_terminated_on = epoch_to_naive_date(lr.get(13).ok());
@@ -778,6 +791,7 @@ pub async fn compute_report(
             leave_dates: HashSet::new(),
             hire_date: l_hire_date,
             terminated_on: l_terminated_on,
+            ordinary_daily_minutes: l_ord,
         });
 
         let mut d = overlap_from;
@@ -823,6 +837,24 @@ pub async fn compute_report(
             .filter(|d| !entry.worked_dates.contains(d) && !entry.leave_dates.contains(d))
             .count() as i64;
         entry.agg.days_absent = absent;
+
+        let expected_days = weekdays_in_period
+            .iter()
+            .filter(|d| entry.hire_date.is_none_or(|h| **d >= h))
+            .filter(|d| entry.terminated_on.is_none_or(|t| **d <= t))
+            .filter(|d| !entry.leave_dates.contains(d))
+            .count() as i64;
+        // expected_minutes ya devuelve 0 en fin de semana; weekdays_in_period
+        // solo trae días hábiles, así que basta multiplicar.
+        entry.agg.expected_min = expected_days.saturating_mul(entry.ordinary_daily_minutes.max(0));
+        // Un día ausente (sin fila alguna en el LEFT JOIN) no pasó por la
+        // rama de arriba, así que su déficit — la jornada completa — se suma
+        // aquí. Los días trabajados ya acumularon su propio déficit por día
+        // en el bucle principal; sumar eso de nuevo lo duplicaría.
+        entry.agg.deficit_min = entry
+            .agg
+            .deficit_min
+            .saturating_add(absent.saturating_mul(entry.ordinary_daily_minutes.max(0)));
     }
 
     // 6. Build EmployeeReportRow vec, dept_subtotals, grand_total.
@@ -889,6 +921,8 @@ pub async fn compute_report(
 
 fn accumulate(into: &mut Aggregates, from: &Aggregates) {
     into.work_min = into.work_min.saturating_add(from.work_min);
+    into.expected_min = into.expected_min.saturating_add(from.expected_min);
+    into.deficit_min = into.deficit_min.saturating_add(from.deficit_min);
     into.ot_min = into.ot_min.saturating_add(from.ot_min);
     into.late_min = into.late_min.saturating_add(from.late_min);
     into.days_worked = into.days_worked.saturating_add(from.days_worked);
