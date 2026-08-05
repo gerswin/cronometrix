@@ -9,7 +9,6 @@ mod common;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::Json;
 use cronometrix_api::auth::models::{Claims, Role};
 use cronometrix_api::auth::rbac::AuthUser;
 use cronometrix_api::config::Config;
