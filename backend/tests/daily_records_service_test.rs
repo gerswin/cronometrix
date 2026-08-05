@@ -209,6 +209,7 @@ async fn list_no_filter_returns_all() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -237,6 +238,7 @@ async fn list_filter_by_employee_id() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -277,6 +279,7 @@ async fn list_uses_historical_daily_record_department_name() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -311,6 +314,7 @@ async fn list_filter_by_department() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -339,6 +343,7 @@ async fn list_filter_by_date_range() {
             from_date: Some("2026-04-20".into()),
             to_date: Some("2026-04-22".into()),
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -360,6 +365,7 @@ async fn list_pagination_clamps_negative_offset_and_excessive_limit() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();

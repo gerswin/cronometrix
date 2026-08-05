@@ -13,6 +13,7 @@ use chrono::{Datelike, NaiveDate};
 use chrono_tz::Tz;
 use libsql::{params, Connection};
 
+use crate::auth::scope::ActorScope;
 use crate::calc::models::{AttendanceEventRow, DepartmentConfig, GlobalRulesRow};
 use crate::calc::{self, EngineInput};
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
@@ -456,6 +457,7 @@ fn row_to_dr(row: libsql::Row) -> Result<DailyRecordResponse, AppError> {
 pub async fn list(
     conn: &Connection,
     q: DailyRecordListQuery,
+    scope: &ActorScope,
 ) -> Result<PaginatedResponse<DailyRecordResponse>, AppError> {
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let offset = q.offset.unwrap_or(0).max(0);
@@ -463,6 +465,14 @@ pub async fn list(
     let mut predicates: Vec<String> = Vec::new();
     let mut count_values: Vec<libsql::Value> = Vec::new();
     let mut fetch_values: Vec<libsql::Value> = Vec::new();
+
+    // H-11: a scoped actor sees only its department's daily records
+    // (daily_records carries department_id denormalized). Unscoped adds nothing.
+    if let Some(dept) = scope.department_id() {
+        predicates.push(format!("dr.department_id = ?{}", predicates.len() + 1));
+        count_values.push(libsql::Value::Text(dept.to_string()));
+        fetch_values.push(libsql::Value::Text(dept.to_string()));
+    }
 
     if let Some(emp) = &q.employee_id {
         predicates.push(format!("dr.employee_id = ?{}", predicates.len() + 1));

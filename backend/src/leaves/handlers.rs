@@ -28,6 +28,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
+use crate::auth::scope::ActorScope;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
@@ -204,24 +205,42 @@ pub async fn create_leave(
 
 pub async fn list_leaves(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Query(q): Query<LeaveListQuery>,
 ) -> Result<Json<PaginatedResponse<LeaveResponse>>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::list(&conn, q).await?))
+    let scope = ActorScope::from_claims(&claims);
+    Ok(Json(service::list(&conn, q, &scope).await?))
 }
 
 pub async fn get_leave(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<LeaveResponse>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::get_by_id(&conn, &id).await?))
+    let leave = service::get_by_id(&conn, &id).await?;
+
+    // H-11: a scoped actor cannot see a leave outside its department; 404 (not
+    // 403) so the leave's existence is not leaked.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_leave(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "LEAVE_NOT_FOUND",
+                message: format!("Leave '{}' not found", id),
+            });
+        }
+    }
+
+    Ok(Json(leave))
 }
 
 #[derive(Debug, Deserialize)]

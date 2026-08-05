@@ -9,6 +9,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
+use crate::auth::scope::ActorScope;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
@@ -20,26 +21,41 @@ use super::service;
 /// GET /api/v1/daily-records — paginated list with optional employee/department/date filters.
 pub async fn list_daily_records(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Query(q): Query<DailyRecordListQuery>,
 ) -> Result<Json<PaginatedResponse<DailyRecordResponse>>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    let result = service::list(&conn, q).await?;
+    let scope = ActorScope::from_claims(&claims);
+    let result = service::list(&conn, q, &scope).await?;
     Ok(Json(result))
 }
 
 /// GET /api/v1/daily-records/{id} — single record with anomalies attached.
 pub async fn get_daily_record(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<DailyRecordResponse>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::get_by_id(&conn, &id).await?))
+    let record = service::get_by_id(&conn, &id).await?;
+
+    // H-11: a scoped actor cannot see a record outside its department; 404 (not
+    // 403) so the record's existence is not leaked. daily_records carries its
+    // department_id directly, so no extra lookup is needed.
+    if !ActorScope::from_claims(&claims).permits(Some(&record.department_id)) {
+        return Err(AppError::NotFound {
+            code: "DAILY_RECORD_NOT_FOUND",
+            message: format!("Daily record '{}' not found", id),
+        });
+    }
+
+    Ok(Json(record))
 }
 
 /// POST /api/v1/daily-records/{id}/overrides — Admin only, multipart/form-data.
