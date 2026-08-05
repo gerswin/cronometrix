@@ -729,82 +729,68 @@ git commit -m "feat(reports): horas esperadas y déficit por empleado, subtotal 
 
 **Files:**
 - Modify: `backend/src/reports/excel.rs:38` (`N_COLS`), `:133-152` (cabeceras), `write_employee_row`, `write_aggregate_row`
-- Test: `backend/tests/reports_excel_expected_test.rs`
+- Test: `backend/tests/reports_excel_test.rs` (extender el existente — **no** crear archivo nuevo)
 
 **Interfaces:**
 - Consumes: `Aggregates.expected_min` y `Aggregates.deficit_min` de la Task 3.
 - Produces: nada que consuman otras tareas.
 
-Las dos columnas van **al final** (índices 19 y 20), no intercaladas: mover "Min Trab" de sitio rompería todos los índices ya escritos y las pruebas que los asumen.
+Las dos columnas van **al final** (índices 19 y 20), no intercaladas: mover "Min Trab" de sitio rompería todos los índices ya escritos, y `reports_excel_test.rs:563` lee los códigos de anomalía en la columna 18 por posición.
+
+`backend/tests/reports_excel_test.rs` ya afirma la fila de cabeceras completa (línea 396, array `expected` de 19 entradas) y trae los helpers `parse_xlsx` (línea 121) y `cell_string` (línea 129) con `calamine`. Extender ese archivo: añadir las dos entradas al array existente y un test nuevo que verifique los valores.
 
 - [ ] **Step 1: Write the failing test**
 
-`backend/tests/reports_excel_expected_test.rs`:
+Primero, añadir al array `expected` de la línea 396, después de `"Anomalías"`:
 
 ```rust
-//! El Excel de pre-nómina incluye las columnas de esperadas y déficit (D-14).
+        "Min Esperados",
+        "Min Déficit",
+```
 
-mod common;
+Luego, un test nuevo al final de `backend/tests/reports_excel_test.rs`, siguiendo el patrón de los que ya existen (leer uno completo para copiar cómo siembra datos y hace la petición HTTP — usan `axum_test` y devuelven `(status, bytes)`):
 
-use cronometrix_api::reports::models::{Aggregates, BrandingHeader, DeptSubtotal, DeptSummary,
-    EmployeeReportRow, ReportPayload};
+```rust
+// -----------------------------------------------------------------------------
+// Horas esperadas y déficit (columnas 19-20)
+// -----------------------------------------------------------------------------
 
-fn payload() -> ReportPayload {
-    let agg = Aggregates {
-        work_min: 1260,
-        expected_min: 2400,
-        deficit_min: 1140,
-        ..Default::default()
-    };
-    ReportPayload {
-        header: BrandingHeader {
-            client_name: "Acme".into(),
-            client_rif: "J-123".into(),
-            from_date: "2026-08-03".into(),
-            to_date: "2026-08-07".into(),
-            generated_at_iso: "2026-08-05T12:00:00Z".into(),
-        },
-        rows: vec![EmployeeReportRow {
-            employee_id: "emp-1".into(),
-            dept_id: "dept-A".into(),
-            cedula: "V-1".into(),
-            nombre: "Ana Pérez".into(),
-            departamento: "Producción".into(),
-            cargo: "Operario".into(),
-            shift_type: "day".into(),
-            aggregates: agg.clone(),
-            anomaly_codes: vec![],
-            anomaly_count: 0,
-        }],
-        dept_subtotals: vec![DeptSubtotal {
-            dept_id: "dept-A".into(),
-            dept_name: "Producción".into(),
-            aggregates: agg.clone(),
-        }],
-        grand_total: agg,
-        departments_in_order: vec![DeptSummary {
-            id: "dept-A".into(),
-            name: "Producción".into(),
-        }],
+#[tokio::test]
+async fn expected_and_deficit_columns_carry_their_values() {
+    // Reutilizar el mismo fixture de siembra que usan los tests de arriba: un
+    // empleado con jornada ordinaria de 480 min que trabaja menos de lo debido.
+    let (status, bytes) = /* misma llamada que los tests vecinos */;
+    assert_eq!(status, StatusCode::OK);
+
+    let range = parse_xlsx(bytes);
+    let (n_rows, _) = range.get_size();
+
+    let mut found = false;
+    for r in 5..(n_rows as u32) {
+        if cell_string(&range, r, 1) == /* nombre del empleado sembrado */ {
+            let expected_min = cell_string(&range, r, 19);
+            let deficit_min = cell_string(&range, r, 20);
+            assert_ne!(expected_min, "", "columna Min Esperados vacía");
+            // La jornada esperada debe superar a la trabajada en este fixture.
+            let expected: f64 = expected_min.parse().expect("Min Esperados numérico");
+            let worked: f64 = cell_string(&range, r, 4).parse().expect("Min Trab numérico");
+            let deficit: f64 = deficit_min.parse().expect("Min Déficit numérico");
+            assert!(expected > worked, "el fixture debe tener déficit");
+            assert_eq!(deficit, expected - worked, "déficit = esperadas − trabajadas");
+            found = true;
+            break;
+        }
     }
-}
-
-#[test]
-fn the_workbook_is_generated_with_the_two_new_columns() {
-    let bytes = cronometrix_api::reports::excel::build(&payload()).expect("xlsx");
-    // Un xlsx es un zip: basta con que se genere y no esté vacío. El contenido
-    // por celda se cubre en los tests de agregados (Task 3).
-    assert!(bytes.len() > 1000, "workbook vacío o truncado");
-    assert_eq!(&bytes[0..2], b"PK", "no parece un archivo xlsx");
+    assert!(found, "no se encontró la fila del empleado sembrado");
 }
 ```
 
-Nota: si `build` tiene otro nombre o firma, mírala en `backend/src/reports/handlers.rs::generate_excel` y ajusta la llamada.
+Rellenar los dos comentarios con el fixture real del archivo. Si ningún fixture existente produce déficit, ajustar sus `work_minutes` **en un fixture nuevo propio de este test**, nunca modificando el que usan los demás.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && cargo test --test reports_excel_expected_test`
-Expected: FAIL — `missing fields expected_min, deficit_min` al construir `Aggregates`, o error de compilación equivalente. (Si la Task 3 ya está mergeada, este test compila y pasa; entonces el fallo real aparece en el Step 4 al verificar cabeceras.)
+Run: `cd backend && cargo test --test reports_excel_test`
+Expected: FAIL — el test de cabeceras falla en la columna 19 (`column 19 mismatch: got ""`), porque `N_COLS` sigue en 19 y esas columnas no se escriben.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -845,13 +831,13 @@ Y lo mismo en `write_aggregate_row` con su formato de entero (`subtotal_int` / `
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd backend && cargo test --test reports_excel_expected_test && cargo test --lib reports`
-Expected: PASS. Verificar además a ojo que el array `cols` tiene 21 entradas y que `N_COLS` coincide — un desajuste no falla el test pero descuadra las celdas fusionadas de la cabecera.
+Run: `cd backend && cargo test --test reports_excel_test`
+Expected: PASS — el test de cabeceras (ahora con 21 entradas) y el de valores. Los demás tests del archivo deben seguir en verde: el de códigos de anomalía lee la columna 18 y no debe haberse movido.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/src/reports/excel.rs backend/tests/reports_excel_expected_test.rs
+git add backend/src/reports/excel.rs backend/tests/reports_excel_test.rs
 git commit -m "feat(reports): columnas Min Esperados y Min Déficit en el Excel"
 ```
 
