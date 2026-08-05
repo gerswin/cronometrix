@@ -29,9 +29,18 @@ en el histórico, y notificaciones o alertas por déficit.
 Las tres reglas que gobiernan todo lo demás. Fueron decisiones explícitas, no
 supuestos.
 
-**Jornada esperada de un día** = `shift_end_time − shift_start_time − almuerzo`,
-del departamento del empleado. Sábado y domingo esperan 0. Un día con permiso
+**Jornada esperada de un día** = `departments.ordinary_daily_minutes` del
+departamento del empleado. Sábado y domingo esperan 0. Un día con permiso
 aprobado espera 0 — el déficit mide incumplimiento real, no vacaciones.
+
+No se deriva de `shift_start_time`/`shift_end_time` menos el almuerzo, aunque
+esos campos existan. `ordinary_daily_minutes` (migración 012, `NOT NULL DEFAULT
+480`) ya es la jornada ordinaria del departamento y es la referencia contra la
+que el motor decide qué es hora extra (`calc/engine.rs:134`) y contra la que
+`money.rs` convierte el sueldo a día ordinario. Calcularla de otra forma crearía
+una segunda definición de jornada que puede contradecir a la primera: un
+departamento 08:00–17:00 con 30 min de almuerzo daría 510 min de esperada
+mientras sus extras se calculan contra 480. Un solo número, una sola fuente.
 
 **Déficit** = `max(0, esperada − trabajada)`. Nunca negativo: trabajar de más no
 compensa un día corto. Las horas extra ya tienen su propia columna y su propia
@@ -45,12 +54,12 @@ regla de pago; mezclarlas aquí escondería el incumplimiento.
 
 | Caso | Resuelto como |
 |---|---|
-| Turno nocturno (`shift_end < shift_start`) | Cruza medianoche: se suman 24 h antes de restar. Un 22:00→06:00 espera 480 min, no −960. |
-| `lunch_mode = 'fixed'` | Se resta `lunch_duration_min`. |
-| `lunch_mode = 'punch'` | Se resta `lunch_duration_min` si está definido; si es NULL, no se resta nada. El almuerzo punchado ya queda fuera de `work_minutes` por el pareo de intervalos (`calc/aggregation.rs`), así que restarlo otra vez lo contaría dos veces. |
-| Almuerzo ≥ duración del turno | La esperada es 0, nunca negativa. Configuración inválida, pero no debe envenenar los subtotales. |
-| Empleado sin departamento | Esperada 0 y déficit 0. No hay horario del que derivarla; inventarlo produciría un déficit falso. |
+| Turno nocturno | Sin tratamiento especial: `ordinary_daily_minutes` es la duración de la jornada, no un rango horario, así que no cruza medianoche ni puede salir negativa. |
+| Almuerzo | Tampoco entra en el cálculo. Ya está descontado de `work_minutes` — en `fixed` lo resta `calc/lunch.rs`, en `punch` lo excluye el pareo de intervalos de `calc/aggregation.rs` — y `ordinary_daily_minutes` es tiempo de trabajo efectivo. Restarlo aquí lo contaría dos veces. |
+| `ordinary_daily_minutes` ≤ 0 | Esperada 0. La columna es `NOT NULL DEFAULT 480`, pero un valor absurdo cargado a mano no debe producir déficit negativo ni envenenar subtotales. Es la misma guarda que ya aplica `money.rs:47`. |
+| Empleado sin departamento | Esperada 0 y déficit 0. No hay jornada de la cual derivarla; inventarla produciría un déficit falso. |
 | Contratado a mitad de periodo | Los días fuera de `hire_date`..`terminated_on` esperan 0, igual que ya hace `/reports` para decidir qué filas existen. |
+| Día de descanso trabajado | Sábado y domingo esperan 0, así que trabajar un domingo nunca genera déficit. El recargo ya se paga por su propia vía. |
 
 ## Arquitectura
 
@@ -62,17 +71,19 @@ El cálculo vive en el backend; el frontend solo pinta. Una única definición d
 Función pura, sin acceso a base de datos:
 
 ```rust
+/// Minutos que el empleado debía trabajar ese día.
 pub fn expected_minutes(
-    shift_start: &str,     // "HH:MM"
-    shift_end: &str,       // "HH:MM"
-    lunch_mode: &str,      // "fixed" | "punch"
-    lunch_duration_min: Option<i64>,
+    ordinary_daily_minutes: i64,  // departments.ordinary_daily_minutes
     date: NaiveDate,
     has_leave: bool,
 ) -> i64
+
+/// Minutos de jornada incumplidos. Nunca negativo.
+pub fn deficit_minutes(expected: i64, worked: i64) -> i64
 ```
 
-Es el único sitio donde vive la regla. Se prueba sola, sin servidor ni fixtures.
+Es el único sitio donde viven las dos reglas. Se prueban solas, sin servidor ni
+fixtures.
 
 ### `GET /api/v1/presence/today` — nuevo
 
@@ -128,7 +139,7 @@ por partes; sí hay que actualizar los sitios que lo suman.
 
 ## Errores
 
-- Departamento sin horario o con horario inválido → esperada 0, sin romper la
+- Departamento con `ordinary_daily_minutes` inválido → esperada 0, sin romper la
   respuesta. Un dato mal cargado no debe tumbar el dashboard entero, igual que
   `require_salary_kind` decidió no fallar el reporte completo por una fila sin
   unidad (`reports/service.rs:65`).
@@ -139,9 +150,9 @@ por partes; sí hay que actualizar los sitios que lo suman.
 
 ## Pruebas
 
-**Unitarias (`calc/expected.rs`)**: turno diurno normal; nocturno cruzando
-medianoche; sábado y domingo; día con permiso; `fixed` vs `punch`; almuerzo más
-largo que el turno; horario malformado.
+**Unitarias (`calc/expected.rs`)**: día laborable normal; sábado y domingo; día
+con permiso; `ordinary_daily_minutes` en 0 o negativo; déficit cuando se trabajó
+de más (debe dar 0) y cuando se trabajó de menos.
 
 **Integración backend**: `/presence/today` distingue dentro/salió; un supervisor
 con departamento no ve empleados de otro (el caso de scope es obligatorio tras
