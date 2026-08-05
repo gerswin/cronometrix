@@ -3,9 +3,24 @@
 
 mod common;
 
-use chrono::NaiveDate;
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{header, Method, Request, StatusCode};
+use axum::routing::get;
+use axum::Router;
+use chrono::{NaiveDate, Timelike, Utc};
+use cronometrix_api::auth;
 use cronometrix_api::auth::scope::ActorScope;
+use cronometrix_api::config::Config;
+use cronometrix_api::presence;
 use cronometrix_api::presence::service;
+use cronometrix_api::state::AppState;
+use http_body_util::BodyExt;
+use serde_json::Value;
+use tower::ServiceExt;
+
+use common::{test_device_creds_key, TEST_JWT_SECRET};
 
 /// Siembra dos departamentos con jornada de 480 min y tres empleados:
 /// - emp-inside  (dept-A): entró y no ha salido, 210 min trabajados
@@ -59,6 +74,103 @@ async fn seed(conn: &libsql::Connection, date: &str) {
         .await
         .unwrap();
     }
+}
+
+/// AppState con la zona horaria `tz`, para ejercitar el handler (que resuelve
+/// "hoy" por sí mismo) y no solo el servicio.
+fn make_state(db: libsql::Database, tz: &str) -> (AppState, tempfile::TempDir) {
+    let config = Arc::new(Config {
+        database_path: "test.db".into(),
+        turso_url: String::new(),
+        turso_token: String::new(),
+        jwt_secret: TEST_JWT_SECRET.to_string(),
+        server_host: "127.0.0.1".into(),
+        server_port: 0,
+        turso_sync_interval_secs: 300,
+        device_creds_key: test_device_creds_key(),
+        timezone: tz.parse().unwrap(),
+        license_jwt_path: String::new(),
+        do_functions_activate_url: String::new(),
+        do_functions_renew_url: String::new(),
+        cors_allowed_origins: Vec::new(),
+        cookie_secure: false,
+        device_push_base_url: String::new(),
+    });
+    common::test_state_with_tmpdir(Arc::new(db), config)
+}
+
+fn build_test_app(state: AppState) -> Router {
+    let routes = Router::new()
+        .route("/presence/today", get(presence::handlers::presence_today))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::middleware::require_auth,
+        ));
+    Router::new().nest("/api/v1", routes).with_state(state)
+}
+
+/// C-01 (regresión): el handler resolvía "hoy" con `Utc::now().date_naive()`,
+/// pero `daily_records.anchor_date` es una fecha LOCAL. En America/Caracas
+/// (UTC−4) eso vaciaba el tablero cada noche a partir de las 20:00 locales.
+///
+/// Para que el test falle SIEMPRE bajo el defecto (y no solo durante la
+/// ventana de desfase), elegimos una zona cuyo día local no coincide con el
+/// día UTC en el instante en que corre: UTC+14 si en UTC ya son ≥ 10:00,
+/// UTC−11 en caso contrario. Ambas son de offset fijo (sin DST).
+#[tokio::test]
+async fn today_is_resolved_in_the_configured_timezone_not_in_utc() {
+    let now_utc = Utc::now();
+    let tz_name = if now_utc.hour() >= 10 {
+        "Pacific/Kiritimati" // UTC+14
+    } else {
+        "Pacific/Niue" // UTC−11
+    };
+    let tz: chrono_tz::Tz = tz_name.parse().unwrap();
+    let local_today = now_utc.with_timezone(&tz).date_naive();
+    assert_ne!(
+        local_today,
+        now_utc.date_naive(),
+        "la zona elegida debe diferir del día UTC en este instante"
+    );
+
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed(&conn, &local_today.format("%Y-%m-%d").to_string()).await;
+    let admin = common::create_test_admin(&db).await;
+    let token = common::test_access_token(&admin, "admin");
+
+    let (state, _tmp) = make_state(db, tz_name);
+    let app = build_test_app(state);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/presence/today")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(
+        body["date"].as_str().unwrap(),
+        local_today.format("%Y-%m-%d").to_string(),
+        "el handler debe usar el día local, no el UTC"
+    );
+    assert_eq!(body["attended_today"].as_i64().unwrap(), 3);
+    assert_eq!(body["inside_now"].as_i64().unwrap(), 2);
+
+    // `expected_minutes` también recibe la fecha local: un viernes por la
+    // noche en Caracas el día UTC ya es sábado y esperaría 0.
+    let expected = cronometrix_api::calc::expected::expected_minutes(480, local_today, false);
+    let ana = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["employee_id"] == "emp-inside")
+        .expect("emp-inside presente");
+    assert_eq!(ana["expected_min"].as_i64().unwrap(), expected);
 }
 
 #[tokio::test]

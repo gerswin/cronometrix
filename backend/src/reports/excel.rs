@@ -151,7 +151,7 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
         "Días No Remunerado",
         "Anomalías",
         "Min Esperados",
-        "Min Déficit",
+        "Min Déficit (hábiles)",
     ];
     for (i, label) in cols.iter().enumerate() {
         sheet

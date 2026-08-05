@@ -8,7 +8,8 @@
 //! - Branding header rows 0-2 (D-28) — title, client_name+RIF, period+generated_at.
 //! - Branding header dashes when tenant_info empty (D-28 fallback).
 //! - 21-column header row at row 4 (D-14; Critical 2 dropped the
-//!   'Descuento Retraso' money column; Min Esperados/Min Déficit appended
+//!   'Descuento Retraso' money column; Min Esperados/Min Déficit (hábiles)
+//!   appended
 //!   at the end per Task 4).
 //! - Per-dept subtotal rows + grand total row (D-27).
 //! - Anomaly column data preserved (D-16 column population — tint is visual-only).
@@ -415,7 +416,7 @@ async fn excel_column_headers_present() {
         "Días No Remunerado",
         "Anomalías",
         "Min Esperados",
-        "Min Déficit",
+        "Min Déficit (hábiles)",
     ];
     for (i, label) in expected.iter().enumerate() {
         let cell = cell_string(&range, 4, i as u32);
@@ -893,12 +894,26 @@ async fn expected_and_deficit_columns_carry_their_values() {
             let expected_min = cell_string(&range, r, 19);
             let deficit_min = cell_string(&range, r, 20);
             assert_ne!(expected_min, "", "columna Min Esperados vacía");
-            // La jornada esperada debe superar a la trabajada en este fixture.
             let expected: f64 = expected_min.parse().expect("Min Esperados numérico");
             let worked: f64 = cell_string(&range, r, 4).parse().expect("Min Trab numérico");
             let deficit: f64 = deficit_min.parse().expect("Min Déficit numérico");
-            assert!(expected > worked, "el fixture debe tener déficit");
-            assert_eq!(deficit, expected - worked, "déficit = esperadas − trabajadas");
+
+            // Valores absolutos del fixture, como en reports_expected_test.rs.
+            // Abril 2026 tiene 22 días hábiles (lun-vie); a 480 min/día son
+            // 10 560 min esperados. Solo se trabajó el miércoles 15 (240 min),
+            // así que ese día aporta 240 de déficit y los otros 21 aportan
+            // 480 cada uno: 240 + 10 080 = 10 320.
+            //
+            // NO se afirma `deficit == expected - worked`: esa identidad es
+            // falsa en general (`work_min` es un total crudo que incluye
+            // sábados, domingos y días fuera de la ventana de empleo, mientras
+            // que `expected_min`/`deficit_min` solo recorren días hábiles
+            // dentro de ventana — ver reports_expected_test.rs:
+            // expected 1920 / work 1260 / déficit 960). Aquí coincide solo
+            // porque el fixture no tiene ninguno de esos días.
+            assert_eq!(expected, 10_560.0, "22 días hábiles × 480");
+            assert_eq!(worked, 240.0, "único día trabajado del fixture");
+            assert_eq!(deficit, 10_320.0, "240 del día corto + 21 × 480");
             found = true;
             break;
         }
