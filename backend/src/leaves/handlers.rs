@@ -270,6 +270,7 @@ pub async fn cancel_leave(
 /// an internal error.
 pub async fn get_leave_evidence(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let conn = state
@@ -277,6 +278,21 @@ pub async fn get_leave_evidence(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
     let leave = service::get_by_id(&conn, &id).await?;
+
+    // H-11 (D2): medical evidence is health data — supervisor+ only (enforced at
+    // the route layer) AND confined to the actor's department here; an
+    // out-of-scope leave's evidence is 404, never leaked.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_leave(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "LEAVE_EVIDENCE_NOT_FOUND",
+                message: "Evidence not available".into(),
+            });
+        }
+    }
+
     let relpath = leave.evidence_path.ok_or_else(|| AppError::NotFound {
         code: "LEAVE_EVIDENCE_NOT_FOUND",
         message: "Leave has no evidence attached".into(),

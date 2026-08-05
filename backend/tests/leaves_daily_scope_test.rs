@@ -180,6 +180,14 @@ async fn leaves_and_daily_records_are_scoped_to_the_actors_department() {
         .unwrap();
     assert_eq!(listed.0.total, 2);
 
+    // D2: medical evidence of an out-of-department leave is 404 for a scoped
+    // actor (the health file is never served across departments).
+    let err =
+        leave_handlers::get_leave_evidence(State(state.clone()), actor(&sup_a), Path("leave-b".into()))
+            .await
+            .unwrap_err();
+    assert_not_found(err, "LEAVE_EVIDENCE_NOT_FOUND");
+
     // --- daily records ---
     let listed =
         dr_handlers::list_daily_records(State(state.clone()), actor(&sup_a), Query(dr_query()))

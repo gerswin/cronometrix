@@ -336,7 +336,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/devices/{id}", get(devices::handlers::get_device))
         .route("/events", get(events::handlers::list_events))
         .route("/events/{id}", get(events::handlers::get_event))
-        .route("/events/{id}/photo", get(events::handlers::get_event_photo))
         .route(
             "/daily-records",
             get(daily_records::handlers::list_daily_records),
@@ -347,10 +346,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/leaves", get(leaves::handlers::list_leaves))
         .route("/leaves/{id}", get(leaves::handlers::get_leave))
-        .route(
-            "/leaves/{id}/evidence",
-            get(leaves::handlers::get_leave_evidence),
-        )
         .route("/tenant-info", get(tenant_info::handlers::get_tenant_info))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -366,6 +361,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/anomalies", get(anomalies::handlers::list_anomalies))
         .route("/audit", get(audit::handlers::list_audit)) // NEW Plan 09-04
         .route("/audit/actors", get(audit::handlers::list_actors))
+        // H-11 (D2): biometric face photo + medical evidence are supervisor+
+        // only — moved out of viewer_routes. Department scope is enforced inside
+        // the handlers.
+        .route("/events/{id}/photo", get(events::handlers::get_event_photo))
+        .route(
+            "/leaves/{id}/evidence",
+            get(leaves::handlers::get_leave_evidence),
+        )
         // C-10 part 2: dead-letter view over device_push_inbox. Never
         // returns the raw body (may carry a face JPEG) — see
         // devices::models::PushInboxFailedEntry.

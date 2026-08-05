@@ -175,4 +175,11 @@ async fn events_are_scoped_to_the_actors_department() {
         .await
         .unwrap();
     assert_eq!(got.0.id, "ev-u");
+
+    // D2: the face photo of an out-of-department event is 404 for a scoped
+    // actor (the biometric file is never served across departments).
+    let err = handlers::get_event_photo(State(state.clone()), actor(&sup_a), Path("ev-b".into()))
+        .await
+        .unwrap_err();
+    assert_not_found(err, "EVENT_PHOTO_NOT_FOUND");
 }

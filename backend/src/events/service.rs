@@ -144,6 +144,7 @@ fn base_sse_payload(event: &NewAttendanceEvent, has_photo: bool) -> AttendanceEv
         employee_id: event.employee_id.clone(),
         employee_name: None,
         department: None,
+        department_id: None,
         captured_at: epoch_to_iso(event.captured_at),
         direction: event.direction.clone(),
         has_photo,
@@ -164,7 +165,7 @@ pub async fn build_sse_payload(
 
     let mut rows = conn
         .query(
-            "SELECT e.name, d.name \
+            "SELECT e.name, d.name, e.department_id \
              FROM employees e \
              LEFT JOIN departments d ON d.id = e.department_id \
              WHERE e.id = ?1",
@@ -182,6 +183,10 @@ pub async fn build_sse_payload(
             .map_err(|error| AppError::Internal(error.into()))?;
         payload.department = row
             .get(1)
+            .map_err(|error| AppError::Internal(error.into()))?;
+        // H-11: department id drives the per-subscriber SSE scope filter.
+        payload.department_id = row
+            .get(2)
             .map_err(|error| AppError::Internal(error.into()))?;
     }
     Ok(payload)

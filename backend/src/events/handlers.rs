@@ -38,9 +38,10 @@ pub async fn events_stream(
     State(state): State<AppState>,
     Query(q): Query<StreamQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
-    // Validate access JWT from query param
-    auth_service::verify_access_token(&q.token, state.config.jwt_secret.as_bytes())
+    // Validate access JWT from query param and derive the subscriber's scope.
+    let claims = auth_service::verify_access_token(&q.token, state.config.jwt_secret.as_bytes())
         .map_err(|_| AppError::Unauthorized)?;
+    let scope = ActorScope::from_claims(&claims);
 
     let rx = state
         .event_broadcast
@@ -48,9 +49,15 @@ pub async fn events_stream(
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("event_broadcast not initialised")))?
         .subscribe();
 
-    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
-        Ok(payload) => Event::default().json_data(payload).ok().map(Ok),
-        Err(_) => None, // Lagged or closed — skip
+    // H-11: filter the shared broadcast per subscriber — a scoped actor only
+    // receives live events of employees in its department (unknown-face events,
+    // having no department, are withheld from scoped subscribers). An unscoped
+    // subscriber (admin / org-wide) receives every event.
+    let stream = BroadcastStream::new(rx).filter_map(move |res| match res {
+        Ok(payload) if scope.permits(payload.department_id.as_deref()) => {
+            Event::default().json_data(payload).ok().map(Ok)
+        }
+        _ => None, // out of scope, lagged, or closed — skip
     });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
@@ -112,12 +119,28 @@ pub async fn get_event(
 /// file never leaks as an internal error.
 pub async fn get_event_photo(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
+
+    // H-11 (D2): the face photo is biometric data — supervisor+ only (enforced
+    // at the route layer) AND confined to the actor's department here; an
+    // out-of-scope (or unknown-face) event's photo is 404, never leaked.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_event(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "EVENT_PHOTO_NOT_FOUND",
+                message: "Photo not available".to_string(),
+            });
+        }
+    }
+
     let relpath = service::get_photo_path(&conn, &id).await?;
 
     if relpath.contains("..") || relpath.starts_with('/') {
