@@ -1,10 +1,12 @@
-interface KPIRecord { work_minutes: number; late_minutes: number; leave_id: string | null }
+interface KPIRecord { late_minutes: number }
 
+// Solo `late` tiene consumidor de producción (dashboard/page.tsx). `present`,
+// `absent` y `total` quedaron muertos cuando el tablero pasó a
+// /presence/today; `present` además era la definición vieja de "presente"
+// (work_minutes > 0), lista para divergir de la nueva (entrada registrada
+// sin salida).
 export function aggregateKPIs(records: KPIRecord[]) {
   return {
-    present: records.filter(r => r.work_minutes > 0).length,
     late: records.filter(r => r.late_minutes > 0).length,
-    absent: records.filter(r => r.work_minutes === 0 && !r.leave_id).length,
-    total: records.length,
   }
 }

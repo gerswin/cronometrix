@@ -187,6 +187,8 @@ export interface BrandingHeader {
 
 export interface Aggregates {
   work_min: number
+  expected_min: number
+  deficit_min: number
   ot_min: number
   late_min: number
   days_worked: number
@@ -398,4 +400,28 @@ export interface UpdateUserRequest {
   password?: string
   status?: 'active' | 'inactive'
   version: number
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Presencia y déficit de horas — mirrors backend GET /presence/today response
+// (backend commit 0560362).
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface PresenceRow {
+  employee_id: string
+  employee_name: string
+  department_name: string
+  status: 'inside' | 'left'
+  entry_at: string | null
+  exit_at: string | null
+  expected_min: number
+  worked_min: number
+  deficit_min: number
+}
+
+export interface PresenceToday {
+  date: string
+  inside_now: number
+  attended_today: number
+  data: PresenceRow[]
 }

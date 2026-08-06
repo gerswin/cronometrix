@@ -11,7 +11,9 @@ import { useAuth } from '@/hooks/use-auth'
 import { KPITile } from '@/components/dashboard/kpi-tile'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
 import { DeptChart } from '@/components/dashboard/dept-chart'
-import type { PaginatedResponse, DailyRecord, Device, Department, RawAttendanceEvent } from '@/types/api'
+import { PresenceTable } from '@/components/dashboard/presence-table'
+import { DeficitPanel } from '@/components/dashboard/deficit-panel'
+import type { PaginatedResponse, DailyRecord, Device, Department, RawAttendanceEvent, PresenceToday } from '@/types/api'
 
 const DEVICE_PAGE_LIMIT = 100
 
@@ -103,6 +105,13 @@ export default function DashboardPage() {
       api.get('/events', {
         params: { from: epochFrom, to: epochTo, include_unknown: true, limit: 500 },
       }).then(r => r.data),
+    refetchInterval: 60_000,
+  })
+
+  // KPI 1 + presence table: who's inside now / attended today
+  const { data: presenceData } = useQuery<PresenceToday>({
+    queryKey: ['presence-today', today],
+    queryFn: () => api.get('/presence/today').then(r => r.data),
     refetchInterval: 60_000,
   })
 
@@ -230,11 +239,13 @@ export default function DashboardPage() {
 
         {/* Row 1: KPI grid */}
         <div className="grid grid-cols-4 gap-4">
-          {/* KPI 1 — Empleados Presentes */}
+          {/* KPI 1 — Empleados Presentes
+              Title text is load-bearing per D-19 / e2e/dashboard.spec.ts:93
+              ("Spanish copy (load-bearing per D-19)") — do not rename. */}
           <KPITile
             testId="kpi-empleados-presentes"
             title="Empleados Presentes"
-            value={kpis.present}
+            value={presenceData?.inside_now ?? 0}
             valueColor="#1A1A1A"
             sub={presentSub}
           />
@@ -271,6 +282,10 @@ export default function DashboardPage() {
             />
           </div>
         </div>
+
+        <PresenceTable rows={presenceData?.data ?? []} />
+
+        <DeficitPanel rows={presenceData?.data ?? []} />
 
         {/* Row 2: Activity + Donut */}
         <div className="flex gap-6 flex-1 min-h-[360px]">

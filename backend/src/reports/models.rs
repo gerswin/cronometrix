@@ -72,6 +72,10 @@ pub struct DeptSubtotal {
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct Aggregates {
     pub work_min: i64,
+    /// Minutos que el empleado debía trabajar en el periodo (calc/expected.rs).
+    pub expected_min: i64,
+    /// Minutos de jornada incumplidos. Nunca negativo; las extras no lo netean.
+    pub deficit_min: i64,
     pub ot_min: i64,
     pub late_min: i64,
     pub days_worked: i64,
