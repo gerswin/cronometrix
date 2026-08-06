@@ -56,6 +56,9 @@ backend/load-test-results/
 .claude/
 .agents/
 
+# Codex per-user config (hooks reference absolute machine paths)
+.codex/
+
 # Kiro IDE config (per-user)
 .kiro/
 
