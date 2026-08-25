@@ -114,10 +114,12 @@ describe('KioskCaptureTab', () => {
     await act(async () => { fireEvent.change(select, { target: { value: 'dev-entry' } }) })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Iniciar Captura/i })) })
 
-    // Wait for mutation + poll to resolve → captured state → Aceptar visible
-    await waitFor(() => screen.queryByRole('button', { name: /Aceptar/i }) !== null, { timeout: 4000 })
-
-    const acceptBtn = screen.getByRole('button', { name: /Aceptar/i })
+    // Wait for mutation + poll to resolve → captured state → Aceptar visible.
+    const acceptBtn = await screen.findByRole(
+      'button',
+      { name: /Aceptar/i },
+      { timeout: 4000 },
+    )
     await act(async () => { fireEvent.click(acceptBtn) })
     expect(mockOnCaptured).toHaveBeenCalledWith({
       blob: expect.any(Blob),
