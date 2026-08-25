@@ -24,13 +24,26 @@ mkdir "${TMP_DIR}/extracted"
 tar -xzf "${archive}" -C "${TMP_DIR}/extracted"
 (cd "${TMP_DIR}/extracted" && sha256sum --strict -c SHA256SUMS)
 
+# Force a deterministic non-root preflight result even when this test itself
+# runs as root inside a Linux development or CI container.
+mkdir "${TMP_DIR}/fake-bin"
+cat > "${TMP_DIR}/fake-bin/id" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-u" ]]; then
+    echo 1000
+    exit 0
+fi
+exec /usr/bin/id "$@"
+SH
+chmod 0755 "${TMP_DIR}/fake-bin/id"
+
 set +e
-output="$(bash "${TMP_DIR}/extracted/install.sh" 2>&1)"
+output="$(PATH="${TMP_DIR}/fake-bin:${PATH}" bash "${TMP_DIR}/extracted/install.sh" 2>&1)"
 status=$?
 set -e
 [[ "${status}" -ne 0 ]]
 [[ "${output}" != *'evidence-backup.sh: No such file or directory'* ]]
-[[ "${output}" == *'must run as root'* || "${output}" == *'supported platform is Linux amd64'* ]]
+[[ "${output}" == *'must run as root'* ]]
 
 # Mutation probe: a tampered helper must be rejected before Bash sources it.
 marker="${TMP_DIR}/helper-executed"
