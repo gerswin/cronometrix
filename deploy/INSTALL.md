@@ -15,7 +15,7 @@ supported.
    sha256sum -c cronometrix-*.tar.gz.sha256
    ```
 
-3. Inspect the archive before extraction. It must list exactly the five regular
+3. Inspect the archive before extraction. It must list exactly the six regular
    files below, without absolute paths, `..`, duplicate names, links, or extra
    members:
 
@@ -24,6 +24,7 @@ supported.
    docker-compose.yml
    release-manifest.env
    nginx.conf
+   lib/evidence-backup.sh
    SHA256SUMS
    ```
 
@@ -35,8 +36,9 @@ supported.
    sudo bash install.sh
    ```
 
-The installer revalidates the exact member set, the internal `SHA256SUMS`, the
-strict release manifest, Linux/amd64 compatibility, Docker versions, disk
+The installer revalidates the exact member set and the internal `SHA256SUMS`
+covering the other five files before sourcing `lib/evidence-backup.sh`, then
+the strict release manifest, Linux/amd64 compatibility, Docker versions, disk
 space, and all image digests before changing the installation.
 
 For unattended operation, export the named `CRONOMETRIX_*` variables requested
