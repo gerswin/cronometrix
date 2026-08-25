@@ -1,5 +1,7 @@
 'use client'
-// Summary table — 20 columns per D-14 with synthetic per-dept subtotal
+// Summary table — 21 columns (D-14's 19, minus 'Descuento Retraso' per
+// Critical 2, plus 'Min Esperados' and 'Min Déficit (hábiles)') with
+// synthetic per-dept subtotal
 // rows (RESEARCH Pattern 7) and a final grand-total row. Anomaly rows
 // (anomaly_count > 0) get amber-50 tint; subtotal/grand-total rows are
 // bold and not clickable.
@@ -15,7 +17,7 @@ import type {
   EmployeeReportRow,
   Aggregates,
 } from '@/types/api'
-import { fmtMoney, fmtMoneyNegative } from '@/lib/format/currency'
+import { fmtMoney } from '@/lib/format/currency'
 
 type RowKind = 'data' | 'subtotal' | 'grandtotal'
 
@@ -85,6 +87,11 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
     [payload],
   )
 
+  // Critical 2 fix: the 'Descuento Retraso' (late_deduction_cents) column
+  // was removed. C-02 stopped subtracting it from 'Total a Pagar', so
+  // rendering it as a negative amount right before the total column no
+  // longer summed correctly. 'Min Retraso' still carries the discipline
+  // metric this column existed to surface.
   const columns: ColumnDef<TableRow>[] = useMemo(
     () => [
       { accessorKey: 'cedula', header: 'Cédula' },
@@ -94,6 +101,16 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
       {
         accessorKey: 'work_min',
         header: 'Min Trab',
+        cell: ({ getValue }) => String(getValue() ?? 0),
+      },
+      {
+        accessorKey: 'expected_min',
+        header: 'Min Esperados',
+        cell: ({ getValue }) => String(getValue() ?? 0),
+      },
+      {
+        accessorKey: 'deficit_min',
+        header: 'Min Déficit (hábiles)',
         cell: ({ getValue }) => String(getValue() ?? 0),
       },
       {
@@ -135,11 +152,6 @@ export function SummaryTable({ payload, isLoading, onDrillDown }: Props) {
         accessorKey: 'rest_day_surcharge_cents',
         header: 'Recargo Domingo',
         cell: ({ getValue }) => fmtMoney(getValue() as number),
-      },
-      {
-        accessorKey: 'late_deduction_cents',
-        header: 'Descuento Retraso',
-        cell: ({ getValue }) => fmtMoneyNegative(getValue() as number),
       },
       {
         accessorKey: 'total_a_pagar_cents',

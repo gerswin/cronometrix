@@ -53,7 +53,11 @@ cronometrix-*.tar.gz.sha256
 backend/load-test-results/
 
 # Claude Code per-user config (local settings, hooks, worktrees)
-.claude/
+# Ignore contents, not the dir itself — git won't descend into an excluded
+# dir, so a negation inside `.claude/` would never match.
+.claude/*
+# Skills are shared project config, not per-user — keep them tracked
+!.claude/skills/
 .agents/
 
 # Codex per-user config (hooks reference absolute machine paths)
@@ -64,3 +68,6 @@ backend/load-test-results/
 
 # Skill manager lockfile (regenerated)
 skills-lock.json
+
+# graphify knowledge-graph output (generated)
+graphify-out/

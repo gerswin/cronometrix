@@ -1,3 +1,9 @@
+//! Edge cases for the shared multipart parser, driven from outside the crate.
+//!
+//! The in-module tests cover the framing quirks each firmware exhibits; these
+//! cover what happens when a device declares part types that are simply wrong,
+//! which is the case that makes content sniffing non-optional.
+
 use cronometrix_api::isapi::parser::{parse_buffer, parse_line_scan_fallback};
 
 fn part(content_type: &str, bytes: &[u8]) -> Vec<u8> {
@@ -11,11 +17,17 @@ fn part(content_type: &str, bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-#[tokio::test]
-async fn multipart_magic_bytes_pair_consecutive_xml_and_drop_orphan_parts() {
+/// Every part here is mislabelled: JPEGs announced as `application/octet-stream`
+/// and alerts as `text/plain`. Trusting the declared type would pair them all
+/// wrongly, so classification falls back to the bytes themselves.
+#[test]
+fn classifies_parts_by_content_when_the_declared_type_is_wrong() {
     let xml_one = b"<EventNotificationAlert><eventType>one</eventType></EventNotificationAlert>";
     let xml_two = b"<EventNotificationAlert><eventType>two</eventType></EventNotificationAlert>";
     let jpeg = b"\xFF\xD8\xFFjpeg";
+
+    // Leading orphan image, two alerts, an image for the second, then a part
+    // that is neither.
     let mut body = part("application/octet-stream", jpeg);
     body.extend(part("text/plain", xml_one));
     body.extend(part("text/plain", xml_two));
@@ -23,10 +35,13 @@ async fn multipart_magic_bytes_pair_consecutive_xml_and_drop_orphan_parts() {
     body.extend(part("text/plain", b"ignored"));
     body.extend_from_slice(b"--edge-boundary--\r\n");
 
-    let pairs = parse_buffer(&body, "edge-boundary").await.unwrap();
+    let pairs = parse_buffer(&body, "edge-boundary");
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0].xml.as_ref(), xml_one);
-    assert!(pairs[0].jpeg.is_none());
+    assert!(
+        pairs[0].jpeg.is_none(),
+        "the leading image has no alert to attach to and must be dropped"
+    );
     assert_eq!(pairs[1].xml.as_ref(), xml_two);
     assert_eq!(pairs[1].jpeg.as_deref(), Some(jpeg.as_slice()));
 }
@@ -37,6 +52,8 @@ fn fallback_stops_at_an_unclosed_xml_and_handles_short_garbage() {
     assert!(parse_line_scan_fallback(b"short").is_empty());
 }
 
+/// Without framing there is nothing to say where an image ends, so the scan
+/// bounds it at the next event rather than swallowing the rest of the buffer.
 #[test]
 fn fallback_bounds_each_jpeg_at_the_next_xml_event() {
     let body = b"prefix<EventNotificationAlert>one</EventNotificationAlert>\

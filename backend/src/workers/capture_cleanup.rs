@@ -13,7 +13,11 @@ use tokio_util::sync::CancellationToken;
 use crate::state::AppState;
 use crate::storage::atomic_file::{inspect_owned_file, remove_owned_file, FileIdentity};
 
-pub const CAPTURING_TTL: Duration = Duration::from_secs(45);
+/// Must stay above the handler's own `CAPTURE_TIMEOUT_SECS` (90s), otherwise
+/// this sweep kills a capture that is still legitimately retrying: the device
+/// gives one ~6s window per POST, and `capture_face_image` needs several. The
+/// old 45s ceiling reaped every real hardware capture mid-flight.
+pub const CAPTURING_TTL: Duration = Duration::from_secs(120);
 pub const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
 pub const CLEANUP_CADENCE: Duration = Duration::from_secs(30);
 
@@ -90,7 +94,7 @@ where
             {
                 capture.status = "timeout".into();
                 capture.error_message =
-                    Some("Capture exceeded the 45 second lifecycle deadline".into());
+                    Some("Capture exceeded the 120 second lifecycle deadline".into());
                 capture.terminal_at = Some(now);
                 stats.timed_out += 1;
             }

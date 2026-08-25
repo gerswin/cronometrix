@@ -28,6 +28,7 @@ fn config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -37,6 +38,7 @@ fn request(username: &str, role: &str) -> CreateUserRequest {
         full_name: format!("{username} User"),
         role: role.to_string(),
         password: "correct-horse-battery-staple".to_string(),
+        department_id: None,
     }
 }
 
@@ -54,6 +56,7 @@ fn admin_claims(sub: &str) -> Claims {
     Claims {
         sub: sub.to_string(),
         role: Role::Admin,
+        department_id: None,
         exp: chrono::Utc::now().timestamp() + 3600,
         iat: chrono::Utc::now().timestamp(),
         jti: uuid::Uuid::new_v4().to_string(),
@@ -73,6 +76,7 @@ async fn handlers_validate_and_execute_the_complete_user_lifecycle() {
             full_name: "Invalid User".to_string(),
             role: "viewer".to_string(),
             password: "secure-password".to_string(),
+            department_id: None,
         }),
     )
     .await
@@ -115,6 +119,7 @@ async fn handlers_validate_and_execute_the_complete_user_lifecycle() {
             role: None,
             password: Some("short".to_string()),
             status: None,
+            department_id: None,
             version: 1,
         }),
     )
@@ -131,6 +136,7 @@ async fn handlers_validate_and_execute_the_complete_user_lifecycle() {
             role: Some("supervisor".to_string()),
             password: None,
             status: None,
+            department_id: None,
             version: 1,
         }),
     )
@@ -256,6 +262,7 @@ async fn update_changes_all_mutable_fields_and_rotates_credentials() {
             role: Some("supervisor".into()),
             password: Some("new-secure-password".into()),
             status: Some("inactive".into()),
+            department_id: None,
             version: 1,
         },
     )
@@ -303,6 +310,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
                 role: Some("viewer".into()),
                 password: None,
                 status: None,
+                department_id: None,
                 version: 1,
             },
         )
@@ -320,6 +328,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
                 role: None,
                 password: None,
                 status: Some("inactive".into()),
+                department_id: None,
                 version: 1,
             },
         )
@@ -337,6 +346,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
                 role: None,
                 password: None,
                 status: Some("pending".into()),
+                department_id: None,
                 version: 1,
             },
         )
@@ -354,6 +364,7 @@ async fn update_enforces_self_protection_and_noop_semantics() {
             role: None,
             password: None,
             status: None,
+            department_id: None,
             version: 99,
         },
     )
@@ -374,6 +385,7 @@ async fn update_distinguishes_missing_rows_from_stale_versions() {
         role: None,
         password: None,
         status: None,
+        department_id: None,
         version,
     };
 
@@ -423,4 +435,118 @@ async fn deactivate_covers_success_self_missing_and_version_conflict() {
     assert_eq!(inactive.status, "inactive");
     assert!(inactive.deleted_at.is_some());
     assert_eq!(inactive.version, 2);
+}
+
+// H-11: department scope is validated on create and is tri-state on update
+// (assign / clear / leave-as-is). Covers `ensure_department_exists` (both the
+// found and not-found branches) plus the create Some-branch and the update
+// Some(Some) / Some(None) match arms.
+#[tokio::test]
+async fn department_scope_is_validated_and_tri_state_on_update() {
+    let db = Arc::new(common::test_db().await);
+    let (state, _tmp) = common::test_state_with_tmpdir(db.clone(), config());
+
+    let dept_id = common::create_test_department_with_shift(
+        &db,
+        "Engineering",
+        "day",
+        false,
+        480,
+        "08:00",
+        "17:00",
+    )
+    .await;
+
+    // create() with a valid department -> ensure_department_exists happy path.
+    let mut scoped = request("scoped-user", "supervisor");
+    scoped.department_id = Some(dept_id.clone());
+    let created = service::create(&state, scoped).await.unwrap();
+
+    // create() with an unknown department -> DEPARTMENT_NOT_FOUND (not-found branch).
+    let mut bad = request("bad-dept-user", "supervisor");
+    bad.department_id = Some("does-not-exist".to_string());
+    assert_code(
+        service::create(&state, bad).await.unwrap_err(),
+        "DEPARTMENT_NOT_FOUND",
+    );
+
+    let change = |dept: Option<Option<String>>, version| UpdateUserRequest {
+        full_name: None,
+        role: None,
+        password: None,
+        status: None,
+        department_id: dept,
+        version,
+    };
+
+    // update() Some(Some(valid)) -> assign branch.
+    let assigned = service::update(
+        &state,
+        "admin",
+        &created.id,
+        change(Some(Some(dept_id.clone())), created.version),
+    )
+    .await
+    .unwrap();
+    assert_eq!(assigned.version, created.version + 1);
+
+    // update() Some(Some(unknown)) -> DEPARTMENT_NOT_FOUND before any write.
+    assert_code(
+        service::update(
+            &state,
+            "admin",
+            &created.id,
+            change(Some(Some("nope".to_string())), assigned.version),
+        )
+        .await
+        .unwrap_err(),
+        "DEPARTMENT_NOT_FOUND",
+    );
+
+    // update() Some(None) -> clear-to-org-wide branch (department_id = NULL).
+    let cleared = service::update(
+        &state,
+        "admin",
+        &created.id,
+        change(Some(None), assigned.version),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cleared.version, assigned.version + 1);
+    let dept_after: Option<String> = db
+        .connect()
+        .unwrap()
+        .query(
+            "SELECT department_id FROM users WHERE id = ?1",
+            libsql::params![created.id.clone()],
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert!(dept_after.is_none());
+}
+
+// H-11: the tri-state department_id on UpdateUserRequest is driven by the
+// `double_option` serde helper. Exercise it over JSON so an omitted field, an
+// explicit null, and a value each decode to the intended variant.
+#[test]
+fn update_request_department_id_is_tri_state_over_json() {
+    // Field present as an explicit null -> Some(None) (clear to org-wide).
+    let clear: UpdateUserRequest =
+        serde_json::from_str(r#"{"department_id": null, "version": 1}"#).unwrap();
+    assert_eq!(clear.department_id, Some(None));
+
+    // Field present with a value -> Some(Some(id)) (assign).
+    let assign: UpdateUserRequest =
+        serde_json::from_str(r#"{"department_id": "dept-1", "version": 1}"#).unwrap();
+    assert_eq!(assign.department_id, Some(Some("dept-1".to_string())));
+
+    // Field omitted -> None (leave as-is).
+    let omitted: UpdateUserRequest = serde_json::from_str(r#"{"version": 1}"#).unwrap();
+    assert_eq!(omitted.department_id, None);
 }

@@ -3,7 +3,8 @@
 // Response 200: { token }                                  RS256 JWT, exp = iat + 1y
 // Response 400: { error: { code: "BAD_REQUEST",         message } }
 // Response 404: { error: { code: "LICENSE_NOT_FOUND",   message } }
-// Response 409: { error: { code: "ALREADY_ACTIVATED",   message } }
+// Response 409: { error: { code: "ALREADY_ACTIVATED",      message } }  lookup found a different fp
+// Response 409: { error: { code: "LICENSE_ALREADY_BOUND",  message } }  bind() lost the race (C-07)
 // Response 500: { error: { code: "CONFIG_ERROR" | "SERVER_ERROR", message } }
 //
 // Persistence: process.env.DATABASE_URL points to Postgres with table:
@@ -17,10 +18,18 @@
 //
 // Lookup contract:
 //   undefined  -> license_key not seeded                            -> 404
-//   null       -> seeded but no fingerprint bound yet               -> bind, return JWT
+//   null       -> seeded but no fingerprint bound yet               -> attempt bind
 //   <string>   -> bound; compare to incoming hardware_fingerprint
-//                   match    -> idempotent re-activation, return JWT
+//                   match    -> idempotent re-activation, attempt bind
 //                   mismatch -> 409 ALREADY_ACTIVATED
+//
+// Bind contract (C-07): the lookup above is advisory only — it narrows the
+// common case but does not gate the write. bind(licenseKey, fp, now) returns
+// a boolean: true means the row is now bound to fp; false means another
+// activation already bound it to a different fingerprint (race lost), and
+// the handler must return 409 LICENSE_ALREADY_BOUND instead of signing a
+// token. The actual guard lives in the UPDATE's WHERE clause (production) /
+// the equivalent check in shared-store.js (tests) — see each for detail.
 
 'use strict';
 
@@ -56,10 +65,18 @@ function getStore() {
             const client = new Client({ connectionString: process.env.DATABASE_URL });
             await client.connect();
             try {
-                await client.query(
-                    'UPDATE licenses SET hardware_fingerprint = $1, activated_at = COALESCE(activated_at, $2) WHERE license_key = $3',
+                // C-07: la guarda vive en el WHERE, no en un SELECT previo. Un
+                // UPDATE de una sola sentencia es atómico, así que de dos
+                // activaciones simultáneas exactamente una afecta la fila.
+                const r = await client.query(
+                    `UPDATE licenses
+                        SET hardware_fingerprint = $1,
+                            activated_at = COALESCE(activated_at, $2)
+                      WHERE license_key = $3
+                        AND (hardware_fingerprint IS NULL OR hardware_fingerprint = $1)`,
                     [fingerprint, now, licenseKey],
                 );
+                return r.rowCount === 1;
             } finally {
                 await client.end();
             }
@@ -142,9 +159,27 @@ exports.main = async function main(args) {
             };
         }
 
-        // Bind (idempotent: existingFp === null OR === hardware_fingerprint)
+        // Bind (idempotent: existingFp === null OR === hardware_fingerprint).
+        // The lookup above narrows the common case, but it does NOT decide
+        // whether we bind — that decision belongs to bind()'s own guarded
+        // WHERE clause (C-07). Two concurrent activations can both pass the
+        // lookup check above (both see fp === null); only one of the bind()
+        // calls below may actually win the race.
         const now = Math.floor(Date.now() / 1000);
-        await store.bind(license_key, hardware_fingerprint, now);
+        const bound = await store.bind(license_key, hardware_fingerprint, now);
+        if (!bound) {
+            // C-07: otra activación ganó la carrera y vinculó la licencia a otro
+            // equipo. Firmar aquí entregaría un token válido para dos máquinas.
+            return {
+                statusCode: 409,
+                body: {
+                    error: {
+                        code: 'LICENSE_ALREADY_BOUND',
+                        message: 'This license is already activated on different hardware.',
+                    },
+                },
+            };
+        }
 
         const token = signJwt(license_key, hardware_fingerprint, privateKey);
         return { statusCode: 200, body: { token } };

@@ -59,7 +59,7 @@ vi.mock('jspdf-autotable', () => {
 import { renderReportPdf } from '../pdf'
 
 const ZEROS = {
-  work_min: 0, ot_min: 0, late_min: 0, days_worked: 0, days_absent: 0,
+  work_min: 0, expected_min: 0, deficit_min: 0, ot_min: 0, late_min: 0, days_worked: 0, days_absent: 0,
   work_pay_cents: 0, ot_pay_cents: 0, night_premium_cents: 0,
   rest_day_surcharge_cents: 0, late_deduction_cents: 0, total_a_pagar_cents: 0,
   days_ivss: 0, days_vacation: 0, days_permission: 0, days_unpaid: 0,
@@ -109,6 +109,38 @@ describe('renderReportPdf — extra branch coverage', () => {
     const r = body.find((row) => row[1] === 'No-Cedula')!
     expect(r[0]).toBe('—')
     expect(r[3]).toBe('—')
+  })
+
+  // Important 1: pantalla, Excel, CSV y PDF deben llevar las mismas columnas.
+  it('carries Min Esperados / Min Déficit (hábiles) right after Min Trab, in every row kind', () => {
+    renderReportPdf(payload({
+      rows: [{
+        employee_id: 'e1', dept_id: 'd1', cedula: 'V-1', nombre: 'Ana García',
+        departamento: 'Operaciones', cargo: 'Analista', shift_type: 'day',
+        anomaly_codes: [], anomaly_count: 0, ...ZEROS,
+        work_min: 1260, expected_min: 1920, deficit_min: 960,
+      }],
+      dept_subtotals: [{
+        dept_id: 'd1', dept_name: 'Operaciones',
+        aggregates: { ...ZEROS, work_min: 1260, expected_min: 1920, deficit_min: 960 },
+      }],
+      grand_total: { ...ZEROS, work_min: 1260, expected_min: 1920, deficit_min: 960 },
+      departments_in_order: [{ id: 'd1', name: 'Operaciones' }],
+    }))
+
+    const head = autoTableCalls[0].options.head as string[][]
+    expect(head[0][4]).toBe('Min Trab')
+    expect(head[0][5]).toBe('Min Esperados')
+    expect(head[0][6]).toBe('Min Déficit (hábiles)')
+    expect(head[0][7]).toBe('Min Extra')
+
+    const body = autoTableCalls[0].options.body
+    for (const label of ['Ana García', 'Total Operaciones', 'TOTAL GENERAL']) {
+      const r = body.find((row) => row[1] === label)!
+      expect(r[4]).toBe(1260)
+      expect(r[5]).toBe(1920)
+      expect(r[6]).toBe(960)
+    }
   })
 
   it('didParseCell: TOTAL GENERAL row gets bold + blue-100 fill', () => {

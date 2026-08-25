@@ -25,6 +25,7 @@ use cronometrix_api::events;
 use cronometrix_api::http_trace;
 use cronometrix_api::leaves;
 use cronometrix_api::license;
+use cronometrix_api::presence;
 use cronometrix_api::recompute::{self, RecomputeRequest};
 use cronometrix_api::reports;
 use cronometrix_api::rules;
@@ -34,7 +35,7 @@ use cronometrix_api::supervisor::{watchdog, Supervisor};
 use cronometrix_api::tenant_info;
 use cronometrix_api::users;
 use cronometrix_api::workers::{
-    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker,
+    backfill::BackfillWorker, capture_cleanup, db_write, purge::PurgeWorker, push_drain, retention,
 };
 
 #[tokio::main]
@@ -208,6 +209,19 @@ async fn main() -> anyhow::Result<()> {
         capture_cleanup_shutdown.clone(),
     ));
 
+    // C-10 part 2: drains device_push_inbox off the HTTP response path —
+    // receive_push only stores; this worker parses, ingests, retries
+    // transient failures, and dead-letters permanent ones. Shares the
+    // general `shutdown` token (not capture_cleanup_shutdown — it has no
+    // in-memory state to compensate after the HTTP server stops).
+    let push_drain_handle = tokio::spawn(push_drain::run(state.clone(), shutdown.clone()));
+
+    // Bloque 3 (H-10): configurable retention sweep over the evidence
+    // directories. Shares the general `shutdown` token like push_drain — it
+    // holds no in-memory state to compensate. The default policy is
+    // keep-everything, so this is inert until a retention period is configured.
+    tokio::spawn(retention::run(state.clone(), shutdown.clone()));
+
     // Phase 7: spawn PurgeWorker (D-15) and BackfillWorker (D-16).
     let purge_worker = PurgeWorker::new(state.clone(), shutdown.clone());
     let purge_handle = tokio::spawn(async move {
@@ -242,16 +256,62 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // H-12 / L-01: the public, unauthenticated authentication surface gets
+    // rate limiting, keyed per client (see middleware::rate_limit module
+    // docs for why naive peer-IP or naive X-Forwarded-For keying are both
+    // wrong behind this deployment's nginx + Cloudflare Tunnel topology).
+    // Two tiers, not one — `/setup/status` is called on every protected-route
+    // navigation by the frontend (see module docs), so it needs a much more
+    // generous budget than the genuinely rare `/auth/login` /
+    // `/setup/init`. Each tier is isolated into its own router so the layer
+    // only wraps the routes it covers — not the SSE stream or the device
+    // push webhook, which have their own, different traffic shapes.
+    let (login_init_rate_limit_layer, login_init_rate_limit_limiter) =
+        cronometrix_api::middleware::rate_limit::login_and_init_rate_limit();
+    let (status_rate_limit_layer, status_rate_limit_limiter) =
+        cronometrix_api::middleware::rate_limit::status_rate_limit();
+
+    let rate_limited_public_routes = Router::new()
+        .route("/auth/login", post(auth::handlers::login))
+        .route("/setup/init", post(setup::handlers::setup_init))
+        .route_layer(login_init_rate_limit_layer)
+        .merge(
+            Router::new()
+                .route("/setup/status", get(setup::handlers::setup_status))
+                .route_layer(status_rate_limit_layer),
+        );
+
+    let rate_limit_cleanup_handle = tokio::spawn({
+        let cancel = shutdown.clone();
+        async move {
+            tokio::join!(
+                cronometrix_api::middleware::rate_limit::run_cleanup(
+                    login_init_rate_limit_limiter,
+                    cancel.clone(),
+                ),
+                cronometrix_api::middleware::rate_limit::run_cleanup(
+                    status_rate_limit_limiter,
+                    cancel,
+                ),
+            );
+        }
+    });
+
     // Public routes — no auth required
     let public_routes = Router::new()
         .route("/health", get(health))
-        .route("/auth/login", post(auth::handlers::login))
-        .route("/setup/status", get(setup::handlers::setup_status))
-        .route("/setup/init", post(setup::handlers::setup_init))
         .route("/setup/activate", post(setup::handlers::setup_activate))
         // SSE stream: EventSource cannot send Bearer headers (T-4-02), so auth is
         // handled inside the handler via ?token=<jwt> query param.
-        .route("/events/stream", get(events::handlers::events_stream));
+        .route("/events/stream", get(events::handlers::events_stream))
+        // Device webhook. Public by necessity: a reader cannot present a JWT and
+        // this firmware family leaves `httpAuthenticationMethod` empty, so the
+        // only credential available is the per-device secret in the path.
+        .route(
+            "/devices/{device_id}/push/{token}",
+            post(devices::push::receive_push),
+        )
+        .merge(rate_limited_public_routes);
 
     // Cookie-authenticated routes (refresh/logout validate via refresh cookie, not Bearer)
     // License gate is applied here too: an unlicensed install must not refresh sessions.
@@ -277,7 +337,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/devices/{id}", get(devices::handlers::get_device))
         .route("/events", get(events::handlers::list_events))
         .route("/events/{id}", get(events::handlers::get_event))
-        .route("/events/{id}/photo", get(events::handlers::get_event_photo))
         .route(
             "/daily-records",
             get(daily_records::handlers::list_daily_records),
@@ -286,12 +345,9 @@ async fn main() -> anyhow::Result<()> {
             "/daily-records/{id}",
             get(daily_records::handlers::get_daily_record),
         )
+        .route("/presence/today", get(presence::handlers::presence_today))
         .route("/leaves", get(leaves::handlers::list_leaves))
         .route("/leaves/{id}", get(leaves::handlers::get_leave))
-        .route(
-            "/leaves/{id}/evidence",
-            get(leaves::handlers::get_leave_evidence),
-        )
         .route("/tenant-info", get(tenant_info::handlers::get_tenant_info))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -307,6 +363,21 @@ async fn main() -> anyhow::Result<()> {
         .route("/anomalies", get(anomalies::handlers::list_anomalies))
         .route("/audit", get(audit::handlers::list_audit)) // NEW Plan 09-04
         .route("/audit/actors", get(audit::handlers::list_actors))
+        // H-11 (D2): biometric face photo + medical evidence are supervisor+
+        // only — moved out of viewer_routes. Department scope is enforced inside
+        // the handlers.
+        .route("/events/{id}/photo", get(events::handlers::get_event_photo))
+        .route(
+            "/leaves/{id}/evidence",
+            get(leaves::handlers::get_leave_evidence),
+        )
+        // C-10 part 2: dead-letter view over device_push_inbox. Never
+        // returns the raw body (may carry a face JPEG) — see
+        // devices::models::PushInboxFailedEntry.
+        .route(
+            "/devices/push-inbox/failed",
+            get(devices::handlers::list_push_inbox_failed),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::rbac::require_supervisor_or_above,
@@ -481,18 +552,25 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Cronometrix API listening on {}", addr);
-    axum::serve(listener, app)
-        .with_graceful_shutdown({
-            let shutdown = shutdown.clone();
-            async move {
-                match cronometrix_api::workers::shutdown_signal().await {
-                    Ok(source) => tracing::info!(?source, "shutdown signal received"),
-                    Err(error) => tracing::error!(%error, "failed to install shutdown signal"),
-                }
-                shutdown.cancel();
+    // `into_make_service_with_connect_info` publishes the TCP peer address as
+    // a `ConnectInfo<SocketAddr>` request extension — the rate-limit key
+    // extractor's fallback for topologies with no proxy hop in front (local
+    // dev, `make e2e`; see middleware::rate_limit module docs).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown({
+        let shutdown = shutdown.clone();
+        async move {
+            match cronometrix_api::workers::shutdown_signal().await {
+                Ok(source) => tracing::info!(?source, "shutdown signal received"),
+                Err(error) => tracing::error!(%error, "failed to install shutdown signal"),
             }
-        })
-        .await?;
+            shutdown.cancel();
+        }
+    })
+    .await?;
 
     fn remember_shutdown_error(
         first: &mut Option<anyhow::Error>,
@@ -523,6 +601,11 @@ async fn main() -> anyhow::Result<()> {
     );
     remember_shutdown_error(
         &mut first_shutdown_error,
+        rate_limit_cleanup_handle.await.map_err(anyhow::Error::from),
+        "join rate limit cleanup",
+    );
+    remember_shutdown_error(
+        &mut first_shutdown_error,
         nightly_handle.await.map_err(anyhow::Error::from),
         "join nightly reconcile",
     );
@@ -540,6 +623,20 @@ async fn main() -> anyhow::Result<()> {
         &mut first_shutdown_error,
         backfill_handle.await.map_err(anyhow::Error::from),
         "join backfill worker",
+    );
+    // Joined before `state.db_write.flush()` below so this worker's final
+    // drain pass (triggered by the same `shutdown` token) can still enqueue
+    // its status updates through a live write queue. `run` returns
+    // `anyhow::Result<()>` (like capture_cleanup::run), so the JoinError and
+    // the task's own Err must both be flattened before recording either.
+    let push_drain_result = match push_drain_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(error.into()),
+    };
+    remember_shutdown_error(
+        &mut first_shutdown_error,
+        push_drain_result,
+        "join push inbox drain worker",
     );
 
     // No new HTTP requests or worker retries can be admitted now. Await each

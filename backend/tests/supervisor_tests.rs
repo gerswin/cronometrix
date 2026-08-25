@@ -49,6 +49,7 @@ fn make_config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -923,4 +924,35 @@ async fn patch_password_emits_restart_event() {
         Some(DeviceLifecycleEvent::Restart(id)) => assert_eq!(id, "d-patch-pw"),
         other => panic!("expected Restart after password rotation, got {:?}", other),
     }
+}
+
+/// A `Stop` for a device the supervisor never spawned must not wedge the loop.
+///
+/// The lifecycle channel is fed by CRUD handlers, so a delete racing a restart —
+/// or simply arriving twice — produces exactly this. Rescued from
+/// `codex/ci-coverage-background`, the only commit on those branches that was
+/// not already equivalent in main.
+#[tokio::test]
+async fn stop_signal_for_unknown_device_is_a_noop() {
+    let db = common::test_db().await;
+    let config = make_config();
+    let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
+    let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
+    state.lifecycle_tx = Some(lifecycle_tx.clone());
+    let shutdown = CancellationToken::new();
+
+    let supervisor = Supervisor::new(state, shutdown.clone());
+    let supervisor_handle = tokio::spawn(async move {
+        supervisor.run(lifecycle_rx).await;
+    });
+    lifecycle_tx
+        .send(DeviceLifecycleEvent::Stop("missing-device".into()))
+        .unwrap();
+    tokio::task::yield_now().await;
+    shutdown.cancel();
+
+    tokio::time::timeout(Duration::from_secs(5), supervisor_handle)
+        .await
+        .expect("supervisor must stop")
+        .expect("supervisor must not panic");
 }

@@ -1,7 +1,8 @@
 //! LOTTT Art. 178 overtime cap checks (CALC-04, D-09).
 //!
-//! - Daily cap: total workday (work_minutes + overtime_minutes) must not
-//!   exceed 600 minutes (10h). Breach → `OtCapExceededDaily`.
+//! - Daily cap: total workday (`work_minutes`, which already includes any
+//!   overtime slice — calc/engine.rs:82) must not exceed 600 minutes (10h).
+//!   Breach → `OtCapExceededDaily`.
 //! - Weekly cap: running weekly OT (Mon-start ISO week) must not exceed 600
 //!   minutes (10h). Breach → `OtCapExceededWeekly`.
 //! - Annual cap: running per-employee OT in the calendar year must not
@@ -19,7 +20,10 @@ pub fn check_overtime_caps(
     annual_ot_minutes_so_far: i64,
 ) -> Vec<AnomalyCode> {
     let mut out = Vec::new();
-    if work_minutes + overtime_minutes > 600 {
+    // LOTTT 178: el tope es de 10 h EFECTIVAS al día. `work_minutes` ya incluye
+    // los extraordinarios (calc/engine.rs:82); sumarlos otra vez evalúa una
+    // jornada que nadie trabajó.
+    if work_minutes > 600 {
         out.push(AnomalyCode::OtCapExceededDaily);
     }
     if weekly_ot_minutes_so_far + overtime_minutes > 600 {
@@ -36,11 +40,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn daily_cap_triggers_only_when_total_exceeds_600() {
-        // 600 exact — no anomaly
-        assert!(check_overtime_caps(480, 120, 0, 0).is_empty());
-        // 601 — daily cap triggers
-        let out = check_overtime_caps(480, 121, 0, 0);
+    fn daily_cap_triggers_only_when_the_real_workday_exceeds_600() {
+        assert!(check_overtime_caps(600, 120, 0, 0).is_empty());
+        let out = check_overtime_caps(601, 121, 0, 0);
         assert!(out.contains(&AnomalyCode::OtCapExceededDaily));
     }
 

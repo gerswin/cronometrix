@@ -199,7 +199,6 @@ export default function ReportsPage() {
   const totalEmpleados = payload?.rows.length ?? 0
   const horasExtra = payload ? payload.grand_total.ot_min / 60 : 0
   const recargosCents = payload?.grand_total.rest_day_surcharge_cents ?? 0
-  const descuentosCents = payload?.grand_total.late_deduction_cents ?? 0
   const totalAPagarCents = payload?.grand_total.total_a_pagar_cents ?? 0
 
   const periodLabel = formatPeriodLabel(filters.from_date, filters.to_date)
@@ -347,7 +346,7 @@ export default function ReportsPage() {
               {reportQ.isLoading ? '—' : fmtMoney(totalAPagarCents)}
             </span>
             <span className="text-[12px] text-[#666666]">
-              {totalEmpleados} empleados · sueldo + recargos − descuentos
+              {totalEmpleados} empleados · sueldo + recargos
             </span>
           </div>
           <div className="hidden md:flex flex-col items-end text-[11px] text-[#666666] gap-0.5">
@@ -356,8 +355,12 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        {/* KPI row — componentes del cálculo */}
-        <div className="grid grid-cols-4 gap-4">
+        {/* KPI row — componentes del cálculo. Was a 4-card grid; the
+            DESCUENTOS card was removed (late_deduction_cents no longer
+            reduces total_a_pagar_cents since C-02, so a card labelled
+            "(−) resta al neto" was actively false) rather than left as a
+            gap or backfilled with an unrelated money metric. */}
+        <div className="grid grid-cols-3 gap-4">
           <KpiCard
             label="TOTAL EMPLEADOS"
             value={String(totalEmpleados)}
@@ -377,13 +380,6 @@ export default function ReportsPage() {
             value={fmtMoney(recargosCents)}
             color="#F59E0B"
             sub="(+) suma al neto"
-            isLoading={reportQ.isLoading}
-          />
-          <KpiCard
-            label="DESCUENTOS"
-            value={fmtMoney(descuentosCents)}
-            color="#EF4444"
-            sub="(−) resta al neto"
             isLoading={reportQ.isLoading}
           />
         </div>
@@ -423,9 +419,6 @@ export default function ReportsPage() {
             </div>
             <div className="w-[100px] text-right text-[10px] font-semibold text-[#666666] tracking-wider">
               REC. FESTIVO
-            </div>
-            <div className="w-[95px] text-right text-[10px] font-semibold text-[#666666] tracking-wider">
-              DESCUENTOS
             </div>
             <div className="w-[100px] text-right text-[10px] font-semibold text-[#666666] tracking-wider">
               NETO
@@ -509,19 +502,6 @@ export default function ReportsPage() {
                       ? fmtMoney(row.rest_day_surcharge_cents)
                       : '$0'}
                   </div>
-                  {/* Descuentos */}
-                  <div
-                    className="w-[95px] text-right text-[12px]"
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      color:
-                        row.late_deduction_cents > 0 ? '#EF4444' : '#666666',
-                    }}
-                  >
-                    {row.late_deduction_cents > 0
-                      ? fmtMoney(row.late_deduction_cents)
-                      : '$0'}
-                  </div>
                   {/* Neto */}
                   <div
                     className="w-[100px] text-right text-[12px] font-semibold text-[#1A1A1A]"
@@ -560,12 +540,6 @@ export default function ReportsPage() {
                 style={{ fontFamily: 'var(--font-mono)', color: '#F59E0B' }}
               >
                 {fmtMoney(payload.grand_total.rest_day_surcharge_cents)}
-              </div>
-              <div
-                className="w-[95px] text-right text-[12px] font-bold"
-                style={{ fontFamily: 'var(--font-mono)', color: '#EF4444' }}
-              >
-                {fmtMoney(payload.grand_total.late_deduction_cents)}
               </div>
               <div
                 className="w-[100px] text-right text-[12px] font-bold text-white"

@@ -9,9 +9,11 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
+use crate::auth::scope::ActorScope;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
+use crate::storage::evidence_magic::infer_evidence_ext_from_magic;
 
 use super::models::{DailyRecordListQuery, DailyRecordResponse, OverrideResponse};
 use super::service;
@@ -19,43 +21,41 @@ use super::service;
 /// GET /api/v1/daily-records — paginated list with optional employee/department/date filters.
 pub async fn list_daily_records(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Query(q): Query<DailyRecordListQuery>,
 ) -> Result<Json<PaginatedResponse<DailyRecordResponse>>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    let result = service::list(&conn, q).await?;
+    let scope = ActorScope::from_claims(&claims);
+    let result = service::list(&conn, q, &scope).await?;
     Ok(Json(result))
 }
 
 /// GET /api/v1/daily-records/{id} — single record with anomalies attached.
 pub async fn get_daily_record(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<DailyRecordResponse>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::get_by_id(&conn, &id).await?))
-}
+    let record = service::get_by_id(&conn, &id).await?;
 
-/// CR-03 mitigation: derive evidence file extension from magic bytes rather
-/// than the client-supplied multipart Content-Type. Returns the canonical
-/// extension (`pdf`, `jpg`, `png`) when the bytes start with a known signature,
-/// otherwise `None`.
-fn infer_evidence_ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"%PDF") {
-        return Some("pdf");
+    // H-11: a scoped actor cannot see a record outside its department; 404 (not
+    // 403) so the record's existence is not leaked. daily_records carries its
+    // department_id directly, so no extra lookup is needed.
+    if !ActorScope::from_claims(&claims).permits(Some(&record.department_id)) {
+        return Err(AppError::NotFound {
+            code: "DAILY_RECORD_NOT_FOUND",
+            message: format!("Daily record '{}' not found", id),
+        });
     }
-    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
-        return Some("jpg");
-    }
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Some("png");
-    }
-    None
+
+    Ok(Json(record))
 }
 
 /// POST /api/v1/daily-records/{id}/overrides — Admin only, multipart/form-data.
@@ -226,6 +226,21 @@ pub async fn create_override(
                         })?;
                     let employee_id: String = daily_record.get(0)?;
                     let anchor_date: String = daily_record.get(1)?;
+
+                    // C-04: revoke any currently-active override for this record
+                    // before inserting the new one, in the same transaction. Doing
+                    // this as two separate operations would leave a window with no
+                    // active override at all; skipping it entirely would make the
+                    // legitimate "replace an override" action fail once the unique
+                    // partial index (idx_overrides_one_active_per_record) is in
+                    // place. Never DELETE — the revoked row is evidence.
+                    tx.statement(
+                        "UPDATE daily_record_overrides \
+                            SET status = 'revoked', updated_at = unixepoch() \
+                          WHERE daily_record_id = ?1 AND status = 'active' AND deleted_at IS NULL",
+                        libsql::params![daily_record_id.clone()],
+                    )
+                    .await?;
 
                     tx.statement(
                         "INSERT INTO daily_record_overrides

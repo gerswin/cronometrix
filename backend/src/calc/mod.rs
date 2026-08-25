@@ -5,6 +5,7 @@
 pub mod aggregation;
 pub mod anomalies;
 pub mod engine;
+pub mod expected;
 pub mod lunch;
 pub mod models;
 pub mod overnight;

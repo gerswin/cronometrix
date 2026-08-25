@@ -15,33 +15,61 @@
 //!   * try_renew (private — exercised via renewal_task) — full chain
 //!   * renewal_task — cancel-on-token shutdown branch
 //!
-//! All tests use `MockServer` per the 04A wiremock pattern; license PEM
-//! fixtures are reused from `tests/fixtures/`.
+//! All tests use `MockServer` per the 04A wiremock pattern; each test signs
+//! with an ephemeral, per-run RSA keypair (C-06) and calls the `*_with_key`
+//! test seam so no private key needs to live in the repo.
 
 mod common;
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use cronometrix_api::errors::AppError;
 #[cfg(target_os = "linux")]
-use cronometrix_api::license::service::try_renew;
+use cronometrix_api::license::service::try_renew_with_key;
 use cronometrix_api::license::service::{
-    activate_license, load_and_validate_license, renewal_task, LicenseClaims,
+    activate_license, activate_license_with_key, load_and_validate_license,
+    load_and_validate_license_with_key, renewal_task, renewal_task_with_key, LicenseClaims,
 };
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method as wm_method, path as wm_path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn test_priv_key_pem() -> &'static [u8] {
-    include_bytes!("fixtures/test_license_privkey.pem")
+// C-06: ephemeral per-binary RSA keypair — see the identical rationale in
+// `license_tests.rs`. No private key is committed to the repo, not even as a
+// test fixture; the one that used to live at `tests/fixtures/` turned out to
+// be the same key `src/license/pubkey.pem` embeds in production.
+struct TestKeypair {
+    encoding: EncodingKey,
+    decoding: DecodingKey,
 }
+
+static TEST_KEYPAIR: LazyLock<TestKeypair> = LazyLock::new(|| {
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    use rsa::pkcs8::EncodePublicKey;
+    use rsa::RsaPrivateKey;
+
+    let mut rng = rand::thread_rng();
+    let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate ephemeral RSA keypair");
+    let pub_key = priv_key.to_public_key();
+
+    let priv_pem = priv_key
+        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+        .expect("encode ephemeral private key");
+    let pub_pem = pub_key
+        .to_public_key_pem(rsa::pkcs1::LineEnding::LF)
+        .expect("encode ephemeral public key");
+
+    TestKeypair {
+        encoding: EncodingKey::from_rsa_pem(priv_pem.as_bytes()).expect("ephemeral key parses"),
+        decoding: DecodingKey::from_rsa_pem(pub_pem.as_bytes()).expect("ephemeral pubkey parses"),
+    }
+});
 
 fn sign_test_jwt(claims: &LicenseClaims) -> String {
     let header = Header::new(Algorithm::RS256);
-    let key = EncodingKey::from_rsa_pem(test_priv_key_pem()).expect("test priv key parses");
-    encode(&header, claims, &key).expect("sign test jwt")
+    encode(&header, claims, &TEST_KEYPAIR.encoding).expect("sign test jwt")
 }
 
 fn make_claims(fingerprint: &str, exp_offset_secs: i64) -> LicenseClaims {
@@ -201,8 +229,8 @@ async fn load_and_validate_license_fingerprint_mismatch_returns_false() {
     let path = format!("/tmp/cronometrix-fpmm-{}.jwt", uuid::Uuid::new_v4());
     std::fs::write(&path, &signed).unwrap();
 
-    let valid = load_and_validate_license(&path).await;
-    // On Linux: fp computed → mismatch → false.
+    let valid = load_and_validate_license_with_key(&path, &TEST_KEYPAIR.decoding).await;
+    // On Linux: signature verifies, fp computed → mismatch → false.
     // On macOS: fingerprint::collect_fingerprint errors → also false.
     assert!(!valid, "fingerprint mismatch must be fail-closed");
     let _ = std::fs::remove_file(&path);
@@ -223,9 +251,28 @@ async fn load_and_validate_license_happy_path_on_linux() {
     let path = format!("/tmp/cronometrix-ok-{}.jwt", uuid::Uuid::new_v4());
     std::fs::write(&path, &signed).unwrap();
 
-    let valid = load_and_validate_license(&path).await;
+    let valid = load_and_validate_license_with_key(&path, &TEST_KEYPAIR.decoding).await;
     assert!(valid);
     let _ = std::fs::remove_file(&path);
+}
+
+// =============================================================================
+// try_renew — production wrapper (embedded key) coverage.
+// Every other try_renew scenario in this file goes through
+// `try_renew_with_key` with an ephemeral test keypair (C-06), which never
+// exercises the bare `try_renew` forwarding line. A missing cache file fails
+// before any verify happens, so this is safe to run through the real
+// embedded-key wrapper directly.
+// =============================================================================
+
+#[tokio::test]
+async fn try_renew_wrapper_forwards_to_embedded_key() {
+    let path = format!("/tmp/cronometrix-wrapper-nofile-{}.jwt", uuid::Uuid::new_v4());
+    let result = cronometrix_api::license::service::try_renew(&path, "http://unused").await;
+    assert!(
+        matches!(result, Err(AppError::Internal(_))),
+        "missing cache file must fail before any verify call"
+    );
 }
 
 // =============================================================================
@@ -238,8 +285,10 @@ async fn renewal_task_exits_on_cancel() {
     let cancel = CancellationToken::new();
     let path = format!("/tmp/cronometrix-renewal-{}.jwt", uuid::Uuid::new_v4());
 
-    // No URL configured → loop has nothing to do; the test only verifies that
-    // the cancellation branch fires before the 24h sleep elapses.
+    // No URL configured → loop has nothing to do, so this never reaches a
+    // verify call — safe to exercise the production `renewal_task` wrapper
+    // (embedded key) directly instead of `renewal_task_with_key`, which
+    // keeps the wrapper's one-line forward covered (C-06).
     let task = tokio::spawn({
         let path = path.clone();
         let lv = lv.clone();
@@ -286,9 +335,13 @@ async fn try_renew_skips_license_outside_renewal_window() {
     let jwt_path = tmp.path().join("license.jwt");
     let original = write_license(&jwt_path, &fp, 60 * 24 * 60 * 60);
 
-    try_renew(jwt_path.to_str().unwrap(), &format!("{}/renew", mock.uri()))
-        .await
-        .unwrap();
+    try_renew_with_key(
+        jwt_path.to_str().unwrap(),
+        &format!("{}/renew", mock.uri()),
+        &TEST_KEYPAIR.decoding,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(std::fs::read_to_string(&jwt_path).unwrap(), original);
     assert!(mock.received_requests().await.unwrap().is_empty());
@@ -302,7 +355,12 @@ async fn try_renew_maps_transport_and_upstream_failures() {
     let jwt_path = tmp.path().join("license.jwt");
     write_license(&jwt_path, &fp, 24 * 60 * 60);
 
-    let unreachable = try_renew(jwt_path.to_str().unwrap(), "http://127.0.0.1:1/renew").await;
+    let unreachable = try_renew_with_key(
+        jwt_path.to_str().unwrap(),
+        "http://127.0.0.1:1/renew",
+        &TEST_KEYPAIR.decoding,
+    )
+    .await;
     assert_bad_gateway(unreachable, "RENEWAL_UNREACHABLE");
 
     let mock = MockServer::start().await;
@@ -311,7 +369,12 @@ async fn try_renew_maps_transport_and_upstream_failures() {
         .respond_with(ResponseTemplate::new(503))
         .mount(&mock)
         .await;
-    let rejected = try_renew(jwt_path.to_str().unwrap(), &format!("{}/renew", mock.uri())).await;
+    let rejected = try_renew_with_key(
+        jwt_path.to_str().unwrap(),
+        &format!("{}/renew", mock.uri()),
+        &TEST_KEYPAIR.decoding,
+    )
+    .await;
     assert_bad_gateway(rejected, "RENEWAL_FAILED");
 }
 
@@ -342,22 +405,25 @@ async fn try_renew_rejects_malformed_missing_and_untrusted_tokens() {
         .mount(&mock)
         .await;
 
-    let malformed = try_renew(
+    let malformed = try_renew_with_key(
         jwt_path.to_str().unwrap(),
         &format!("{}/malformed", mock.uri()),
+        &TEST_KEYPAIR.decoding,
     )
     .await;
     assert_bad_gateway(malformed, "RENEWAL_FAILED");
-    let missing = try_renew(
+    let missing = try_renew_with_key(
         jwt_path.to_str().unwrap(),
         &format!("{}/missing", mock.uri()),
+        &TEST_KEYPAIR.decoding,
     )
     .await;
     assert_bad_gateway(missing, "RENEWAL_FAILED");
     assert!(matches!(
-        try_renew(
+        try_renew_with_key(
             jwt_path.to_str().unwrap(),
-            &format!("{}/untrusted", mock.uri())
+            &format!("{}/untrusted", mock.uri()),
+            &TEST_KEYPAIR.decoding,
         )
         .await,
         Err(AppError::Unlicensed)
@@ -395,18 +461,20 @@ async fn try_renew_enforces_fingerprint_and_atomically_persists_success() {
         .await;
 
     assert!(matches!(
-        try_renew(
+        try_renew_with_key(
             jwt_path.to_str().unwrap(),
-            &format!("{}/mismatch", mock.uri())
+            &format!("{}/mismatch", mock.uri()),
+            &TEST_KEYPAIR.decoding,
         )
         .await,
         Err(AppError::Forbidden)
     ));
     assert_eq!(std::fs::read_to_string(&jwt_path).unwrap(), original);
 
-    try_renew(
+    try_renew_with_key(
         jwt_path.to_str().unwrap(),
         &format!("{}/success", mock.uri()),
+        &TEST_KEYPAIR.decoding,
     )
     .await
     .unwrap();
@@ -423,7 +491,14 @@ async fn drive_one_renewal_tick(
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
-        renewal_task(jwt_path, renew_url, license_valid, task_cancel).await;
+        renewal_task_with_key(
+            jwt_path,
+            renew_url,
+            license_valid,
+            task_cancel,
+            &TEST_KEYPAIR.decoding,
+        )
+        .await;
     });
     tokio::task::yield_now().await;
     tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
@@ -593,7 +668,7 @@ async fn activate_license_persists_jwt_on_linux() {
 
     let url = format!("{}/licenses/activate", mock.uri());
     let path = format!("/tmp/cronometrix-persist-{}.jwt", uuid::Uuid::new_v4());
-    let result = activate_license("KEY", &url, &path).await;
+    let result = activate_license_with_key("KEY", &url, &path, &TEST_KEYPAIR.decoding).await;
     assert!(result.is_ok());
     assert!(std::path::Path::new(&path).exists());
 

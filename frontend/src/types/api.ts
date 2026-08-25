@@ -44,10 +44,50 @@ export interface Employee {
   hire_date: string | null
   /** Per-employee base salary in cents (migration 018). Authoritative for payroll. */
   base_salary_cents: number
+  /**
+   * Unit `base_salary_cents` is expressed in (H-08, migration 024). `null`
+   * when the row predates migration 024 or has no valid unit set. Optional
+   * here (not just nullable) so existing test fixtures built before this
+   * field existed keep compiling; GET /employees always sends the key
+   * (possibly `null`), it is never omitted.
+   *
+   * Critical-1 fix: GET /employees now round-trips this (previously it did
+   * not — see the old note below, kept for history) so the edit form can
+   * prefill its unit selector instead of forcing a blind re-pick on every
+   * save.
+   */
+  salary_kind?: SalaryKind | null
   status: 'active' | 'inactive' | 'pending'
   version: number
   created_at: string
   updated_at: string
+}
+
+/**
+ * Unit `base_salary_cents` is expressed in (H-08, migration 024). Mirrors the
+ * backend's `salary_kind` CHECK constraint character for character — do not
+ * add/rename values here without updating migration 024 in lockstep.
+ */
+export type SalaryKind = 'hourly' | 'daily' | 'monthly'
+
+/**
+ * Request body for POST /employees. Mirrors the backend's
+ * `CreateEmployeeRequest` (`backend/src/employees/models.rs`).
+ *
+ * `base_salary_cents` and `salary_kind` are both mandatory here (C-03, H-08):
+ * `employees::service::create_queued` rejects a missing/non-positive salary
+ * with `SALARY_REQUIRED`/`SALARY_INVALID`, and rejects a missing unit with
+ * `SALARY_KIND_REQUIRED` — an absent salary is no longer treated as 0, and an
+ * absent unit is no longer assumed to be "daily".
+ */
+export interface CreateEmployeeRequest {
+  employee_code: string
+  name: string
+  department_id: string
+  position?: string
+  hire_date?: string // YYYY-MM-DD
+  base_salary_cents: number
+  salary_kind: SalaryKind
 }
 
 export interface Department {
@@ -147,6 +187,8 @@ export interface BrandingHeader {
 
 export interface Aggregates {
   work_min: number
+  expected_min: number
+  deficit_min: number
   ot_min: number
   late_min: number
   days_worked: number
@@ -358,4 +400,28 @@ export interface UpdateUserRequest {
   password?: string
   status?: 'active' | 'inactive'
   version: number
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Presencia y déficit de horas — mirrors backend GET /presence/today response
+// (backend commit 0560362).
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface PresenceRow {
+  employee_id: string
+  employee_name: string
+  department_name: string
+  status: 'inside' | 'left'
+  entry_at: string | null
+  exit_at: string | null
+  expected_min: number
+  worked_min: number
+  deficit_min: number
+}
+
+export interface PresenceToday {
+  date: string
+  inside_now: number
+  attended_today: number
+  data: PresenceRow[]
 }

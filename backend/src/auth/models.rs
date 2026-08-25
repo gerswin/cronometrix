@@ -42,6 +42,11 @@ pub struct Claims {
     pub sub: String,
     /// User role
     pub role: Role,
+    /// Department scope (H-11). `None` = unscoped (admin, or an org-wide user).
+    /// `#[serde(default)]` so access/refresh tokens issued before this field
+    /// existed still decode (as `None`).
+    #[serde(default)]
+    pub department_id: Option<String>,
     /// Expiry timestamp (epoch seconds)
     pub exp: i64,
     /// Issued-at timestamp (epoch seconds)

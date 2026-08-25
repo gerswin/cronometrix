@@ -148,6 +148,12 @@ pub struct DeviceWithPlaintext {
     pub allow_insecure_tls: bool,
     pub status: String,
     pub version: i64,
+    /// `stream` (we pull the alertStream) or `push` (the reader posts to us).
+    /// Never both — see migration 022 for why double ingestion is unsafe.
+    pub ingest_mode: String,
+    /// Secret embedded in this device's webhook path. `None` until the device
+    /// is switched to push. Redacted from Debug alongside the password.
+    pub push_token: Option<String>,
 }
 
 impl std::fmt::Debug for DeviceWithPlaintext {
@@ -158,12 +164,30 @@ impl std::fmt::Debug for DeviceWithPlaintext {
             .field("base_url", &self.base_url)
             .field("username", &self.username)
             .field("password", &"[redacted]")
+            .field("push_token", &"[redacted]")
+            .field("ingest_mode", &self.ingest_mode)
             .field("direction", &self.direction)
             .field("allow_insecure_tls", &self.allow_insecure_tls)
             .field("status", &self.status)
             .field("version", &self.version)
             .finish()
     }
+}
+
+/// One dead-lettered row from `device_push_inbox`, for `GET
+/// /api/v1/devices/push-inbox/failed`.
+///
+/// Deliberately does NOT include `body`: it can carry a face JPEG, and this
+/// is a diagnostics route (min role `supervisor`), not a biometrics one. A
+/// hypothetical body-inspection endpoint would be `admin`-only with its own
+/// audit entry — this one never reads that column.
+#[derive(Debug, Serialize)]
+pub struct PushInboxFailedEntry {
+    pub id: String,
+    pub device_id: String,
+    pub received_at: String, // ISO 8601
+    pub attempts: i64,
+    pub last_error: Option<String>,
 }
 
 /// Validate scheme is `http` or `https`.

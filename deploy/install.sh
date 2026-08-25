@@ -78,6 +78,9 @@ fi
 
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLE_MANIFEST="${BUNDLE_DIR}/release-manifest.env"
+# Bloque 3 (H-14): evidence backup/restore helpers.
+# shellcheck source=deploy/lib/evidence-backup.sh
+source "${BUNDLE_DIR}/lib/evidence-backup.sh"
 INSTALL_DIR="${CRONOMETRIX_INSTALL_DIR:-/opt/cronometrix}"
 DATA_DIR="${INSTALL_DIR}/data"
 ENV_FILE="${INSTALL_DIR}/.env"
@@ -235,6 +238,11 @@ source.close()
 PY
         chmod 0600 "${BACKUP_DIR}/cronometrix.db"
     fi
+    # H-14: back up the attendance-evidence directories AFTER the DB snapshot, so
+    # a concurrent evidence creation is at worst a harmless orphan on restore.
+    # The manifest lets a restore prove DB and files came from one backup.
+    backup_evidence_dirs "${DATA_DIR}" "${BACKUP_DIR}"
+    write_backup_manifest "${BACKUP_DIR}"
 }
 
 write_runtime_env() {
@@ -324,6 +332,9 @@ rollback() {
             mv -f "${DATA_DIR}/cronometrix.db.rollback" "${DATA_DIR}/cronometrix.db"
             rm -f "${DATA_DIR}/cronometrix.db-wal" "${DATA_DIR}/cronometrix.db-shm"
         fi
+        # H-14: restore the evidence directories alongside the DB — a DB restored
+        # without its images is worse than a failed restore: it looks like it works.
+        restore_evidence_dirs "${BACKUP_DIR}" "${DATA_DIR}"
         compose up -d
         wait_gateway || log "WARNING: previous release did not recover health; inspect ${BACKUP_DIR}"
     else

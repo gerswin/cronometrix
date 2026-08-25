@@ -3,6 +3,9 @@ use std::path::Path;
 use chrono::{TimeZone, Utc};
 use libsql::{params, Connection};
 
+use crate::auth::scope::ActorScope;
+use crate::calc::aggregation::anchor_dates_for_instant;
+use crate::calc::models::{DepartmentConfig, GlobalRulesRow};
 use crate::common::{epoch_to_iso, PaginatedResponse};
 use crate::errors::AppError;
 use crate::recompute::RecomputeRequest;
@@ -20,12 +23,128 @@ pub fn publish_recompute_if_employee(state: &AppState, event: &NewAttendanceEven
     let _ = (state, event);
 }
 
+/// Department shift config + global tolerance rules for one employee — the
+/// minimum an H-02 anchor decision needs. A single indexed read: `employees`
+/// by primary key, `departments` by its FK, `global_rules` by its fixed
+/// singleton id. Returns `None` when the employee row is missing (e.g.
+/// deleted between event capture and this lookup) so the caller can fall back
+/// to the event's own local date rather than fail ingestion.
+async fn fetch_shift_context(
+    conn: &Connection,
+    employee_id: &str,
+) -> Result<Option<(DepartmentConfig, GlobalRulesRow)>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT d.id, d.shift_start_time, d.shift_end_time, d.shift_type, \
+             d.is_overnight_shift, d.ordinary_daily_minutes, d.lunch_mode, d.lunch_duration_min, \
+             gr.late_arrival_tolerance_min, gr.early_departure_tolerance_min, gr.bonus_minutes \
+             FROM employees e \
+             JOIN departments d ON d.id = e.department_id \
+             JOIN global_rules gr ON gr.id = 'singleton' \
+             WHERE e.id = ?1",
+            params![employee_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    else {
+        return Ok(None);
+    };
+
+    let is_overnight: i64 = row.get(4).map_err(|e| AppError::Internal(e.into()))?;
+    let dept = DepartmentConfig {
+        id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+        shift_start_time: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+        shift_end_time: row.get(2).map_err(|e| AppError::Internal(e.into()))?,
+        shift_type: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
+        is_overnight_shift: is_overnight != 0,
+        ordinary_daily_minutes: row.get(5).map_err(|e| AppError::Internal(e.into()))?,
+        lunch_mode: row.get(6).map_err(|e| AppError::Internal(e.into()))?,
+        lunch_duration_min: row.get(7).map_err(|e| AppError::Internal(e.into()))?,
+    };
+    let rules = GlobalRulesRow {
+        late_arrival_tolerance_min: row.get(8).map_err(|e| AppError::Internal(e.into()))?,
+        early_departure_tolerance_min: row.get(9).map_err(|e| AppError::Internal(e.into()))?,
+        bonus_minutes: row.get(10).map_err(|e| AppError::Internal(e.into()))?,
+    };
+    Ok(Some((dept, rules)))
+}
+
+/// Resolve every `RecomputeRequest::Day` an ingested event must publish
+/// (H-02). Almost always one request; two when an overnight instant lands in
+/// the overlap of two candidate windows (see
+/// [`anchor_dates_for_instant`](crate::calc::aggregation::anchor_dates_for_instant)).
+///
+/// This is the one place H-02 costs an extra read on the ingest path: a
+/// single indexed `fetch_shift_context` query, on a fresh read connection
+/// (never the serialized single-writer connection), executed only for events
+/// that resolved to a known employee. Best-effort — any failure here falls
+/// back to the event's own local date (the pre-fix anchor) with a warning,
+/// rather than aborting an otherwise-successful ingest.
+async fn resolve_recompute_requests(
+    state: &AppState,
+    event: &NewAttendanceEvent,
+) -> Vec<RecomputeRequest> {
+    let Some(employee_id) = event.employee_id.as_ref() else {
+        return Vec::new();
+    };
+    let Some(own_date) = Utc
+        .timestamp_opt(event.captured_at, 0)
+        .single()
+        .map(|dt| dt.with_timezone(&state.config.timezone).date_naive())
+    else {
+        return Vec::new();
+    };
+
+    let anchors = match state.db.connect() {
+        Ok(conn) => match fetch_shift_context(&conn, employee_id).await {
+            Ok(Some((dept, rules))) => anchor_dates_for_instant(
+                event.captured_at,
+                own_date,
+                &dept,
+                &rules,
+                state.config.timezone,
+            ),
+            Ok(None) => vec![own_date],
+            Err(error) => {
+                tracing::warn!(
+                    employee_id = %employee_id,
+                    err = %error,
+                    "H-02 shift-context lookup failed; anchoring recompute to the event's own local date"
+                );
+                vec![own_date]
+            }
+        },
+        Err(error) => {
+            tracing::warn!(
+                employee_id = %employee_id,
+                err = %error,
+                "H-02 shift-context connection failed; anchoring recompute to the event's own local date"
+            );
+            vec![own_date]
+        }
+    };
+
+    anchors
+        .into_iter()
+        .map(|anchor_date| RecomputeRequest::Day {
+            employee_id: employee_id.clone(),
+            anchor_date,
+        })
+        .collect()
+}
+
 fn base_sse_payload(event: &NewAttendanceEvent, has_photo: bool) -> AttendanceEventSSEPayload {
     AttendanceEventSSEPayload {
         id: event.id.clone(),
         employee_id: event.employee_id.clone(),
         employee_name: None,
         department: None,
+        department_id: None,
         captured_at: epoch_to_iso(event.captured_at),
         direction: event.direction.clone(),
         has_photo,
@@ -46,7 +165,7 @@ pub async fn build_sse_payload(
 
     let mut rows = conn
         .query(
-            "SELECT e.name, d.name \
+            "SELECT e.name, d.name, e.department_id \
              FROM employees e \
              LEFT JOIN departments d ON d.id = e.department_id \
              WHERE e.id = ?1",
@@ -64,6 +183,10 @@ pub async fn build_sse_payload(
             .map_err(|error| AppError::Internal(error.into()))?;
         payload.department = row
             .get(1)
+            .map_err(|error| AppError::Internal(error.into()))?;
+        // H-11: department id drives the per-subscriber SSE scope filter.
+        payload.department_id = row
+            .get(2)
             .map_err(|error| AppError::Internal(error.into()))?;
     }
     Ok(payload)
@@ -107,8 +230,8 @@ pub async fn publish_sse_event(
     let _ = tx.send(payload);
 }
 
-/// SELECT column list for read-side mappers. `raw_xml` is DELIBERATELY absent
-/// (T-2-14 — raw XML is never exposed on the API).
+/// SELECT column list for read-side mappers. `raw_payload` is DELIBERATELY
+/// absent (T-2-14 — the raw device payload is never exposed on the API).
 const EVENT_SELECT_COLS: &str =
     "id, employee_id, device_id, direction, captured_at, is_unknown, face_id, \
      employee_no_string, photo_path, created_at";
@@ -162,16 +285,10 @@ pub async fn persist_attendance_event_queued(
 
     let queued_photo_relpath = photo_relpath.clone();
     let recompute_tx = state.recompute_tx.clone();
-    let recompute_request = event.employee_id.as_ref().and_then(|employee_id| {
-        Utc.timestamp_opt(event.captured_at, 0)
-            .single()
-            .map(|captured_at| RecomputeRequest::Day {
-                employee_id: employee_id.clone(),
-                anchor_date: captured_at
-                    .with_timezone(&state.config.timezone)
-                    .date_naive(),
-            })
-    });
+    // H-02: which day(s) to recompute depends on the employee's department
+    // shift (an overnight exit belongs to the day the shift started, not the
+    // event's own local date) — see `resolve_recompute_requests`.
+    let recompute_requests = resolve_recompute_requests(state, &event).await;
     let rows_affected = state
         .db_write
             .transact("events.ingest-attendance", move |tx| {
@@ -180,7 +297,7 @@ pub async fn persist_attendance_event_queued(
                         .statement(
                             "INSERT OR IGNORE INTO attendance_events \
                              (id, employee_id, device_id, direction, captured_at, bucket_30s, \
-                              is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
+                              is_unknown, face_id, employee_no_string, raw_payload, photo_path, created_at) \
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
                             params![
                                 event.id,
@@ -192,7 +309,7 @@ pub async fn persist_attendance_event_queued(
                                 event.is_unknown as i64,
                                 event.face_id,
                                 event.employee_no_string,
-                                event.raw_xml,
+                                event.raw_payload,
                                 queued_photo_relpath,
                             ],
                         )
@@ -202,14 +319,15 @@ pub async fn persist_attendance_event_queued(
                             if let Some(guard) = photo_guard {
                                 guard.keep();
                             }
-                            if let (Some(sender), Some(request)) =
-                                (recompute_tx, recompute_request)
-                            {
-                                if sender.send(request).is_err() {
-                                    tracing::warn!(
-                                        operation = "events.ingest-attendance",
-                                        "post-commit recompute unavailable; identifiers omitted"
-                                    );
+                            if let Some(sender) = recompute_tx {
+                                for request in recompute_requests {
+                                    if sender.send(request).is_err() {
+                                        tracing::warn!(
+                                            operation = "events.ingest-attendance",
+                                            "post-commit recompute unavailable; identifiers omitted"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
                         });
@@ -236,20 +354,31 @@ pub fn write_photo_atomic(root: &Path, relpath: &str, bytes: &[u8]) -> anyhow::R
 }
 
 /// Resolve an event to an employee given the (device_id, face_id, employee_no_string)
-/// triple emitted by Hikvision alertStream. Priority: (1) device_face_mappings, then
-/// (2) employees.employee_code == employee_no_string fallback (per A3 in 02-RESEARCH).
+/// pair emitted by Hikvision alertStream.
+///
+/// Both identifiers are matched against `device_face_mappings` before falling
+/// back to `employees.employee_code`, because the device does not consistently
+/// say WHERE it puts the identity. Enrollment pushes our `face_id` as the
+/// device's `UserInfo.employeeNo`, and DS-K1T341CMFW then reports that value
+/// back as `employeeNoString` while sending no `faceID` field at all. Trying
+/// only `faceID` against the mapping meant every correctly enrolled person
+/// resolved to nobody and was stored as `is_unknown` — which
+/// `calc::aggregation` discards outright, so their day computed zero hours.
 pub async fn lookup_employee_for_event(
     conn: &Connection,
     device_id: &str,
     face_id: Option<&str>,
     employee_no_string: Option<&str>,
 ) -> Result<Option<String>, AppError> {
-    // Priority 1: device_face_mappings lookup
-    if let Some(fid) = face_id {
+    // Priority 1: device_face_mappings, keyed by whichever field carried the id.
+    for candidate in [face_id, employee_no_string].into_iter().flatten() {
+        if candidate.is_empty() {
+            continue;
+        }
         let mut rows = conn
             .query(
                 "SELECT employee_id FROM device_face_mappings WHERE device_id = ?1 AND face_id = ?2",
-                params![device_id.to_string(), fid.to_string()],
+                params![device_id.to_string(), candidate.to_string()],
             )
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
@@ -262,7 +391,8 @@ pub async fn lookup_employee_for_event(
         }
     }
 
-    // Priority 2: employees.employee_code == employee_no_string fallback
+    // Priority 2: employees.employee_code == employee_no_string fallback. This
+    // covers people enrolled directly on the device, outside Cronometrix.
     if let Some(ens) = employee_no_string {
         if !ens.is_empty() {
             let mut rows = conn
@@ -292,6 +422,7 @@ pub async fn lookup_employee_for_event(
 pub async fn list(
     conn: &Connection,
     q: EventListQuery,
+    scope: &ActorScope,
 ) -> Result<PaginatedResponse<AttendanceEventResponse>, AppError> {
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let offset = q.offset.unwrap_or(0).max(0);
@@ -299,6 +430,19 @@ pub async fn list(
     let mut predicates: Vec<String> = Vec::new();
     let mut count_values: Vec<libsql::Value> = Vec::new();
     let mut fetch_values: Vec<libsql::Value> = Vec::new();
+
+    // H-11: a scoped actor sees only events whose employee is in its department.
+    // Unknown-face events (NULL employee_id) never match this subquery, so a
+    // scoped actor never sees them (deny-by-default). An unscoped actor (admin /
+    // org-wide) adds no predicate and sees every event.
+    if let Some(dept) = scope.department_id() {
+        predicates.push(format!(
+            "employee_id IN (SELECT id FROM employees WHERE department_id = ?{})",
+            predicates.len() + 1
+        ));
+        count_values.push(libsql::Value::Text(dept.to_string()));
+        fetch_values.push(libsql::Value::Text(dept.to_string()));
+    }
 
     if let Some(emp) = &q.employee_id {
         predicates.push(format!("employee_id = ?{}", predicates.len() + 1));
@@ -402,6 +546,33 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> Result<AttendanceEventRes
     row_to_event(row)
 }
 
+/// H-11: the department the event's (known) employee belongs to. `None` when the
+/// event is an unknown-face capture, its employee row is gone, or the event does
+/// not exist — a scoped actor is denied all three (deny-by-default). The caller
+/// establishes event existence separately (via `get_by_id`) for the 404 body.
+pub async fn department_of_event(
+    conn: &Connection,
+    event_id: &str,
+) -> Result<Option<String>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT e.department_id FROM attendance_events ae \
+             LEFT JOIN employees e ON e.id = ae.employee_id \
+             WHERE ae.id = ?1",
+            params![event_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    match rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        Some(row) => Ok(row.get(0).map_err(|e| AppError::Internal(e.into()))?),
+        None => Ok(None),
+    }
+}
+
 /// Fetch the relative photo path for an event. Returns:
 /// - `NotFound(EVENT_NOT_FOUND)` — the event row itself doesn't exist
 /// - `NotFound(EVENT_PHOTO_NOT_FOUND)` — the event exists but has no photo_path
@@ -481,6 +652,7 @@ mod tests {
                 do_functions_renew_url: String::new(),
                 cors_allowed_origins: Vec::new(),
                 cookie_secure: false,
+                device_push_base_url: String::new(),
             }),
             paths: Arc::new(Paths::for_test(events_root)),
             lifecycle_tx: None,
@@ -557,7 +729,7 @@ mod tests {
             is_unknown: false,
             face_id: Some("42".to_string()),
             employee_no_string: Some("EMP001".to_string()),
-            raw_xml: "<EventNotificationAlert/>".to_string(),
+            raw_payload: "<EventNotificationAlert/>".to_string(),
             photo_bytes: None,
         }
     }
@@ -658,35 +830,33 @@ mod tests {
         );
     }
 
+    /// The column holds whatever the device sent — JSON on current firmware —
+    /// and must survive byte-for-byte for forensic re-parsing (D-12).
     #[tokio::test]
-    async fn persist_raw_xml_round_trip() {
+    async fn persist_raw_payload_round_trip() {
         let tmp = fresh_events_root();
         let state = setup_state(tmp.path()).await;
         let conn = state.db.connect().unwrap();
         seed_device(&conn, "d1").await;
         seed_employee(&conn, "e1", "EMP001").await;
 
-        let xml = "<EventNotificationAlert version=\"2.0\">\
-                   <employeeNoString>EMP001</employeeNoString>\
-                   <faceID>42</faceID>\
-                   <dateTime>2026-04-19T12:34:56+00:00</dateTime>\
-                   </EventNotificationAlert>";
+        let payload = r#"{"eventType":"AccessControllerEvent"}"#;
         let mut ev = sample_event("evt-1", Some("e1"), "d1", "entry", 1000);
-        ev.raw_xml = xml.to_string();
+        ev.raw_payload = payload.to_string();
         let _ = persist_attendance_event_queued(&state, tmp.path(), ev)
             .await
             .unwrap();
 
         let mut rows = conn
             .query(
-                "SELECT raw_xml FROM attendance_events WHERE id = ?1",
+                "SELECT raw_payload FROM attendance_events WHERE id = ?1",
                 params!["evt-1".to_string()],
             )
             .await
             .unwrap();
         let row = rows.next().await.unwrap().expect("row");
         let stored: String = row.get(0).unwrap();
-        assert_eq!(stored, xml, "raw_xml must round-trip byte-for-byte");
+        assert_eq!(stored, payload, "raw_payload must round-trip byte-for-byte");
     }
 
     #[tokio::test]

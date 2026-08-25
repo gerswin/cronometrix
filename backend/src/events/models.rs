@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Read-side representation of an attendance event. Intentionally EXCLUDES
-/// `raw_xml` (T-2-14: raw XML is kept for forensic re-parsing per D-12 but is
-/// NEVER exposed on the public API).
+/// `raw_payload` (T-2-14: the raw device payload is kept for forensic
+/// re-parsing per D-12 but is NEVER exposed on the public API).
 #[derive(Debug, Serialize)]
 pub struct AttendanceEventResponse {
     pub id: String,
@@ -30,7 +30,9 @@ pub struct NewAttendanceEvent {
     pub is_unknown: bool,
     pub face_id: Option<String>,
     pub employee_no_string: Option<String>,
-    pub raw_xml: String,
+    /// Verbatim device payload — JSON on current firmware, XML on older units.
+    /// Kept for forensic re-parsing per D-12 and never exposed on the API.
+    pub raw_payload: String,
     pub photo_bytes: Option<Vec<u8>>, // in-memory; persist helper writes to disk on INSERT success only
 }
 

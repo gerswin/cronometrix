@@ -22,6 +22,7 @@ fn make_config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -67,7 +68,7 @@ fn event(id: &str, employee_id: Option<&str>, captured_at: i64) -> NewAttendance
         is_unknown: employee_id.is_none(),
         face_id: Some("face-events".to_string()),
         employee_no_string: Some("EMP-EVENTS".to_string()),
-        raw_xml: "<EventNotificationAlert/>".to_string(),
+        raw_payload: "<EventNotificationAlert/>".to_string(),
         photo_bytes: None,
     }
 }
@@ -175,7 +176,7 @@ async fn list_and_single_record_reads_cover_unknown_and_photo_edges() {
     conn.execute(
         "INSERT INTO attendance_events \
          (id, employee_id, device_id, direction, captured_at, bucket_30s, is_unknown, \
-          face_id, employee_no_string, raw_xml, photo_path, created_at) VALUES \
+          face_id, employee_no_string, raw_payload, photo_path, created_at) VALUES \
          ('known-event', 'emp-events', 'dev-events', 'entry', 1000, 33, 0, \
           'known-face', 'EMP-EVENTS', '<known/>', '2026/known.jpg', unixepoch()), \
          ('unknown-event', NULL, 'dev-events', 'exit', 2000, 66, 1, \
@@ -196,6 +197,8 @@ async fn list_and_single_record_reads_cover_unknown_and_photo_edges() {
             to: Some(1100),
             include_unknown: Some(false),
         },
+        // H-11: unscoped list preserves this edge-case test's original behaviour.
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -231,4 +234,50 @@ async fn list_and_single_record_reads_cover_unknown_and_photo_edges() {
             ..
         }
     ));
+}
+
+/// The device reports the enrolled identity in `employeeNoString`, not `faceID`.
+///
+/// Enrollment pushes our `face_id` as the device's `UserInfo.employeeNo`, and
+/// DS-K1T341CMFW echoes that value back in `employeeNoString` while sending no
+/// `faceID` field at all. Matching the mapping only against `faceID` left every
+/// correctly enrolled person unresolved — stored as `is_unknown`, which
+/// `calc::aggregation` discards, so their day computed zero hours.
+#[tokio::test]
+async fn lookup_resolves_a_mapping_reported_via_employee_no_string() {
+    let db = common::test_db().await;
+    let conn = db.connect().unwrap();
+    seed_directory(&conn).await;
+
+    let face_id = "8fac76939c404e5894b4df22e74acbbf";
+    conn.execute(
+        "INSERT INTO device_face_mappings (id, device_id, employee_id, face_id, created_at, updated_at) \
+         VALUES ('map-1', 'dev-events', 'emp-events', ?1, unixepoch(), unixepoch())",
+        libsql::params![face_id],
+    )
+    .await
+    .unwrap();
+
+    // What the hardware actually sends: identity in employeeNoString, faceID empty.
+    let via_employee_no = service::lookup_employee_for_event(&conn, "dev-events", Some(""), Some(face_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        via_employee_no.as_deref(),
+        Some("emp-events"),
+        "a mapping reported through employeeNoString must still resolve"
+    );
+
+    // Firmware that does populate faceID keeps working.
+    let via_face_id = service::lookup_employee_for_event(&conn, "dev-events", Some(face_id), Some(""))
+        .await
+        .unwrap();
+    assert_eq!(via_face_id.as_deref(), Some("emp-events"));
+
+    // A mapping belongs to one device; another reader must not borrow it.
+    let other_device =
+        service::lookup_employee_for_event(&conn, "dev-other", Some(""), Some(face_id))
+            .await
+            .unwrap();
+    assert_eq!(other_device, None, "mappings must stay scoped to their device");
 }

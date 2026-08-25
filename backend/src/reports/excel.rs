@@ -4,7 +4,13 @@
 //! - Rows 0-2: Branding header (D-28). Merged title, client name + RIF, period
 //!   range + generated timestamp.
 //! - Row 3: blank spacer.
-//! - Row 4: Column headers (20 columns indexed 0-19, D-14).
+//! - Row 4: Column headers (21 columns indexed 0-20, D-14). Critical-2 fix:
+//!   the `late_deduction_cents` money column ("Descuento Retraso") was
+//!   removed from this sheet — it was rendered as a negative amount
+//!   immediately before "Total a Pagar" even though C-02 stopped subtracting
+//!   it from that total, so the row no longer added up (`money_neg` /
+//!   `subtotal_money_neg` / `grand_money_neg` formats went with it). The
+//!   "Min Retraso" minutes column still carries the discipline metric.
 //! - Row 5+: Per-employee data rows, grouped by department (D-26 sort: dept
 //!   name, then employee name — already imposed by `compute_report` ordering).
 //!   Per-dept subtotal row labeled `Total {Departamento}` (D-27, bold + thin
@@ -29,7 +35,7 @@ use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksh
 use super::models::{Aggregates, EmployeeReportRow, ReportPayload};
 use crate::errors::AppError;
 
-const N_COLS: u16 = 20;
+const N_COLS: u16 = 21;
 
 /// Build the xlsx workbook bytes for the given report payload.
 ///
@@ -50,17 +56,12 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
         .set_align(FormatAlign::Center)
         .set_border(FormatBorder::Thin);
     let money_fmt = Format::new().set_num_format("$#,##0.00");
-    let money_neg = Format::new().set_num_format("$#,##0.00;[Red]-$#,##0.00");
     let int_fmt = Format::new().set_num_format("0");
     let anomaly_tint = Format::new().set_background_color(Color::RGB(0xFEF3C7)); // amber-100 per D-16
     let subtotal_fmt = Format::new().set_bold().set_border_top(FormatBorder::Thin);
     let subtotal_money = Format::new()
         .set_bold()
         .set_num_format("$#,##0.00")
-        .set_border_top(FormatBorder::Thin);
-    let subtotal_money_neg = Format::new()
-        .set_bold()
-        .set_num_format("$#,##0.00;[Red]-$#,##0.00")
         .set_border_top(FormatBorder::Thin);
     let subtotal_int = Format::new()
         .set_bold()
@@ -74,11 +75,6 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
         .set_bold()
         .set_background_color(Color::RGB(0xDBEAFE))
         .set_num_format("$#,##0.00")
-        .set_border_top(FormatBorder::Double);
-    let grand_money_neg = Format::new()
-        .set_bold()
-        .set_background_color(Color::RGB(0xDBEAFE))
-        .set_num_format("$#,##0.00;[Red]-$#,##0.00")
         .set_border_top(FormatBorder::Double);
     let grand_int = Format::new()
         .set_bold()
@@ -148,13 +144,14 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
         "Pago Extra",
         "Prima Nocturna",
         "Recargo Domingo",
-        "Descuento Retraso",
         "Total a Pagar",
         "Días IVSS",
         "Días Vacación",
         "Días Permiso",
         "Días No Remunerado",
         "Anomalías",
+        "Min Esperados",
+        "Min Déficit (hábiles)",
     ];
     for (i, label) in cols.iter().enumerate() {
         sheet
@@ -180,7 +177,7 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
                     AppError::Internal(anyhow::anyhow!("xlsx set_row_format: {}", e))
                 })?;
             }
-            write_employee_row(sheet, row, emp, &plain, &money_fmt, &money_neg, &int_fmt)?;
+            write_employee_row(sheet, row, emp, &plain, &money_fmt, &int_fmt)?;
             row += 1;
         }
 
@@ -189,14 +186,7 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
             sheet
                 .write_with_format(row, 1, format!("Total {}", dept.name), &subtotal_fmt)
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("xlsx subtotal label: {}", e)))?;
-            write_aggregate_row(
-                sheet,
-                row,
-                &sub.aggregates,
-                &subtotal_int,
-                &subtotal_money,
-                &subtotal_money_neg,
-            )?;
+            write_aggregate_row(sheet, row, &sub.aggregates, &subtotal_int, &subtotal_money)?;
             row += 1;
         }
         row += 1; // blank spacer between departments
@@ -206,14 +196,7 @@ pub fn build_workbook(payload: &ReportPayload) -> Result<Vec<u8>, AppError> {
     sheet
         .write_with_format(row, 1, "Total General", &grand_fmt)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("xlsx grand label: {}", e)))?;
-    write_aggregate_row(
-        sheet,
-        row,
-        &payload.grand_total,
-        &grand_int,
-        &grand_money,
-        &grand_money_neg,
-    )?;
+    write_aggregate_row(sheet, row, &payload.grand_total, &grand_int, &grand_money)?;
 
     sheet
         .set_freeze_panes(5, 0)
@@ -231,7 +214,6 @@ fn write_employee_row(
     emp: &EmployeeReportRow,
     plain: &Format,
     money_fmt: &Format,
-    money_neg: &Format,
     int_fmt: &Format,
 ) -> Result<(), AppError> {
     fn to_dash(s: &str) -> &str {
@@ -307,32 +289,30 @@ fn write_employee_row(
         .write_with_format(
             row,
             13,
-            -(emp.aggregates.late_deduction_cents as f64 / 100.0),
-            money_neg,
-        )
-        .map_err(map_err)?;
-    sheet
-        .write_with_format(
-            row,
-            14,
             emp.aggregates.total_a_pagar_cents as f64 / 100.0,
             money_fmt,
         )
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 15, emp.aggregates.days_ivss as f64, int_fmt)
+        .write_with_format(row, 14, emp.aggregates.days_ivss as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 16, emp.aggregates.days_vacation as f64, int_fmt)
+        .write_with_format(row, 15, emp.aggregates.days_vacation as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 17, emp.aggregates.days_permission as f64, int_fmt)
+        .write_with_format(row, 16, emp.aggregates.days_permission as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 18, emp.aggregates.days_unpaid as f64, int_fmt)
+        .write_with_format(row, 17, emp.aggregates.days_unpaid as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 19, emp.anomaly_codes.join(", "), plain)
+        .write_with_format(row, 18, emp.anomaly_codes.join(", "), plain)
+        .map_err(map_err)?;
+    sheet
+        .write_with_format(row, 19, emp.aggregates.expected_min as f64, int_fmt)
+        .map_err(map_err)?;
+    sheet
+        .write_with_format(row, 20, emp.aggregates.deficit_min as f64, int_fmt)
         .map_err(map_err)?;
     Ok(())
 }
@@ -343,7 +323,6 @@ fn write_aggregate_row(
     a: &Aggregates,
     int_fmt: &Format,
     money_fmt: &Format,
-    money_neg: &Format,
 ) -> Result<(), AppError> {
     let map_err =
         |e: rust_xlsxwriter::XlsxError| AppError::Internal(anyhow::anyhow!("xlsx write: {}", e));
@@ -381,22 +360,25 @@ fn write_aggregate_row(
         )
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 13, -(a.late_deduction_cents as f64 / 100.0), money_neg)
+        .write_with_format(row, 13, a.total_a_pagar_cents as f64 / 100.0, money_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 14, a.total_a_pagar_cents as f64 / 100.0, money_fmt)
+        .write_with_format(row, 14, a.days_ivss as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 15, a.days_ivss as f64, int_fmt)
+        .write_with_format(row, 15, a.days_vacation as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 16, a.days_vacation as f64, int_fmt)
+        .write_with_format(row, 16, a.days_permission as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 17, a.days_permission as f64, int_fmt)
+        .write_with_format(row, 17, a.days_unpaid as f64, int_fmt)
         .map_err(map_err)?;
     sheet
-        .write_with_format(row, 18, a.days_unpaid as f64, int_fmt)
+        .write_with_format(row, 19, a.expected_min as f64, int_fmt)
+        .map_err(map_err)?;
+    sheet
+        .write_with_format(row, 20, a.deficit_min as f64, int_fmt)
         .map_err(map_err)?;
     Ok(())
 }

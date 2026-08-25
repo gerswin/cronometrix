@@ -84,6 +84,33 @@ pub fn test_access_token(user_id: &str, role: &str) -> String {
     .expect("Failed to create test token")
 }
 
+/// Like `test_access_token` but carries an optional department scope (H-11).
+/// `department_id = None` mints an unscoped (org-wide) token, matching the
+/// pre-scope behaviour; `Some(id)` scopes it to that department.
+pub fn test_access_token_scoped(user_id: &str, role: &str, department_id: Option<&str>) -> String {
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde_json::json;
+
+    let mut claims = json!({
+        "sub": user_id,
+        "role": role,
+        "exp": chrono::Utc::now().timestamp() + 3600,
+        "iat": chrono::Utc::now().timestamp(),
+        "jti": uuid::Uuid::new_v4().to_string(),
+        "token_type": "access"
+    });
+    if let Some(dept) = department_id {
+        claims["department_id"] = json!(dept);
+    }
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .expect("Failed to create scoped test token")
+}
+
 /// Create a test admin user directly in the database.
 /// Returns the user ID.
 pub async fn create_test_admin(db: &libsql::Database) -> String {
@@ -402,22 +429,14 @@ pub async fn mock_hikvision_server() -> wiremock::MockServer {
         .mount(&server)
         .await;
 
-    // CaptureFaceData — enter enrollment mode
+    // CaptureFaceData — opens the capture window AND returns the JPEG inline in a
+    // multipart body. There is no second request: real DS-K1T341CMFW firmware
+    // answers `GET CapturedFacePicture` with 404 `notSupport`.
     Mock::given(method("POST"))
         .and(path("/ISAPI/AccessControl/CaptureFaceData"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_string(r#"{"statusCode":1,"statusString":"OK"}"#),
-        )
-        .mount(&server)
-        .await;
-
-    // CapturedFacePicture — return a sample JPEG
-    Mock::given(method("GET"))
-        .and(path("/ISAPI/AccessControl/CapturedFacePicture"))
-        .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("Content-Type", "image/jpeg")
-                .set_body_bytes(sample_face_jpeg_50kb()),
+                .set_body_bytes(include_bytes!("../fixtures/capture_face_data_multipart.bin").to_vec()),
         )
         .mount(&server)
         .await;

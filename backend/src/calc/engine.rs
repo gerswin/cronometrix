@@ -6,7 +6,7 @@
 
 use chrono::Datelike;
 
-use super::aggregation::{aggregate_events, shift_window_with_ambiguity};
+use super::aggregation::{aggregate_events, pair_work_intervals, shift_window_with_ambiguity};
 use super::anomalies::AnomalyCode;
 use super::lunch::compute_lunch_deduction;
 use super::models::{DailyRecordOutput, EngineInput};
@@ -67,14 +67,66 @@ pub fn compute_daily_record(input: &EngineInput) -> DailyRecordOutput {
             (0_i64, 0_i64, 0_i64)
         }
         (Some(ent), Some(exi)) => {
-            let raw_minutes = ((exi - ent) / 60).max(0);
-            let (lunch_ded, lunch_anom) = compute_lunch_deduction(&agg, &input.dept);
+            // M-03: pair every entry with its exit instead of taking the
+            // window's extremes — a long absence in the middle of the day
+            // (e.g. entry, exit-at-noon, entry, exit-at-close) must not be
+            // counted as worked time, and several disjoint blocks of work
+            // must not collapse into one span covering the gaps between
+            // them. See `aggregation::pair_work_intervals` for the full
+            // policy, including the two decisions below.
+            let (intervals, has_open_entry) =
+                pair_work_intervals(&agg.entries_in_window, &agg.exits_in_window);
+
+            // M-03 odd-punch decision: entry, exit, entry, and no final exit
+            // is a defined outcome, not an accident of the pairing scan. The
+            // dangling entry has nothing to pair with, so it contributes no
+            // worked minutes; MISSING_EXIT is raised — the same code used
+            // when the whole window lacks an exit, because from this
+            // entry's point of view it does.
+            if has_open_entry {
+                anomalies.push(AnomalyCode::MissingExit);
+            }
+
+            let raw_seconds: i64 = intervals.iter().map(|(s, e)| (e - s).max(0)).sum();
+            let raw_minutes = (raw_seconds / 60).max(0);
+            let had_mid_shift_break = intervals.len() > 1;
+            let (lunch_ded, lunch_anom) =
+                compute_lunch_deduction(raw_minutes, had_mid_shift_break, &input.dept);
             if let Some(a) = lunch_anom {
                 anomalies.push(a);
             }
             let work = (raw_minutes - lunch_ded).max(0);
-            let late = (((ent - nominal_start).max(0)) / 60).max(0);
-            let early = (((nominal_end - exi).max(0)) / 60).max(0);
+
+            // H-01: the configured tolerance never affected lateness — it only
+            // ever widened the event-capture window (calc/overnight.rs). With a
+            // 10-minute tolerance, entering at 08:01 produced late = 1.
+            //
+            // The rule is a CLIFF, not a subtraction (QA-GUIDE §21.2, cases
+            // R1.1-R1.8): inside the grace period lateness is zero; past the
+            // grace period it is the FULL amount measured from the nominal
+            // shift boundary, not the excess over the grace. With tol=10 and
+            // bonus=5, entering at 08:16 is 16 minutes of lateness, not 1.
+            //
+            // The bonus is grace *additional* to the tolerance, not a
+            // replacement for it.
+            let late_grace_s = (input.rules.late_arrival_tolerance_min + input.rules.bonus_minutes)
+                * 60;
+            let raw_late_s = (ent - nominal_start).max(0);
+            let late = if raw_late_s > late_grace_s {
+                (raw_late_s / 60).max(0)
+            } else {
+                0
+            };
+
+            let early_grace_s = (input.rules.early_departure_tolerance_min
+                + input.rules.bonus_minutes)
+                * 60;
+            let raw_early_s = (nominal_end - exi).max(0);
+            let early = if raw_early_s > early_grace_s {
+                (raw_early_s / 60).max(0)
+            } else {
+                0
+            };
             (work, late, early)
         }
     };

@@ -2,7 +2,7 @@
 # Usage:
 #   make coverage           — run both backend + frontend coverage; fail on threshold miss
 #   make coverage-backend   — backend only (cargo-llvm-cov + lcov post-processor)
-#   make coverage-frontend  — frontend only (Vitest with --coverage)
+#   make coverage-frontend  — frontend only (Vitest with --coverage + per-file floor post-processor)
 #
 # The same commands are invoked by .github/workflows/ci.yml so local and CI runs
 # produce the same numbers (within toolchain version tolerance).
@@ -34,9 +34,11 @@ coverage-backend: check-db-write-queue
 
 coverage-frontend:
 	cd frontend && npx vitest run --coverage
+	node scripts/enforce-frontend-file-floor.mjs
 	@echo "Frontend HTML: frontend/coverage/index.html"
 
 container-smoke:
+	bash deploy/tests/backup-restore-test.sh
 	bash deploy/tests/compose-smoke.sh
 
 .PHONY: e2e e2e-install e2e-build

@@ -37,6 +37,7 @@ fn make_config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -122,6 +123,8 @@ fn device_cfg(id: &str, addr: std::net::SocketAddr) -> DeviceConfig {
         password: "secret".into(),
         direction_default: "entry".into(),
         allow_insecure_tls: false,
+        ingest_mode: "stream".into(),
+        push_token: None,
     }
 }
 
@@ -152,7 +155,7 @@ async fn connect_and_stream_persists_one_event() {
     let conn = state.db.connect().unwrap();
     let mut rows = conn
         .query(
-            "SELECT employee_id, direction, raw_xml, photo_path, is_unknown FROM attendance_events WHERE device_id = 'd1'",
+            "SELECT employee_id, direction, raw_payload, photo_path, is_unknown FROM attendance_events WHERE device_id = 'd1'",
             (),
         )
         .await
@@ -164,13 +167,13 @@ async fn connect_and_stream_persists_one_event() {
         .expect("must have at least one row");
     let employee_id: Option<String> = row.get(0).unwrap();
     let direction: String = row.get(1).unwrap();
-    let raw_xml: String = row.get(2).unwrap();
+    let raw_payload: String = row.get(2).unwrap();
     let photo_path: Option<String> = row.get(3).unwrap();
     let is_unknown: i64 = row.get(4).unwrap();
 
     assert_eq!(employee_id.as_deref(), Some("e1"));
     assert_eq!(direction, "entry");
-    assert!(raw_xml.contains("<EventNotificationAlert"));
+    assert!(raw_payload.contains("<EventNotificationAlert"));
     assert_eq!(is_unknown, 0);
     let relpath = photo_path.expect("photo_path populated");
     let on_disk = state.paths.events_root.join(&relpath);

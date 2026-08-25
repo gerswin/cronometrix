@@ -32,6 +32,7 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
@@ -292,7 +293,9 @@ async fn department_employee_one_to_one_enforced() {
             json!({
                 "employee_code": "HR001",
                 "name": "Frank HR",
-                "department_id": dept_id
+                "department_id": dept_id,
+                "base_salary_cents": 100000,
+                "salary_kind": "daily"
             })
             .to_string(),
         ))

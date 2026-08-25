@@ -9,7 +9,7 @@
 use super::excel;
 use super::models::{ReportParamsRequest, ReportPayload};
 use super::service;
-use crate::{auth::rbac::AuthUser, errors::AppError, state::AppState};
+use crate::{auth::rbac::AuthUser, auth::scope::ActorScope, errors::AppError, state::AppState};
 use axum::{
     extract::State,
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -24,12 +24,15 @@ use validator::Validate;
 pub async fn generate_json(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
-    Json(params): Json<ReportParamsRequest>,
+    Json(mut params): Json<ReportParamsRequest>,
 ) -> Result<Json<ReportPayload>, AppError> {
     params.validate().map_err(|e| AppError::Validation {
         code: "VALIDATION_ERROR",
         message: e.to_string(),
     })?;
+    // H-11: confine the report to the actor's department (imposed, not trusted).
+    let scope = ActorScope::from_claims(&claims);
+    params.department_ids = service::scoped_department_ids(&scope, params.department_ids.take());
     let payload = service::compute_report(&state, &params).await?;
     service::record_export(&state, &claims.sub, &params, "json").await?;
     Ok(Json(payload))
@@ -50,13 +53,16 @@ pub async fn generate_json(
 pub async fn generate_excel(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
-    Json(params): Json<ReportParamsRequest>,
+    Json(mut params): Json<ReportParamsRequest>,
 ) -> Result<axum::response::Response, AppError> {
     params.validate().map_err(|e| AppError::Validation {
         code: "VALIDATION_ERROR",
         message: e.to_string(),
     })?;
 
+    // H-11: confine the report to the actor's department (imposed, not trusted).
+    let scope = ActorScope::from_claims(&claims);
+    params.department_ids = service::scoped_department_ids(&scope, params.department_ids.take());
     let payload = service::compute_report(&state, &params).await?;
 
     // Pitfall 6: spawn_blocking to avoid blocking the async runtime. The xlsx

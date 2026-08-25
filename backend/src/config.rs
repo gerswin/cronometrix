@@ -39,6 +39,14 @@ pub struct Config {
     /// HTTPS). Set `COOKIE_SECURE=false` in dev `.env` so the cookie is
     /// accepted on `http://localhost`. Production deploys MUST keep this true.
     pub cookie_secure: bool,
+    /// Base URL the DEVICE uses to reach this backend, e.g.
+    /// `http://192.168.1.138:3001`.
+    ///
+    /// Cannot be derived from `server_host`: that is a bind address, and the
+    /// usual `0.0.0.0` is not a destination anything can connect to. Empty by
+    /// default so a misconfigured deployment skips webhook provisioning with a
+    /// warning instead of pointing a reader at an address that does not answer.
+    pub device_push_base_url: String,
 }
 
 impl fmt::Debug for Config {
@@ -60,6 +68,7 @@ impl fmt::Debug for Config {
             .field("do_functions_renew_url", &self.do_functions_renew_url)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("cookie_secure", &self.cookie_secure)
+            .field("device_push_base_url", &self.device_push_base_url)
             .finish()
     }
 }
@@ -93,6 +102,11 @@ impl Config {
             .unwrap_or_else(|_| "300".to_string())
             .parse::<u64>()
             .context("TURSO_SYNC_INTERVAL must be a valid number of seconds")?;
+
+        let device_push_base_url = std::env::var("CRONOMETRIX_DEVICE_PUSH_BASE_URL")
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string();
 
         let device_creds_key = load_device_creds_key()?;
 
@@ -138,6 +152,7 @@ impl Config {
             do_functions_renew_url,
             cors_allowed_origins,
             cookie_secure,
+            device_push_base_url,
         })
     }
 

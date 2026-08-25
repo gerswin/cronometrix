@@ -30,6 +30,7 @@ fn config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -51,6 +52,7 @@ fn admin_claims(actor_id: &str) -> Claims {
     Claims {
         sub: actor_id.into(),
         role: Role::Admin,
+        department_id: None,
         exp: now + 3600,
         iat: now,
         jti: uuid::Uuid::new_v4().to_string(),

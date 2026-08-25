@@ -53,8 +53,37 @@ fn row_to_user(row: libsql::Row) -> Result<User, AppError> {
 const SELECT_COLS: &str =
     "id, username, full_name, role, status, deleted_at, version, created_at, updated_at";
 
+/// H-11: verify a department exists before binding a user to it, so an invalid
+/// scope is a clean 422 rather than a raw FK error.
+async fn ensure_department_exists(state: &AppState, dept_id: &str) -> Result<(), AppError> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let exists = conn
+        .query(
+            "SELECT id FROM departments WHERE id = ?1",
+            params![dept_id.to_string()],
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if exists.is_none() {
+        return Err(AppError::Validation {
+            code: "DEPARTMENT_NOT_FOUND",
+            message: format!("Department '{}' not found", dept_id),
+        });
+    }
+    Ok(())
+}
+
 pub async fn create(state: &AppState, req: CreateUserRequest) -> Result<User, AppError> {
     validate_role(&req.role)?;
+    if let Some(dept_id) = req.department_id.as_deref() {
+        ensure_department_exists(state, dept_id).await?;
+    }
     let password_hash = auth_service::hash_password(&req.password)?;
     let id = Uuid::new_v4().to_string();
 
@@ -63,14 +92,18 @@ pub async fn create(state: &AppState, req: CreateUserRequest) -> Result<User, Ap
         .statement(
             "users.create",
             "INSERT INTO users \
-             (id, username, full_name, password_hash, role, status, version, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, unixepoch(), unixepoch())",
+             (id, username, full_name, password_hash, role, department_id, status, version, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 1, unixepoch(), unixepoch())",
             vec![
                 libsql::Value::Text(id.clone()),
                 libsql::Value::Text(req.username.clone()),
                 libsql::Value::Text(req.full_name.clone()),
                 libsql::Value::Text(password_hash),
                 libsql::Value::Text(req.role.clone()),
+                match req.department_id.clone() {
+                    Some(d) => libsql::Value::Text(d),
+                    None => libsql::Value::Null,
+                },
             ],
         )
         .await;
@@ -231,6 +264,20 @@ pub async fn update(
     if let Some(status) = req.status {
         sets.push(format!("status = ?{}", values.len() + 1));
         values.push(libsql::Value::Text(status));
+    }
+    // H-11 tri-state department scope: Some(Some(id)) assigns, Some(None) clears
+    // to NULL (org-wide), None (field omitted) leaves it untouched.
+    if let Some(dept) = req.department_id {
+        match dept {
+            Some(dept_id) => {
+                ensure_department_exists(state, &dept_id).await?;
+                sets.push(format!("department_id = ?{}", values.len() + 1));
+                values.push(libsql::Value::Text(dept_id));
+            }
+            None => {
+                sets.push("department_id = NULL".to_string());
+            }
+        }
     }
 
     if sets.is_empty() {

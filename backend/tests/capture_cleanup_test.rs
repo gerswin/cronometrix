@@ -27,6 +27,7 @@ fn make_config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -47,13 +48,16 @@ fn capture(status: &str, created_at: Instant, terminal_at: Option<Instant>) -> C
     }
 }
 
+/// The deadline is pinned to `CAPTURING_TTL` rather than a hardcoded number, so
+/// raising the TTL for real hardware (which needs several ~6s capture windows)
+/// cannot silently leave this test asserting the old ceiling.
 #[tokio::test]
-async fn capture_cleanup_expires_stuck_capturing_at_45_seconds() {
+async fn capture_cleanup_expires_stuck_capturing_at_ttl() {
     let (state, _tmp) = state().await;
     let now = Instant::now();
     state.captures.write().await.insert(
         "stuck".into(),
-        capture("capturing", now - Duration::from_secs(45), None),
+        capture("capturing", now - capture_cleanup::CAPTURING_TTL, None),
     );
 
     capture_cleanup::cleanup_once(

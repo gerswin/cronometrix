@@ -38,6 +38,7 @@ fn make_config() -> Arc<Config> {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     })
 }
 
@@ -296,6 +297,7 @@ async fn list_filter_by_leave_type() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -339,6 +341,7 @@ async fn list_filter_by_employee_id() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -374,6 +377,7 @@ async fn list_overlap_window_via_from_to() {
             from_date: Some("2026-05-01".into()),
             to_date: Some("2026-05-15".into()),
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -390,6 +394,7 @@ async fn list_overlap_window_via_from_to() {
             from_date: Some("2026-04-22".into()),
             to_date: Some("2026-04-30".into()),
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();
@@ -412,6 +417,7 @@ async fn list_pagination_clamps() {
             from_date: None,
             to_date: None,
         },
+        &cronometrix_api::auth::scope::ActorScope::Unscoped,
     )
     .await
     .unwrap();

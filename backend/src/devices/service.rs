@@ -8,7 +8,8 @@ use crate::state::AppState;
 use super::crypto;
 use super::models::{
     validate_direction, validate_ip, validate_scheme, validate_status, Command,
-    CreateDeviceRequest, DeviceListQuery, DeviceResponse, DeviceWithPlaintext, UpdateDeviceRequest,
+    CreateDeviceRequest, DeviceListQuery, DeviceResponse, DeviceWithPlaintext,
+    PushInboxFailedEntry, UpdateDeviceRequest,
 };
 
 /// Outcome tag written to `command_audit_log.outcome`.
@@ -398,7 +399,7 @@ pub async fn get_decrypted(
     let row = conn
         .query(
             "SELECT id, name, ip, port, scheme, username, encrypted_password, \
-                    direction, allow_insecure_tls, status, version \
+                    direction, allow_insecure_tls, status, version, ingest_mode, push_token \
              FROM devices WHERE id = ?1 AND status = 'active'",
             params![id.to_string()],
         )
@@ -423,6 +424,8 @@ pub async fn get_decrypted(
     let allow_int: i64 = row.get(8).map_err(|e| AppError::Internal(e.into()))?;
     let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
     let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
+    let ingest_mode: String = row.get(11).map_err(|e| AppError::Internal(e.into()))?;
+    let push_token: Option<String> = row.get(12).map_err(|e| AppError::Internal(e.into()))?;
 
     let password = crypto::decrypt_password(&encrypted, key).map_err(AppError::Internal)?;
 
@@ -436,6 +439,8 @@ pub async fn get_decrypted(
         allow_insecure_tls: allow_int != 0,
         status,
         version,
+        ingest_mode,
+        push_token,
     })
 }
 
@@ -455,7 +460,7 @@ pub async fn list_active(
     let mut rows = conn
         .query(
             "SELECT id, name, ip, port, scheme, username, encrypted_password, \
-                    direction, allow_insecure_tls, status, version \
+                    direction, allow_insecure_tls, status, version, ingest_mode, push_token \
              FROM devices WHERE status = 'active' AND deleted_at IS NULL \
              ORDER BY created_at ASC",
             (),
@@ -480,6 +485,8 @@ pub async fn list_active(
         let allow_int: i64 = row.get(8).map_err(|e| AppError::Internal(e.into()))?;
         let status: String = row.get(9).map_err(|e| AppError::Internal(e.into()))?;
         let version: i64 = row.get(10).map_err(|e| AppError::Internal(e.into()))?;
+        let ingest_mode: String = row.get(11).map_err(|e| AppError::Internal(e.into()))?;
+        let push_token: Option<String> = row.get(12).map_err(|e| AppError::Internal(e.into()))?;
 
         match crypto::decrypt_password(&encrypted, key) {
             Ok(password) => out.push(DeviceWithPlaintext {
@@ -492,6 +499,8 @@ pub async fn list_active(
                 allow_insecure_tls: allow_int != 0,
                 status,
                 version,
+                ingest_mode,
+                push_token,
             }),
             Err(e) => {
                 tracing::error!(
@@ -558,4 +567,44 @@ pub async fn write_command_audit_queued(
         .await
         .map_err(AppError::from)?;
     Ok(())
+}
+
+/// `GET /api/v1/devices/push-inbox/failed` — the C-10 dead-letter view.
+///
+/// Deliberately excludes `body`: it can carry a face JPEG, and this is a
+/// diagnostics route (min role `supervisor` via `require_supervisor_or_above`),
+/// not a biometrics one. Capped at 200 rows, most-recently-received first —
+/// this is an operator triage view, not a paginated archive; a backlog past
+/// that size is itself the incident to investigate.
+pub async fn list_push_inbox_failed(
+    conn: &Connection,
+) -> Result<Vec<PushInboxFailedEntry>, AppError> {
+    let mut rows = conn
+        .query(
+            "SELECT id, device_id, received_at, attempts, last_error \
+             FROM device_push_inbox \
+             WHERE status = 'failed' \
+             ORDER BY received_at DESC \
+             LIMIT 200",
+            (),
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut out = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        let received_at: i64 = row.get(2).map_err(|e| AppError::Internal(e.into()))?;
+        out.push(PushInboxFailedEntry {
+            id: row.get(0).map_err(|e| AppError::Internal(e.into()))?,
+            device_id: row.get(1).map_err(|e| AppError::Internal(e.into()))?,
+            received_at: epoch_to_iso(received_at),
+            attempts: row.get(3).map_err(|e| AppError::Internal(e.into()))?,
+            last_error: row.get(4).map_err(|e| AppError::Internal(e.into()))?,
+        });
+    }
+    Ok(out)
 }

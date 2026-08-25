@@ -8,12 +8,20 @@ import autoTable from 'jspdf-autotable'
 import type { ReportPayload } from '@/types/api'
 import { fmtMoney } from '@/lib/format/currency'
 
+// Critical 2 fix: 'Desc Retr' (late_deduction_cents, rendered as a negative
+// amount) was removed. C-02 stopped subtracting it from 'Total', so showing
+// it as "-$X.XX" right before the total made the row not add up — a payroll
+// clerk keying from this column would (correctly, per the minus sign) net
+// it out by hand and reintroduce C-02. 'Min Retr' still carries the
+// discipline metric this column existed to surface.
 const COLUMN_HEADERS = [
   'Cédula',
   'Nombre',
   'Depto',
   'Cargo',
   'Min Trab',
+  'Min Esperados',
+  'Min Déficit (hábiles)',
   'Min Extra',
   'Min Retr',
   'Días T',
@@ -22,7 +30,6 @@ const COLUMN_HEADERS = [
   'Pago Extra',
   'Prima Noc',
   'Recargo Dom',
-  'Desc Retr',
   'Total',
   'IVSS',
   'Vac',
@@ -80,6 +87,8 @@ export function renderReportPdf(payload: ReportPayload): void {
         r.departamento,
         r.cargo || '—',
         r.work_min,
+        r.expected_min,
+        r.deficit_min,
         r.ot_min,
         r.late_min,
         r.days_worked,
@@ -88,7 +97,6 @@ export function renderReportPdf(payload: ReportPayload): void {
         fmtMoney(r.ot_pay_cents),
         fmtMoney(r.night_premium_cents),
         fmtMoney(r.rest_day_surcharge_cents),
-        '-' + fmtMoney(r.late_deduction_cents),
         fmtMoney(r.total_a_pagar_cents),
         r.days_ivss,
         r.days_vacation,
@@ -105,6 +113,8 @@ export function renderReportPdf(payload: ReportPayload): void {
         '',
         '',
         sub.aggregates.work_min,
+        sub.aggregates.expected_min,
+        sub.aggregates.deficit_min,
         sub.aggregates.ot_min,
         sub.aggregates.late_min,
         sub.aggregates.days_worked,
@@ -113,7 +123,6 @@ export function renderReportPdf(payload: ReportPayload): void {
         fmtMoney(sub.aggregates.ot_pay_cents),
         fmtMoney(sub.aggregates.night_premium_cents),
         fmtMoney(sub.aggregates.rest_day_surcharge_cents),
-        '-' + fmtMoney(sub.aggregates.late_deduction_cents),
         fmtMoney(sub.aggregates.total_a_pagar_cents),
         sub.aggregates.days_ivss,
         sub.aggregates.days_vacation,
@@ -131,6 +140,8 @@ export function renderReportPdf(payload: ReportPayload): void {
     '',
     '',
     g.work_min,
+    g.expected_min,
+    g.deficit_min,
     g.ot_min,
     g.late_min,
     g.days_worked,
@@ -139,7 +150,6 @@ export function renderReportPdf(payload: ReportPayload): void {
     fmtMoney(g.ot_pay_cents),
     fmtMoney(g.night_premium_cents),
     fmtMoney(g.rest_day_surcharge_cents),
-    '-' + fmtMoney(g.late_deduction_cents),
     fmtMoney(g.total_a_pagar_cents),
     g.days_ivss,
     g.days_vacation,
@@ -164,7 +174,7 @@ export function renderReportPdf(payload: ReportPayload): void {
       const raw = hook.row.raw as (string | number)[]
       if (hook.section !== 'body') return
       const labelCell = String(raw[1] ?? '')
-      const anomalyText = String(raw[19] ?? '')
+      const anomalyText = String(raw[20] ?? '')
       if (labelCell === 'TOTAL GENERAL') {
         hook.cell.styles.fontStyle = 'bold'
         hook.cell.styles.fillColor = [219, 234, 254] // blue-100

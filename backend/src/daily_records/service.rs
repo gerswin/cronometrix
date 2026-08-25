@@ -13,6 +13,7 @@ use chrono::{Datelike, NaiveDate};
 use chrono_tz::Tz;
 use libsql::{params, Connection};
 
+use crate::auth::scope::ActorScope;
 use crate::calc::models::{AttendanceEventRow, DepartmentConfig, GlobalRulesRow};
 use crate::calc::{self, EngineInput};
 use crate::common::{epoch_to_iso, epoch_to_iso_opt, PaginatedResponse};
@@ -120,12 +121,36 @@ pub async fn recompute_for_day(
     let (window_start, window_end, _ns, _ne) =
         calc::aggregation::shift_window(anchor_date, &dept, &rules, tz);
 
+    //    M-02: an unknown-face event used to be pulled into *every* employee's
+    //    recompute for the window, tied to nothing but the timestamp — one
+    //    stranger's face could raise UNKNOWN_FACE_IN_WINDOW on dozens of
+    //    workers at once, which trains operators to ignore the anomaly.
+    //    Scope it: only pull an unknown event whose `device_id` also appears
+    //    among this employee's own events in the same window (the inner
+    //    SELECT). That set can be empty — the employee has no events in the
+    //    window at all, e.g. they were absent. In that case the anomaly is
+    //    SUPPRESSED, not emitted: there is no device to compare against, and
+    //    emitting anyway would recreate the original defect (flagging every
+    //    absent employee in the installation with one stranger's face). The
+    //    tradeoff is that an unknown face at a device nobody clocked into
+    //    that day goes unreported for this employee — acceptable, because it
+    //    is still reported for whichever employees *did* share that device
+    //    and window.
     let mut ev_rows = conn
         .query(
             "SELECT id, employee_id, device_id, direction, captured_at, is_unknown \
              FROM attendance_events \
-             WHERE (employee_id = ?1 OR (employee_id IS NULL AND is_unknown = 1)) \
-               AND captured_at BETWEEN ?2 AND ?3",
+             WHERE captured_at BETWEEN ?2 AND ?3 \
+               AND ( \
+                 employee_id = ?1 \
+                 OR ( \
+                   employee_id IS NULL AND is_unknown = 1 \
+                   AND device_id IN ( \
+                     SELECT device_id FROM attendance_events \
+                     WHERE employee_id = ?1 AND captured_at BETWEEN ?2 AND ?3 \
+                   ) \
+                 ) \
+               )",
             params![employee_id.to_string(), window_start, window_end],
         )
         .await
@@ -432,6 +457,7 @@ fn row_to_dr(row: libsql::Row) -> Result<DailyRecordResponse, AppError> {
 pub async fn list(
     conn: &Connection,
     q: DailyRecordListQuery,
+    scope: &ActorScope,
 ) -> Result<PaginatedResponse<DailyRecordResponse>, AppError> {
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let offset = q.offset.unwrap_or(0).max(0);
@@ -439,6 +465,14 @@ pub async fn list(
     let mut predicates: Vec<String> = Vec::new();
     let mut count_values: Vec<libsql::Value> = Vec::new();
     let mut fetch_values: Vec<libsql::Value> = Vec::new();
+
+    // H-11: a scoped actor sees only its department's daily records
+    // (daily_records carries department_id denormalized). Unscoped adds nothing.
+    if let Some(dept) = scope.department_id() {
+        predicates.push(format!("dr.department_id = ?{}", predicates.len() + 1));
+        count_values.push(libsql::Value::Text(dept.to_string()));
+        fetch_values.push(libsql::Value::Text(dept.to_string()));
+    }
 
     if let Some(emp) = &q.employee_id {
         predicates.push(format!("dr.employee_id = ?{}", predicates.len() + 1));

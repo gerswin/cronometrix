@@ -113,6 +113,8 @@ async fn seed_enrollment_scenario(
             allow_insecure_tls: true,
             status: "active".to_string(),
             version: 1,
+            ingest_mode: "stream".into(),
+            push_token: None,
         });
     }
 
@@ -380,6 +382,7 @@ fn build_test_state(db: libsql::Database) -> (cronometrix_api::state::AppState, 
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     common::test_state_with_tmpdir(Arc::new(db), config)
 }

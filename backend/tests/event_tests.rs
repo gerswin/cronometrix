@@ -54,6 +54,7 @@ async fn build_test_app(db: libsql::Database) -> (Router, AppState, TempDir) {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
@@ -251,7 +252,7 @@ async fn seed_event(
         is_unknown: employee_id.is_none(),
         face_id: Some("42".to_string()),
         employee_no_string: Some("EMP001".to_string()),
-        raw_xml: "<EventNotificationAlert/>".to_string(),
+        raw_payload: "<EventNotificationAlert/>".to_string(),
         photo_bytes,
     };
     persist_attendance_event_queued(state, &state.paths.events_root, ev)
@@ -269,7 +270,7 @@ fn sse_event(id: &str, employee_id: Option<&str>, with_photo: bool) -> NewAttend
         is_unknown: employee_id.is_none(),
         face_id: None,
         employee_no_string: None,
-        raw_xml: "<EventNotificationAlert/>".to_string(),
+        raw_payload: "<EventNotificationAlert/>".to_string(),
         photo_bytes: with_photo.then(|| vec![0xff, 0xd8, 0xff]),
     }
 }
@@ -292,7 +293,7 @@ async fn duplicate_queued_event_leaves_no_second_photo() {
         is_unknown: false,
         face_id: Some("face-1".into()),
         employee_no_string: Some("EMP-DEDUP".into()),
-        raw_xml: "<first/>".into(),
+        raw_payload: "<first/>".into(),
         photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x01]),
     };
     let duplicate = NewAttendanceEvent {
@@ -304,7 +305,7 @@ async fn duplicate_queued_event_leaves_no_second_photo() {
         is_unknown: false,
         face_id: Some("face-1".into()),
         employee_no_string: Some("EMP-DEDUP".into()),
-        raw_xml: "<duplicate/>".into(),
+        raw_payload: "<duplicate/>".into(),
         photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x02]),
     };
 
@@ -366,7 +367,7 @@ async fn cancelled_event_future_after_job_admission_keeps_committed_photo() {
         is_unknown: false,
         face_id: Some("face-cancelled".into()),
         employee_no_string: Some("EMP-CANCELLED".into()),
-        raw_xml: "<cancelled/>".into(),
+        raw_payload: "<cancelled/>".into(),
         photo_bytes: Some(vec![0xFF, 0xD8, 0xFF, 0x03]),
     };
     let event_state = state.clone();
@@ -465,6 +466,7 @@ async fn sse_enrichment_failure_broadcasts_fallback_without_undoing_persisted_ev
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let conn = state.db.connect().unwrap();
@@ -871,7 +873,7 @@ async fn get_event_photo_rejects_path_traversal() {
         conn.execute(
             "INSERT INTO attendance_events \
              (id, employee_id, device_id, direction, captured_at, bucket_30s, \
-              is_unknown, face_id, employee_no_string, raw_xml, photo_path, created_at) \
+              is_unknown, face_id, employee_no_string, raw_payload, photo_path, created_at) \
              VALUES (?1, ?2, ?3, 'entry', ?4, ?5, 0, NULL, NULL, '<xml/>', ?6, unixepoch())",
             params![
                 "evt-traversal".to_string(),

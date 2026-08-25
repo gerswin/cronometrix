@@ -10,7 +10,8 @@
 //! Security invariants:
 //! - Evidence paths are SERVER-GENERATED from UUID + extension (T-3-15).
 //! - Evidence read path canonicalizes + verifies under `state.paths.leaves_root` (T-3-18).
-//! - Content-Type enum restricted to pdf/jpeg/png (T-3-16).
+//! - Evidence type restricted to pdf/jpeg/png (T-3-16), verified from magic
+//!   bytes — the client-supplied Content-Type header is advisory only (M-07).
 //! - Hard size cap 10MB enforced before DB commit (T-3-21).
 //! - Create + cancel publish bounded recompute range work after commit so
 //!   existing daily_records pick up (or drop) the overlay.
@@ -27,10 +28,12 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::rbac::AuthUser;
+use crate::auth::scope::ActorScope;
 use crate::common::PaginatedResponse;
 use crate::errors::AppError;
 use crate::state::AppState;
 use crate::storage::atomic_file::AtomicFileGuard;
+use crate::storage::evidence_magic::infer_evidence_ext_from_magic;
 
 use super::models::{CreateLeaveRequest, LeaveListQuery, LeaveResponse};
 use super::service;
@@ -101,11 +104,11 @@ pub async fn create_leave(
                 })?);
             }
             "evidence" => {
+                // M-07: declared content-type is a quick filter only; actual
+                // type is verified from the file's magic bytes after reading.
                 let ct = field.content_type().unwrap_or("").to_string();
-                evidence_ext = match ct.as_str() {
-                    "application/pdf" => Some("pdf"),
-                    "image/jpeg" => Some("jpg"),
-                    "image/png" => Some("png"),
+                match ct.as_str() {
+                    "application/pdf" | "image/jpeg" | "image/png" => {}
                     _ => {
                         return Err(AppError::Validation {
                             code: "VALIDATION_ERROR",
@@ -115,7 +118,7 @@ pub async fn create_leave(
                             ),
                         });
                     }
-                };
+                }
                 let bytes = field.bytes().await.map_err(|e| AppError::Validation {
                     code: "VALIDATION_ERROR",
                     message: format!("reading evidence bytes: {}", e),
@@ -126,6 +129,17 @@ pub async fn create_leave(
                         message: format!("evidence file exceeds 10MB (got {} bytes)", bytes.len()),
                     });
                 }
+                // M-07: authoritative type check via magic bytes — content-type
+                // header from the client is untrusted (spoofable in multipart).
+                // The stored extension is derived from the bytes, never from
+                // the header or the client-supplied filename.
+                let magic_ext =
+                    infer_evidence_ext_from_magic(&bytes).ok_or_else(|| AppError::Validation {
+                        code: "VALIDATION_ERROR",
+                        message: "evidence bytes do not match a supported file type (PDF/JPEG/PNG)"
+                            .into(),
+                    })?;
+                evidence_ext = Some(magic_ext);
                 evidence_bytes = Some(bytes.to_vec());
             }
             _ => {
@@ -191,24 +205,42 @@ pub async fn create_leave(
 
 pub async fn list_leaves(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Query(q): Query<LeaveListQuery>,
 ) -> Result<Json<PaginatedResponse<LeaveResponse>>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::list(&conn, q).await?))
+    let scope = ActorScope::from_claims(&claims);
+    Ok(Json(service::list(&conn, q, &scope).await?))
 }
 
 pub async fn get_leave(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<LeaveResponse>, AppError> {
     let conn = state
         .db
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(Json(service::get_by_id(&conn, &id).await?))
+    let leave = service::get_by_id(&conn, &id).await?;
+
+    // H-11: a scoped actor cannot see a leave outside its department; 404 (not
+    // 403) so the leave's existence is not leaked.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_leave(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "LEAVE_NOT_FOUND",
+                message: format!("Leave '{}' not found", id),
+            });
+        }
+    }
+
+    Ok(Json(leave))
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,6 +270,7 @@ pub async fn cancel_leave(
 /// an internal error.
 pub async fn get_leave_evidence(
     State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let conn = state
@@ -245,6 +278,21 @@ pub async fn get_leave_evidence(
         .connect()
         .map_err(|e| AppError::Internal(e.into()))?;
     let leave = service::get_by_id(&conn, &id).await?;
+
+    // H-11 (D2): medical evidence is health data — supervisor+ only (enforced at
+    // the route layer) AND confined to the actor's department here; an
+    // out-of-scope leave's evidence is 404, never leaked.
+    let scope = ActorScope::from_claims(&claims);
+    if !scope.is_unscoped() {
+        let dept = service::department_of_leave(&conn, &id).await?;
+        if !scope.permits(dept.as_deref()) {
+            return Err(AppError::NotFound {
+                code: "LEAVE_EVIDENCE_NOT_FOUND",
+                message: "Evidence not available".into(),
+            });
+        }
+    }
+
     let relpath = leave.evidence_path.ok_or_else(|| AppError::NotFound {
         code: "LEAVE_EVIDENCE_NOT_FOUND",
         message: "Leave has no evidence attached".into(),

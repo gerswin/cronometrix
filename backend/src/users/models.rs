@@ -25,6 +25,8 @@ pub struct CreateUserRequest {
     pub role: String,
     #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
     pub password: String,
+    /// Optional department scope (H-11). `None` = org-wide (no scope).
+    pub department_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -37,7 +39,24 @@ pub struct UpdateUserRequest {
     pub password: Option<String>,
     /// Optional status change ("active" | "inactive").
     pub status: Option<String>,
+    /// Tri-state department scope (H-11): field omitted = `None` (leave as-is);
+    /// explicit JSON `null` = `Some(None)` (clear to org-wide); a value =
+    /// `Some(Some(id))` (assign). Needs `double_option` because a plain
+    /// `Option<String>` cannot tell an omitted field from an explicit null.
+    #[serde(default, deserialize_with = "double_option")]
+    pub department_id: Option<Option<String>>,
     pub version: i64,
+}
+
+/// serde helper for a tri-state PATCH field: distinguishes an omitted field
+/// (`None`), an explicit JSON `null` (`Some(None)`), and a value
+/// (`Some(Some(v))`).
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

@@ -56,6 +56,7 @@ async fn deactivate_handler_publishes_a_purge_request_when_worker_is_available()
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
     let (mut state, _tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
     let (purge_tx, mut purge_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -91,6 +92,7 @@ async fn build_test_app(db: libsql::Database) -> (Router, tempfile::TempDir) {
         do_functions_renew_url: String::new(),
         cors_allowed_origins: Vec::new(),
         cookie_secure: false,
+        device_push_base_url: String::new(),
     });
 
     let (state, tmp) = common::test_state_with_tmpdir(Arc::new(db), config);
@@ -196,7 +198,9 @@ async fn crud_employee_endpoints() {
             json!({
                 "employee_code": "EMP001",
                 "name": "Alice Smith",
-                "department_id": dept_id
+                "department_id": dept_id,
+                "base_salary_cents": 100000,
+                "salary_kind": "daily"
             })
             .to_string(),
         ))
@@ -313,7 +317,9 @@ async fn soft_delete_only_no_hard_delete() {
             json!({
                 "employee_code": "SD001",
                 "name": "Bob Delete",
-                "department_id": dept_id
+                "department_id": dept_id,
+                "base_salary_cents": 100000,
+                "salary_kind": "daily"
             })
             .to_string(),
         ))
@@ -431,7 +437,9 @@ async fn employee_search_and_filter() {
                 json!({
                     "employee_code": code,
                     "name": name,
-                    "department_id": dept
+                    "department_id": dept,
+                    "base_salary_cents": 100000,
+                    "salary_kind": "daily"
                 })
                 .to_string(),
             ))

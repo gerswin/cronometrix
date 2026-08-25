@@ -83,7 +83,69 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "020_audit_immutability",
         include_str!("migrations/020_audit_immutability.sql"),
     ),
+    (
+        "021_face_id_isapi_length",
+        include_str!("migrations/021_face_id_isapi_length.sql"),
+    ),
+    (
+        "022_device_ingest_mode",
+        include_str!("migrations/022_device_ingest_mode.sql"),
+    ),
+    (
+        "023_raw_payload_rename",
+        include_str!("migrations/023_raw_payload_rename.sql"),
+    ),
+    (
+        "024_employee_salary_kind",
+        include_str!("migrations/024_employee_salary_kind.sql"),
+    ),
+    (
+        "025_unique_active_override",
+        include_str!("migrations/025_unique_active_override.sql"),
+    ),
+    (
+        "026_employee_terminated_on",
+        include_str!("migrations/026_employee_terminated_on.sql"),
+    ),
+    (
+        "027_device_push_inbox",
+        include_str!("migrations/027_device_push_inbox.sql"),
+    ),
+    (
+        "028_employee_audit_full_columns",
+        include_str!("migrations/028_employee_audit_full_columns.sql"),
+    ),
+    (
+        "029_retention_policy",
+        include_str!("migrations/029_retention_policy.sql"),
+    ),
+    (
+        "030_users_department_id",
+        include_str!("migrations/030_users_department_id.sql"),
+    ),
 ];
+
+/// M-05: open a read-only snapshot on `conn`. Under WAL, every read issued after
+/// this and before [`commit_read_snapshot`] sees one stable view of the
+/// database, so a multi-query read (e.g. a report) cannot be split across a
+/// concurrent commit and produce an internally contradictory result.
+///
+/// It lives here because the db-write-boundary gate forbids `execute` and
+/// `transaction` outside the db layer; this is a read-only `BEGIN` and, unlike
+/// routing the reads through the single-writer queue, it does not block writers
+/// (WAL lets the writer keep committing while this reader holds its snapshot).
+pub async fn begin_read_snapshot(conn: &libsql::Connection) -> Result<()> {
+    conn.execute("BEGIN DEFERRED", ()).await?;
+    Ok(())
+}
+
+/// Close the snapshot opened by [`begin_read_snapshot`]. Read-only, so if it is
+/// skipped on an error path the transaction is simply rolled back when the
+/// connection is dropped.
+pub async fn commit_read_snapshot(conn: &libsql::Connection) -> Result<()> {
+    conn.execute("COMMIT", ()).await?;
+    Ok(())
+}
 
 /// Initialize the database. If Turso URL is configured, builds an embedded
 /// replica with cloud sync. Otherwise falls back to local-only mode (for
