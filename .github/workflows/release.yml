@@ -237,36 +237,9 @@ jobs:
           test -n "${API_IMAGE}"
           test -n "${WEB_IMAGE}"
           test -n "${GATEWAY_IMAGE}"
-
-          mkdir -p bundle dist
-          install -m 0755 deploy/install.sh bundle/install.sh
-          install -m 0644 deploy/docker-compose.yml bundle/docker-compose.yml
-          install -m 0644 deploy/nginx.conf bundle/nginx.conf
-          printf '%s\n' \
-            "SOURCE_SHA=${SOURCE_SHA}" \
-            "RELEASE_VERSION=${RELEASE_VERSION}" \
-            "API_IMAGE=${API_IMAGE}" \
-            "WEB_IMAGE=${WEB_IMAGE}" \
-            "GATEWAY_IMAGE=${GATEWAY_IMAGE}" \
-            "CLOUDFLARED_IMAGE=cloudflare/cloudflared:2026.3.0@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0" \
-            > bundle/release-manifest.env
-          chmod 0644 bundle/release-manifest.env
-          bash scripts/verify-release-manifest.sh bundle/release-manifest.env
-
-          (
-            cd bundle
-            sha256sum install.sh docker-compose.yml release-manifest.env nginx.conf > SHA256SUMS
-            sha256sum -c SHA256SUMS
-          )
-          ARCHIVE="cronometrix-${RELEASE_VERSION}-${SOURCE_SHA:0:12}.tar.gz"
-          tar -C bundle -czf "dist/${ARCHIVE}" \
-            install.sh docker-compose.yml release-manifest.env nginx.conf SHA256SUMS
-          (
-            cd dist
-            sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
-            sha256sum -c "${ARCHIVE}.sha256"
-          )
-          test "$(tar -tzf "dist/${ARCHIVE}" | wc -l)" -eq 5
+          export SOURCE_SHA RELEASE_VERSION API_IMAGE WEB_IMAGE GATEWAY_IMAGE
+          export CLOUDFLARED_IMAGE='cloudflare/cloudflared:2026.3.0@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0'
+          bash scripts/assemble-release-bundle.sh
 
       - name: Upload private release bundle
         uses: actions/upload-artifact@v4

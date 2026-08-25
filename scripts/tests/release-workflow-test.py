@@ -86,15 +86,11 @@ for name, job in jobs.items():
         assert job.get("permissions", workflow["permissions"]).get("packages") != "write"
 
 bundle_text = str(jobs["bundle"])
-for member in (
-    "install.sh",
-    "docker-compose.yml",
-    "release-manifest.env",
-    "nginx.conf",
-    "SHA256SUMS",
+for required in (
+    "scripts/assemble-release-bundle.sh",
     "retention-days",
     "14",
 ):
-    assert member in bundle_text
+    assert required in bundle_text
 
 print("PASS: release workflow contract")

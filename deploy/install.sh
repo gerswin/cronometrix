@@ -78,9 +78,6 @@ fi
 
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLE_MANIFEST="${BUNDLE_DIR}/release-manifest.env"
-# Bloque 3 (H-14): evidence backup/restore helpers.
-# shellcheck source=deploy/lib/evidence-backup.sh
-source "${BUNDLE_DIR}/lib/evidence-backup.sh"
 INSTALL_DIR="${CRONOMETRIX_INSTALL_DIR:-/opt/cronometrix}"
 DATA_DIR="${INSTALL_DIR}/data"
 ENV_FILE="${INSTALL_DIR}/.env"
@@ -94,6 +91,13 @@ BACKUP_DIR=''
 HAD_PREVIOUS=0
 TRANSACTION_ACTIVE=0
 
+load_evidence_backup_helpers() {
+    # Bloque 3 (H-14): evidence backup/restore helpers. This dependency is
+    # sourced only after verify_bundle authenticates its internal checksum.
+    # shellcheck source=deploy/lib/evidence-backup.sh
+    source "${BUNDLE_DIR}/lib/evidence-backup.sh"
+}
+
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
@@ -104,16 +108,18 @@ manifest_value() {
 }
 
 verify_bundle() {
-    local expected actual member
-    expected="$(printf '%s\n' SHA256SUMS docker-compose.yml install.sh nginx.conf release-manifest.env | sort)"
-    actual="$(find "${BUNDLE_DIR}" -mindepth 1 -maxdepth 1 -print | sed 's#^.*/##' | sort)"
-    [[ "${actual}" == "${expected}" ]] || die "bundle must contain exactly the five approved files"
-    for member in install.sh docker-compose.yml release-manifest.env nginx.conf SHA256SUMS; do
+    local expected actual expected_checksums actual_checksums member
+    expected="$(printf '%s\n' SHA256SUMS docker-compose.yml install.sh lib lib/evidence-backup.sh nginx.conf release-manifest.env | sort)"
+    actual="$(cd "${BUNDLE_DIR}" && find . -mindepth 1 -print | sed 's#^\./##' | sort)"
+    [[ "${actual}" == "${expected}" ]] || die "bundle must contain exactly the six approved files"
+    [[ -d "${BUNDLE_DIR}/lib" && ! -L "${BUNDLE_DIR}/lib" ]] || die "invalid bundle directory: lib"
+    for member in install.sh docker-compose.yml release-manifest.env nginx.conf lib/evidence-backup.sh SHA256SUMS; do
         [[ -f "${BUNDLE_DIR}/${member}" && ! -L "${BUNDLE_DIR}/${member}" ]] || die "invalid bundle member: ${member}"
     done
-    [[ "$(awk '{print $2}' "${BUNDLE_DIR}/SHA256SUMS" | sed 's/^\*//' | sort)" == \
-       "$(printf '%s\n' docker-compose.yml install.sh nginx.conf release-manifest.env | sort)" ]] || \
-        die "SHA256SUMS must cover exactly the other four bundle files"
+    expected_checksums="$(printf '%s\n' docker-compose.yml install.sh lib/evidence-backup.sh nginx.conf release-manifest.env | sort)"
+    actual_checksums="$(awk '{print $2}' "${BUNDLE_DIR}/SHA256SUMS" | sed 's/^\*//' | sort)"
+    [[ "${actual_checksums}" == "${expected_checksums}" ]] || \
+        die "SHA256SUMS must cover exactly the other five bundle files"
     (cd "${BUNDLE_DIR}" && sha256sum --strict -c SHA256SUMS >/dev/null) || die "bundle checksum verification failed"
 }
 
@@ -421,6 +427,7 @@ main() {
     [[ "$#" -eq 0 ]] || die "positional arguments are not accepted"
     verify_bundle
     verify_release_manifest "${BUNDLE_MANIFEST}" >/dev/null
+    load_evidence_backup_helpers
     preflight
     read_inputs
     prepare_directories_and_secrets
