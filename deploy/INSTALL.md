@@ -38,7 +38,7 @@ supported.
 
 The installer revalidates the exact member set and the internal `SHA256SUMS`
 covering the other five files before sourcing `lib/evidence-backup.sh`, then
-the strict release manifest, Linux/amd64 compatibility, Docker versions, disk
+the strict release manifest, Linux amd64/arm64 compatibility, Docker versions, disk
 space, and all image digests before changing the installation.
 
 For unattended operation, export the named `CRONOMETRIX_*` variables requested

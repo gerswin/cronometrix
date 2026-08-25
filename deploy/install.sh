@@ -69,6 +69,14 @@ verify_release_manifest() {
     printf 'manifest valid\n'
 }
 
+is_supported_architecture() {
+    [[ "$#" -eq 1 ]] || return 1
+    case "$1" in
+        x86_64|amd64|aarch64|arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 if [[ "${CRONOMETRIX_INSTALLER_LIBRARY:-}" == "1" ]]; then
     if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
         return 0
@@ -129,8 +137,8 @@ version_at_least() {
 
 preflight() {
     [[ "$(id -u)" -eq 0 ]] || die "must run as root (sudo)"
-    [[ "$(uname -s)" == "Linux" ]] || die "supported platform is Linux amd64"
-    case "$(uname -m)" in x86_64|amd64) ;; *) die "supported architecture is amd64" ;; esac
+    [[ "$(uname -s)" == "Linux" ]] || die "supported platform is Linux amd64/arm64"
+    is_supported_architecture "$(uname -m)" || die "supported architectures are amd64 and arm64"
     for cmd in docker openssl curl python3 sha256sum awk sed grep find sort df install jq truncate; do
         require_cmd "${cmd}"
     done

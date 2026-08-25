@@ -54,11 +54,17 @@ for required in (
     "GITHUB_SHA",
     "GITHUB_REF_NAME",
     "codex/release-build-${SOURCE_SHA}",
-    "linux/amd64",
     "NEXT_PUBLIC_API_URL=",
     "org.opencontainers.image.revision",
 ):
     assert required in build_text
+
+build_push_step = next(
+    step
+    for step in jobs["build-images"]["steps"]
+    if step.get("uses") == "docker/build-push-action@v6"
+)
+assert build_push_step["with"]["platforms"] == "linux/amd64,linux/arm64"
 
 promote_text = str(jobs["promote-images"])
 for required in (

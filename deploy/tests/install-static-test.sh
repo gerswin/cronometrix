@@ -84,4 +84,20 @@ if run_embedded "${TMP_DIR}/writable.env" >"${TMP_DIR}/embedded" 2>&1; then
     fail "embedded accepted writable manifest"
 fi
 
+for architecture in x86_64 amd64 aarch64 arm64; do
+    if ! CRONOMETRIX_INSTALLER_LIBRARY=1 bash -c '
+        source "$1"
+        is_supported_architecture "$2"
+    ' _ "${INSTALLER}" "${architecture}"; then
+        fail "installer rejected supported architecture: ${architecture}"
+    fi
+done
+
+if CRONOMETRIX_INSTALLER_LIBRARY=1 bash -c '
+    source "$1"
+    is_supported_architecture armv7l
+' _ "${INSTALLER}"; then
+    fail "installer accepted unsupported architecture: armv7l"
+fi
+
 echo "PASS: private transactional installer contract"
