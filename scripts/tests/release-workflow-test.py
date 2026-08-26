@@ -33,6 +33,14 @@ arm_text = str(arm_job)
 for required in ("api-binary-export", "linux/arm64", "api-arm64-binary"):
     assert required in arm_text
 
+arm_build_step = next(
+    step
+    for step in arm_job["steps"]
+    if step.get("uses") == "docker/build-push-action@v6"
+)
+assert arm_build_step["with"]["cache-from"] == "type=gha,scope=release-api-arm64-native"
+assert "cache-to" not in arm_build_step["with"]
+
 assert jobs["build-images"]["permissions"] == {
     "contents": "read",
     "packages": "write",
