@@ -12,6 +12,17 @@ test('deploys verified TLS and immutable source metadata to both functions', () 
   assert.match(project, /SOURCE_SHA:\s*"\$\{SOURCE_SHA\}"/);
 });
 
+test('contains only deploy-time substitutions backed by injected variables', () => {
+  const substitutions = [...project.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)]
+    .map((match) => match[1]);
+  assert.deepEqual([...new Set(substitutions)].sort(), [
+    'DATABASE_CA_CERT_BASE64',
+    'DATABASE_URL',
+    'LICENSE_PRIVATE_KEY',
+    'SOURCE_SHA',
+  ]);
+});
+
 for (const functionName of ['activate', 'renew']) {
   test(`${functionName} packages the shared PostgreSQL adapter`, () => {
     const functionRoot = join(__dirname, functionName);

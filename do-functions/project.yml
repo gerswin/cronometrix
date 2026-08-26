@@ -5,9 +5,9 @@
 # The operator MUST inject the variables below through secretctl. The database
 # URL is the restricted runtime role, never Aiven's avnadmin URL.
 # (or via `doctl serverless functions update licenses/{activate,renew}
-# --env-file ...`) BEFORE running the deploy command. The `${VAR}` references
-# below are interpolated by doctl at deploy time — placeholders only, no
-# secrets in the repo.
+# --env-file ...`) BEFORE running the deploy command. The environment
+# references below are interpolated by doctl at deploy time — placeholders
+# only, no secrets in the repo.
 
 parameters: {}
 
