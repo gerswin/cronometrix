@@ -314,6 +314,22 @@ wait_gateway() {
     return 1
 }
 
+wait_compose_healthy() {
+    [[ "$#" -eq 1 ]] || return 1
+    local service="$1" attempt health
+    for attempt in $(seq 1 30); do
+        health="$(
+            compose ps --format json "${service}" 2>/dev/null | \
+                jq -r 'if type == "array" then (.[0].Health // "") else (.Health // "") end' \
+                2>/dev/null || true
+        )"
+        [[ "${health}" == "healthy" ]] && return 0
+        [[ "${attempt}" -lt 30 ]] || break
+        sleep 2
+    done
+    return 1
+}
+
 rollback() {
     local status="${1:-1}"
     trap - ERR
@@ -422,8 +438,8 @@ verify_candidate_health() {
         http://127.0.0.1:8080/api/v1/setup/status)"
     rm -f "${upload_probe}"
     [[ "${upload_status}" == "413" ]] || die "gateway client_max_body_size contract failed"
-    [[ "$(compose ps --format json api | jq -r 'if type == "array" then .[0].Health else .Health end')" == "healthy" ]] || die "api container is not healthy"
-    [[ "$(compose ps --format json gateway | jq -r 'if type == "array" then .[0].Health else .Health end')" == "healthy" ]] || die "gateway container is not healthy"
+    wait_compose_healthy api || die "api container is not healthy"
+    wait_compose_healthy gateway || die "gateway container is not healthy"
 }
 
 prune_rollbacks() {
