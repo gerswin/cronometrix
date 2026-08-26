@@ -19,6 +19,11 @@ services:
       - "3001"
     volumes:
       - ./data:/opt/cronometrix/data
+      # Hardware licensing must use host identity, never the container's
+      # ephemeral MAC. These mounts are read-only infrastructure inputs.
+      - /proc/cpuinfo:/run/cronometrix-host/cpuinfo:ro
+      - /sys:/run/cronometrix-host/sys:ro
+      - /etc/machine-id:/run/cronometrix-host/machine-id:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:3001/api/v1/health"]
       interval: 30s
