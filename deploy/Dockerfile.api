@@ -44,7 +44,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/cronometrix
-COPY --from=selected-binary /app/target/release/cronometrix /usr/local/bin/cronometrix
+COPY --from=selected-binary --chmod=0755 /app/target/release/cronometrix /usr/local/bin/cronometrix
 
 # Data directory for SQLite + license.jwt; created by installer outside container
 # but ensured here so the binary's default paths work even without a volume mount.
