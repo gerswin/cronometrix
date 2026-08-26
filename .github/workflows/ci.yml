@@ -183,6 +183,26 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  license-functions:
+    name: License Functions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: do-functions/package-lock.json
+      - name: Test Aiven-backed license Functions
+        working-directory: do-functions
+        run: npm ci && npm test
+      - name: Test vault-safe license tooling
+        run: bash scripts/tests/license-secret-tools-test.sh
+      - name: Test license authority deployment orchestration
+        run: bash scripts/tests/deploy-license-authority-test.sh
+
   secret-scan:
     name: Secret Scan
     runs-on: ubuntu-latest

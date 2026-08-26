@@ -7,12 +7,17 @@
 # The same commands are invoked by .github/workflows/ci.yml so local and CI runs
 # produce the same numbers (within toolchain version tolerance).
 
-.PHONY: test-ci-config check-db-write-queue write-queue-load-profiles coverage coverage-backend coverage-frontend container-smoke
+.PHONY: test-ci-config test-license-authority check-db-write-queue write-queue-load-profiles coverage coverage-backend coverage-frontend container-smoke
 
 test-ci-config:
 	bash scripts/tests/test-ci-node-version-files.sh
 	bash scripts/tests/test-ci-node-version-files-portability.sh
 	bash scripts/test-e2e-harness-config.sh
+
+test-license-authority:
+	cd do-functions && npm ci && npm test
+	bash scripts/tests/license-secret-tools-test.sh
+	bash scripts/tests/deploy-license-authority-test.sh
 
 coverage: test-ci-config coverage-backend coverage-frontend
 	@echo "All coverage gates passed."
