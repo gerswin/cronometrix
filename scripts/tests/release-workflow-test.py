@@ -54,11 +54,23 @@ for required in (
     "GITHUB_SHA",
     "GITHUB_REF_NAME",
     "codex/release-build-${SOURCE_SHA}",
-    "linux/amd64",
     "NEXT_PUBLIC_API_URL=",
     "org.opencontainers.image.revision",
 ):
     assert required in build_text
+
+build_push_step = next(
+    step
+    for step in jobs["build-images"]["steps"]
+    if step.get("uses") == "docker/build-push-action@v6"
+)
+assert build_push_step["with"]["platforms"] == "linux/amd64,linux/arm64"
+
+build_actions = [step.get("uses") for step in jobs["build-images"]["steps"]]
+qemu_index = build_actions.index("docker/setup-qemu-action@v3")
+buildx_index = build_actions.index("docker/setup-buildx-action@v3")
+build_push_index = build_actions.index("docker/build-push-action@v6")
+assert qemu_index < buildx_index < build_push_index
 
 promote_text = str(jobs["promote-images"])
 for required in (
@@ -75,6 +87,7 @@ for required in (
 workflow_text = workflow_path.read_text()
 for action in (
     "docker/login-action@v3",
+    "docker/setup-qemu-action@v3",
     "docker/setup-buildx-action@v3",
     "docker/build-push-action@v6",
     "actions/upload-artifact@v4",
