@@ -79,6 +79,7 @@ test('creates roles, database, schema and least-privilege grants in order', asyn
   const formatCall = calls
     .filter(([kind]) => kind === 'query')
     .find(([, statement]) => statement.startsWith('SELECT format('));
+  assert.match(formatCall[1], /\$1::text/);
   assert.deepEqual(formatCall[2], ['runtime-secret']);
   assert.equal(sql.join('\n').includes('runtime-secret'), false);
 });
@@ -99,6 +100,7 @@ test('second run synchronizes the existing runtime role password', async () => {
   const formatCall = queries.find(([, statement]) => (
     statement.startsWith('SELECT format(') && statement.includes('ALTER ROLE')
   ));
+  assert.match(formatCall[1], /\$1::text/);
   assert.deepEqual(formatCall[2], ['new-password-must-not-apply']);
   assert.equal(sql.includes('new-password-must-not-apply'), false);
 });

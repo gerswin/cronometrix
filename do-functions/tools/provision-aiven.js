@@ -73,7 +73,7 @@ async function provision({
       ? `ALTER ROLE ${RUNTIME_ROLE} PASSWORD %L`
       : `CREATE ROLE ${RUNTIME_ROLE} LOGIN PASSWORD %L`;
     const formatted = await client.query(
-      `SELECT format('${runtimeRoleStatement}', $1) AS statement`,
+      `SELECT format('${runtimeRoleStatement}', $1::text) AS statement`,
       [runtimePassword],
     );
     await client.query(formatted.rows[0].statement);
