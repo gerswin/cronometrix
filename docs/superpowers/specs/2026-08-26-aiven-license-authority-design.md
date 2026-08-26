@@ -87,7 +87,12 @@ certificado pertenezca a la CA de Aiven; producción usará la CA descargada del
 servicio con `rejectUnauthorized: true`.
 
 Se extraerá la configuración duplicada de `activate/index.js` y
-`renew/index.js` a un adaptador compartido. Éste:
+`renew/index.js` a un adaptador compartido en `do-functions/lib/pg-store.js`.
+Cada Function lo incorpora explícitamente mediante `.include`; DigitalOcean
+sólo instala por defecto los archivos del directorio individual de la Function
+y no empaqueta archivos hermanos bajo `packages/`. Los tests estáticos validan
+que `activate` y `renew` incluyen el adaptador, sus dependencias y lockfiles.
+El adaptador:
 
 1. exige `DATABASE_URL` y `DATABASE_CA_CERT_BASE64`;
 2. decodifica la CA en memoria;

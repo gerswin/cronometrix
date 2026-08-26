@@ -28,7 +28,7 @@
 ### Task 1: Verified-TLS PostgreSQL adapter
 
 **Files:**
-- Create: `do-functions/packages/licenses/pg-store.js`
+- Create: `do-functions/lib/pg-store.js`
 - Create: `do-functions/packages/licenses/pg-store.test.js`
 - Modify: `do-functions/.gitignore`
 - Modify: `do-functions/package.json`
@@ -55,7 +55,7 @@ const {
   normalizeDatabaseUrl,
   buildPgConfig,
   createPgStore,
-} = require('./pg-store');
+} = require('../../../lib/pg-store');
 
 const CA = Buffer.from(
   '-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n',
@@ -174,7 +174,7 @@ Expected: adapter tests PASS with no warnings or secret-like output.
 ```bash
 git add do-functions/.gitignore do-functions/package.json \
   do-functions/package-lock.json \
-  do-functions/packages/licenses/pg-store.js \
+  do-functions/lib/pg-store.js \
   do-functions/packages/licenses/pg-store.test.js
 git commit -m "feat(licenses): add verified Aiven pg adapter"
 ```
@@ -188,6 +188,10 @@ git commit -m "feat(licenses): add verified Aiven pg adapter"
 - Modify: `do-functions/packages/licenses/activate/test.js`
 - Modify: `do-functions/packages/licenses/renew/index.js`
 - Modify: `do-functions/packages/licenses/renew/test.js`
+- Create: `do-functions/packages/licenses/activate/.include`
+- Create: `do-functions/packages/licenses/renew/.include`
+- Create: `do-functions/packages/licenses/activate/package-lock.json`
+- Create: `do-functions/packages/licenses/renew/package-lock.json`
 - Modify: `do-functions/project.yml`
 - Modify: `do-functions/README.md`
 
@@ -232,6 +236,15 @@ without requiring the CA and `project.yml` lacks the new variable.
 Delete the inline `Client` implementations from both handlers. Keep
 `shared-store` for tests and call `createPgStore` for production. Do not change
 response codes, JWT claims, RS256 pinning, or guarded-bind semantics.
+
+DigitalOcean builds each Function directory independently. Put the single
+adapter implementation under the supported top-level `lib/` directory and add
+an `.include` to each Function containing `index.js`, `package.json`,
+`package-lock.json`, `node_modules`, and `../../../lib/pg-store.js`. The lib
+entry is installed as `pg-store.js` at the Function root. Handlers load that
+runtime path and fall back to the source `lib/` path only when the staged file
+does not exist during local tests. Pin and lock each Function's `pg` dependency.
+Extend the static project test so it fails if either `.include` contract drifts.
 
 Add to the package environment in `project.yml`:
 
