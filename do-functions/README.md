@@ -70,10 +70,17 @@ and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
 
 5. **Deploy**:
    ```bash
-   cd do-functions
-   doctl serverless deploy . --remote-build
+   secretctl run \
+     -k cronometrix-aiven-admin-url \
+     -k cronometrix-aiven-license-password \
+     -k cronometrix-aiven-ca-base64 \
+     -k cronometrix-license-private-key-pem \
+     --timeout=20m -- bash scripts/deploy-license-authority.sh
    ```
-   `--remote-build` makes DO install `pg` (declared in
+   The orchestrator requires a clean checkout whose `HEAD` equals
+   `origin/main`, provisions Aiven idempotently, selects only the exact
+   `cronometrix` namespace, deploys both Functions, and prints their URLs only
+   after invalid-body probes pass. `--remote-build` makes DO install `pg` (declared in
    `packages/licenses/{activate,renew}/package.json`) inside the runtime
    sandbox. `jsonwebtoken` v9 is pre-installed by the Node 22 DO runtime —
    we do NOT vendor it.
