@@ -30,7 +30,9 @@ function fakeClient({ existing = false, privilegeRow } = {}) {
         return { rows: existing ? [{ exists: 1 }] : [] };
       }
       if (compact.startsWith('SELECT format(')) {
-        return { rows: [{ statement: `CREATE ROLE ${RUNTIME_ROLE} LOGIN PASSWORD 'server-escaped'` }] };
+        const verb = compact.includes('ALTER ROLE') ? 'ALTER' : 'CREATE';
+        const login = verb === 'CREATE' ? ' LOGIN' : '';
+        return { rows: [{ statement: `${verb} ROLE ${RUNTIME_ROLE}${login} PASSWORD 'server-escaped'` }] };
       }
       if (compact.includes('FROM pg_database')) {
         return { rows: existing ? [{ exists: 1 }] : [] };
@@ -81,7 +83,7 @@ test('creates roles, database, schema and least-privilege grants in order', asyn
   assert.equal(sql.join('\n').includes('runtime-secret'), false);
 });
 
-test('second run is idempotent and never alters the runtime password', async () => {
+test('second run synchronizes the existing runtime role password', async () => {
   const { FakeClient, calls } = fakeClient({ existing: true });
   await provision({
     adminUrl: ADMIN_URL,
@@ -90,8 +92,14 @@ test('second run is idempotent and never alters the runtime password', async () 
     Client: FakeClient,
   });
 
-  const sql = calls.filter(([kind]) => kind === 'query').map(([, statement]) => statement).join('\n');
-  assert.doesNotMatch(sql, /CREATE ROLE|ALTER ROLE|CREATE DATABASE|SELECT format/);
+  const queries = calls.filter(([kind]) => kind === 'query');
+  const sql = queries.map(([, statement]) => statement).join('\n');
+  assert.doesNotMatch(sql, /CREATE ROLE|CREATE DATABASE/);
+  assert.match(sql, new RegExp(`ALTER ROLE ${RUNTIME_ROLE} PASSWORD`));
+  const formatCall = queries.find(([, statement]) => (
+    statement.startsWith('SELECT format(') && statement.includes('ALTER ROLE')
+  ));
+  assert.deepEqual(formatCall[2], ['new-password-must-not-apply']);
   assert.equal(sql.includes('new-password-must-not-apply'), false);
 });
 

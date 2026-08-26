@@ -68,16 +68,15 @@ async function provision({
       await client.query(`CREATE ROLE ${OWNER_ROLE} NOLOGIN`);
     }
 
-    if (!await roleExists(client, RUNTIME_ROLE)) {
-      const formatted = await client.query(
-        `SELECT format(
-          'CREATE ROLE ${RUNTIME_ROLE} LOGIN PASSWORD %L',
-          $1
-        ) AS statement`,
-        [runtimePassword],
-      );
-      await client.query(formatted.rows[0].statement);
-    }
+    const runtimeRoleExists = await roleExists(client, RUNTIME_ROLE);
+    const runtimeRoleStatement = runtimeRoleExists
+      ? `ALTER ROLE ${RUNTIME_ROLE} PASSWORD %L`
+      : `CREATE ROLE ${RUNTIME_ROLE} LOGIN PASSWORD %L`;
+    const formatted = await client.query(
+      `SELECT format('${runtimeRoleStatement}', $1) AS statement`,
+      [runtimePassword],
+    );
+    await client.query(formatted.rows[0].statement);
 
     const database = await client.query(
       'SELECT 1 AS exists FROM pg_database WHERE datname = $1',
