@@ -9,6 +9,7 @@
     "test:renew": "node --test packages/licenses/renew/test.js"
   },
   "devDependencies": {
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.23.0"
   }
 }

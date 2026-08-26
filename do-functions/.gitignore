@@ -14,7 +14,6 @@ node_modules/
 .env.local
 
 # npm / node tooling output
-package-lock.json
 npm-debug.log*
 
 # OS noise
