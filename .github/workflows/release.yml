@@ -34,7 +34,9 @@ jobs:
           target: api-binary-export
           outputs: type=local,dest=prebuilt
           cache-from: type=gha,scope=release-api-arm64-native
-          cache-to: type=gha,mode=max,scope=release-api-arm64-native
+          # Do not export the ARM build cache from Caladan: mode=max uploads
+          # hundreds of MB over the runner's slow uplink after the binary is
+          # already complete. Import remains useful for retries when available.
 
       - name: Verify ARM64 binary artifact
         shell: bash
