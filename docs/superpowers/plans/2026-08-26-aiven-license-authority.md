@@ -30,6 +30,7 @@
 **Files:**
 - Create: `do-functions/packages/licenses/pg-store.js`
 - Create: `do-functions/packages/licenses/pg-store.test.js`
+- Modify: `do-functions/.gitignore`
 - Modify: `do-functions/package.json`
 - Modify: `do-functions/package-lock.json`
 
@@ -151,7 +152,11 @@ const TOUCH_SQL = `UPDATE license_authority.licenses
 `decodeCa` must reject malformed base64 and decoded text without both PEM
 certificate delimiters. Errors name only the missing/invalid environment key.
 
-- [ ] **Step 4: Add `pg` to the local tool/test package and run GREEN**
+- [ ] **Step 4: Track the lockfile, add `pg`, and run GREEN**
+
+Remove `package-lock.json` from `do-functions/.gitignore`. The Functions test
+and deployment dependency graph must be committed so fresh worktrees and CI
+can use `npm ci` reproducibly.
 
 Run:
 
@@ -167,7 +172,8 @@ Expected: adapter tests PASS with no warnings or secret-like output.
 - [ ] **Step 5: Commit the adapter**
 
 ```bash
-git add do-functions/package.json do-functions/package-lock.json \
+git add do-functions/.gitignore do-functions/package.json \
+  do-functions/package-lock.json \
   do-functions/packages/licenses/pg-store.js \
   do-functions/packages/licenses/pg-store.test.js
 git commit -m "feat(licenses): add verified Aiven pg adapter"
