@@ -18,6 +18,21 @@ assert workflow["concurrency"] == {
 }
 
 jobs = workflow["jobs"]
+arm_job = jobs["build-api-arm64-binary"]
+assert arm_job["runs-on"] == [
+    "self-hosted",
+    "Linux",
+    "ARM64",
+    "caladan",
+    "cronometrix-release",
+]
+assert arm_job["permissions"] == {"contents": "read"}
+assert arm_job["if"] == jobs["build-images"]["if"]
+assert jobs["build-images"]["needs"] == ["build-api-arm64-binary"]
+arm_text = str(arm_job)
+for required in ("api-binary-export", "linux/arm64", "api-arm64-binary"):
+    assert required in arm_text
+
 assert jobs["build-images"]["permissions"] == {
     "contents": "read",
     "packages": "write",
@@ -65,6 +80,11 @@ build_push_step = next(
     if step.get("uses") == "docker/build-push-action@v6"
 )
 assert build_push_step["with"]["platforms"] == "linux/amd64,linux/arm64"
+assert build_push_step["with"]["cache-from"] == "type=gha,scope=release-${{ matrix.component }}"
+assert build_push_step["with"]["cache-to"] == (
+    "type=gha,mode=max,scope=release-${{ matrix.component }}"
+)
+assert "api-arm64-binary" in build_text
 
 build_actions = [step.get("uses") for step in jobs["build-images"]["steps"]]
 qemu_index = build_actions.index("docker/setup-qemu-action@v3")
@@ -106,5 +126,16 @@ for required in (
     "14",
 ):
     assert required in bundle_text
+
+dockerfile = (workflow_path.parents[2] / "deploy/Dockerfile.api").read_text()
+for required in (
+    "AS api-binary-export",
+    "AS binary-amd64",
+    "AS binary-arm64",
+    "COPY prebuilt/cronometrix-arm64",
+    "FROM binary-${TARGETARCH} AS selected-binary",
+    "COPY --from=selected-binary",
+):
+    assert required in dockerfile
 
 print("PASS: release workflow contract")
