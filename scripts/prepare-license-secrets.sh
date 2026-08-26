@@ -35,6 +35,7 @@ done
 command -v secretctl >/dev/null || { echo 'secretctl is required' >&2; exit 1; }
 command -v openssl >/dev/null || { echo 'openssl is required' >&2; exit 1; }
 command -v node >/dev/null || { echo 'node is required' >&2; exit 1; }
+command -v mkfifo >/dev/null || { echo 'mkfifo is required' >&2; exit 1; }
 openssl x509 -in "${ca_file}" -noout >/dev/null 2>&1 \
   || { echo 'Aiven CA certificate is invalid' >&2; exit 1; }
 
@@ -64,28 +65,48 @@ unset vault_keys
 
 umask 077
 temporary_root="$(mktemp -d)"
+writer_pid=''
 cleanup() {
+  if [[ -n "${writer_pid}" ]] && kill -0 "${writer_pid}" 2>/dev/null; then
+    kill "${writer_pid}" 2>/dev/null || true
+    wait "${writer_pid}" 2>/dev/null || true
+  fi
   rm -rf -- "${temporary_root}"
 }
 trap cleanup EXIT
 private_key="${temporary_root}/license-private.pem"
 public_key="${temporary_root}/license-public.pem"
+import_fifo="${temporary_root}/license-secrets.json"
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
   -out "${private_key}" >/dev/null 2>&1
 openssl pkey -in "${private_key}" -pubout -out "${public_key}" >/dev/null 2>&1
 
-node -e '
-  const { randomInt } = require("node:crypto");
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let value = "";
-  for (let i = 0; i < 40; i += 1) value += alphabet[randomInt(alphabet.length)];
-  process.stdout.write(value);
-' | secretctl set cronometrix-aiven-license-password >/dev/null
+mkfifo "${import_fifo}"
+node - "${ca_file}" "${private_key}" >"${import_fifo}" <<'NODE' &
+const { randomInt } = require('node:crypto');
+const fs = require('node:fs');
+const [caPath, privateKeyPath] = process.argv.slice(2);
+const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+let runtimePassword = '';
+for (let i = 0; i < 40; i += 1) {
+  runtimePassword += alphabet[randomInt(alphabet.length)];
+}
+process.stdout.write(JSON.stringify({
+  'cronometrix-aiven-license-password': runtimePassword,
+  'cronometrix-aiven-ca-base64': fs.readFileSync(caPath).toString('base64'),
+  'cronometrix-license-private-key-pem': fs.readFileSync(privateKeyPath, 'utf8'),
+}));
+NODE
+writer_pid=$!
 
-base64 <"${ca_file}" | tr -d '\r\n' \
-  | secretctl set cronometrix-aiven-ca-base64 >/dev/null
-secretctl set cronometrix-license-private-key-pem <"${private_key}" >/dev/null
+conflict_flag='--error'
+if [[ "${rotate}" == true ]]; then
+  conflict_flag='--overwrite'
+fi
+secretctl import "${import_fifo}" --format=json "${conflict_flag}" >/dev/null
+wait "${writer_pid}"
+writer_pid=''
 
 cp "${public_key}" "${public_key_out}"
 chmod 0644 "${public_key_out}"

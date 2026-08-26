@@ -28,17 +28,26 @@ and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
 1. **Install doctl** — <https://docs.digitalocean.com/reference/doctl/how-to/install/>
    then run `doctl auth init` and `doctl serverless install`.
 
-2. **Generate the production RSA-2048 keypair** (once, kept in a vault):
+2. **Prepare the production credentials and RSA-2048 keypair** (once, kept in
+   `secretctl`):
    ```bash
-   openssl genrsa -out license_private.pem 2048
-   openssl rsa -in license_private.pem -pubout -out license_public.pem
+   bash scripts/prepare-license-secrets.sh \
+     --ca-file /path/to/aiven-ca.pem \
+     --public-key-out backend/src/license/pubkey.pem
+
+   secretctl run \
+     -k cronometrix-license-private-key-pem \
+     -- bash scripts/verify-license-keypair.sh backend/src/license/pubkey.pem
    ```
-   - Copy `license_public.pem` to `backend/src/license/pubkey.pem` and rebuild
-     the API images. The public key must round-trip with the private key on
-     every deploy — mismatched pairs cause every `verify_license_jwt` call to
-     fail with `JwtInvalid`, which surfaces as `AppError::Unlicensed` (HTTP 403).
-   - Store `license_private.pem` ONLY as a DO Functions env var. Do NOT commit.
-     The repo's `.gitignore` excludes `*.private.pem` and `license_private.pem`.
+   The helper imports all three values in one `secretctl import` operation over
+   a permission-restricted FIFO. This avoids the `secretctl` 0.8.8 terminal
+   conflict where `set` reads both the master password and a piped value from
+   the same stdin. Only the public key is written to the repository. Use
+   `--rotate` only for an intentional coordinated key rotation.
+
+   The public key must round-trip with the private key on every deploy —
+   mismatched pairs cause every `verify_license_jwt` call to fail with
+   `JwtInvalid`, which surfaces as `AppError::Unlicensed` (HTTP 403).
 
 3. **Provision the isolated Aiven database and runtime role** with the
    repository tooling documented below. The resulting table is:

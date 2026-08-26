@@ -26,16 +26,27 @@ case "${command_name}" in
   list)
     cat "${RECORDED_KEYS}"
     ;;
+  import)
+    input_file="${1:?missing import file}"
+    node - "${input_file}" "${RECORDED_KEYS}" "${RECORDED_HASHES}" <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const [inputFile, keysFile, hashesFile] = process.argv.slice(2);
+const entries = JSON.parse(fs.readFileSync(inputFile, 'utf8'));
+for (const [key, value] of Object.entries(entries)) {
+  if (key === 'cronometrix-license-test'
+      && !/^[A-Z0-9]{4}(-[A-Z0-9]{4}){3}$/.test(value)) {
+    process.exit(9);
+  }
+  fs.appendFileSync(keysFile, `${key}\n`);
+  const digest = crypto.createHash('sha256').update(value).digest('hex');
+  fs.appendFileSync(hashesFile, `${digest}  ${key}\n`);
+}
+NODE
+    ;;
   set)
-    key="${1:?missing key}"
-    value="$(cat)"
-    if [[ "${key}" == cronometrix-license-test ]] \
-      && [[ ! "${value}" =~ ^[A-Z0-9]{4}(-[A-Z0-9]{4}){3}$ ]]; then
-      exit 9
-    fi
-    printf '%s\n' "${key}" >>"${RECORDED_KEYS}"
-    printf '%s  %s\n' "$(printf '%s' "${value}" | shasum -a 256 | awk '{print $1}')" "${key}" \
-      >>"${RECORDED_HASHES}"
+    echo 'tests require FIFO import, not the broken set/stdin flow' >&2
+    exit 10
     ;;
   *)
     exit 8
