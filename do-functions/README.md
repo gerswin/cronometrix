@@ -13,8 +13,11 @@ and renewal endpoints. Consumed by the Rust API's
 | `/licenses/renew`         | POST   | `packages/licenses/renew/index.js`    | Daily silent renewal; refreshes JWT only when fingerprint matches the bound one (anti-cloning) |
 
 Both functions read the RSA private key from `process.env.LICENSE_PRIVATE_KEY`
-and persist license records in Postgres via `process.env.DATABASE_URL`. The
-private key NEVER appears in responses, logs, or repo files.
+and persist license records in Aiven PostgreSQL through the shared
+`pg-store.js` infrastructure adapter. `DATABASE_URL` uses a restricted runtime
+role and `DATABASE_CA_CERT_BASE64` supplies the Aiven CA; TLS certificate
+verification is mandatory. The private key and database credentials NEVER
+appear in responses, logs, or repo files.
 
 The Rust verifier (Plan 01) embeds the matching public key at compile time
 and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
@@ -25,21 +28,32 @@ and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
 1. **Install doctl** — <https://docs.digitalocean.com/reference/doctl/how-to/install/>
    then run `doctl auth init` and `doctl serverless install`.
 
-2. **Generate the production RSA-2048 keypair** (once, kept in a vault):
+2. **Prepare the production credentials and RSA-2048 keypair** (once, kept in
+   `secretctl`):
    ```bash
-   openssl genrsa -out license_private.pem 2048
-   openssl rsa -in license_private.pem -pubout -out license_public.pem
-   ```
-   - Copy `license_public.pem` to `backend/src/license/pubkey.pem` and rebuild
-     the API images. The public key must round-trip with the private key on
-     every deploy — mismatched pairs cause every `verify_license_jwt` call to
-     fail with `JwtInvalid`, which surfaces as `AppError::Unlicensed` (HTTP 403).
-   - Store `license_private.pem` ONLY as a DO Functions env var. Do NOT commit.
-     The repo's `.gitignore` excludes `*.private.pem` and `license_private.pem`.
+   bash scripts/prepare-license-secrets.sh \
+     --ca-file /path/to/aiven-ca.pem \
+     --public-key-out backend/src/license/pubkey.pem
 
-3. **Provision a license database** (DO Managed Postgres recommended):
+   secretctl run \
+     -k cronometrix-license-private-key-pem \
+     -- bash scripts/verify-license-keypair.sh backend/src/license/pubkey.pem
+   ```
+   The helper imports all three values in one `secretctl import` operation over
+   a permission-restricted FIFO. This avoids the `secretctl` 0.8.8 terminal
+   conflict where `set` reads both the master password and a piped value from
+   the same stdin. Only the public key is written to the repository. Use
+   `--rotate` only for an intentional coordinated key rotation.
+
+   The public key must round-trip with the private key on every deploy —
+   mismatched pairs cause every `verify_license_jwt` call to fail with
+   `JwtInvalid`, which surfaces as `AppError::Unlicensed` (HTTP 403).
+
+3. **Provision the isolated Aiven database and runtime role** with the
+   repository tooling documented below. The resulting table is:
    ```sql
-   CREATE TABLE licenses (
+   CREATE SCHEMA license_authority;
+   CREATE TABLE license_authority.licenses (
      license_key          TEXT PRIMARY KEY,
      hardware_fingerprint TEXT,
      activated_at         BIGINT,
@@ -48,23 +62,34 @@ and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
    ```
    Pre-seed each customer's license key BEFORE shipping their installer:
    ```sql
-   INSERT INTO licenses (license_key, hardware_fingerprint)
+   INSERT INTO license_authority.licenses (license_key, hardware_fingerprint)
    VALUES ('XXXX-XXXX-XXXX-XXXX', NULL);
    ```
    The fingerprint stays NULL until the customer's first activation.
 
-4. **Set deploy-time env vars** (operator's shell, never the repo):
+4. **Inject deploy-time env vars through `secretctl run`** (never paste them
+   into shell history or commit them):
    ```bash
-   export LICENSE_PRIVATE_KEY="$(cat license_private.pem)"
-   export DATABASE_URL="postgres://user:pass@host:5432/licenses?sslmode=require"
+   secretctl run \
+     -k cronometrix-license-private-key-pem \
+     -k cronometrix-license-runtime-url \
+     -k cronometrix-aiven-ca-base64 \
+     -- bash scripts/deploy-license-functions.sh
    ```
 
 5. **Deploy**:
    ```bash
-   cd do-functions
-   doctl serverless deploy . --remote-build
+   secretctl run \
+     -k cronometrix-aiven-admin-url \
+     -k cronometrix-aiven-license-password \
+     -k cronometrix-aiven-ca-base64 \
+     -k cronometrix-license-private-key-pem \
+     --timeout=20m -- bash scripts/deploy-license-authority.sh
    ```
-   `--remote-build` makes DO install `pg` (declared in
+   The orchestrator requires a clean checkout whose `HEAD` equals
+   `origin/main`, provisions Aiven idempotently, selects only the exact
+   `cronometrix` namespace, deploys both Functions, and prints their URLs only
+   after invalid-body probes pass. `--remote-build` makes DO install `pg` (declared in
    `packages/licenses/{activate,renew}/package.json`) inside the runtime
    sandbox. `jsonwebtoken` v9 is pre-installed by the Node 22 DO runtime —
    we do NOT vendor it.
@@ -87,16 +112,15 @@ fixture — see `docs/runbooks/rotacion-clave-licencia.md`).
 ```bash
 # 1. Install local-only test runtime (jsonwebtoken at the do-functions root).
 cd do-functions
-npm install --silent
+npm ci
 
 # 2. Each test file generates its own RSA keypair at module load
 #    (node:crypto generateKeyPairSync) and signs/verifies against it —
 #    these tests only prove that what the handler signs, it can verify.
 #    They do not and must not depend on the production signing key.
 
-# 3. Run the full suite (18 tests across both handlers).
-node --test packages/licenses/activate/test.js
-node --test packages/licenses/renew/test.js
+# 3. Run the full suite.
+npm test
 ```
 
 The tests cover:
@@ -128,9 +152,9 @@ The tests cover:
   `console.log` / `console.error` statements. The catch path returns a
   generic `SERVER_ERROR` body — no exception message, no stack trace
   (T-06-40 mitigation).
-- **Database credentials never logged.** Same hygiene: `DATABASE_URL` is
-  read once inside `getStore()`, the pg client closes the connection in
-  `finally`, and any pg error is collapsed to `SERVER_ERROR` (T-06-41
+- **Database credentials never logged.** Same hygiene: `DATABASE_URL` and the
+  CA are validated inside `resolveStore()`, the pg client closes the connection
+  in `finally`, and any pg error is collapsed to `SERVER_ERROR` (T-06-41
   mitigation).
 - **Single npm dep: `pg`.** Declared in each function's `package.json`.
   `jsonwebtoken` v9 is pre-installed in the DO Functions Node 22 runtime —
@@ -163,8 +187,9 @@ needs separate attention) is documented in
 
 ## Why pg over alternatives
 
-- DO Managed Postgres is the path of least resistance for DO Functions
-  deployments — same dashboard, same billing, same network.
+- Aiven is the selected managed PostgreSQL service. The runtime role is scoped
+  to `license_authority.licenses`; the Aiven administrator credential is used
+  only by the provisioning tool and never deployed to Functions.
 - `pg` (node-postgres) is the de-facto Node Postgres driver: stable since
   2010, no compiled deps, ships pure-JS.
 - Alternatives considered:

@@ -14,42 +14,21 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const { createPrivateKey } = require('node:crypto');
+const { existsSync } = require('node:fs');
+const { join } = require('node:path');
 
 const ONE_YEAR_SECS = 365 * 24 * 60 * 60;
 
-function getStore() {
-    if (process.env.TEST_STORE) {
+function resolveStore(env = process.env) {
+    if (env.TEST_STORE === '1') {
         return require('../shared-store');
     }
-    const { Client } = require('pg');
-    return {
-        async lookup(licenseKey) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                const r = await client.query(
-                    'SELECT hardware_fingerprint FROM licenses WHERE license_key = $1',
-                    [licenseKey],
-                );
-                if (r.rows.length === 0) return undefined; // not found
-                return r.rows[0].hardware_fingerprint || null;
-            } finally {
-                await client.end();
-            }
-        },
-        async touch(licenseKey, now) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                await client.query(
-                    'UPDATE licenses SET last_renewed_at = $1 WHERE license_key = $2',
-                    [now, licenseKey],
-                );
-            } finally {
-                await client.end();
-            }
-        },
-    };
+    const runtimeAdapter = join(__dirname, 'pg-store.js');
+    const adapter = existsSync(runtimeAdapter)
+        ? require(runtimeAdapter)
+        : require('../../../lib/pg-store');
+    return adapter.createPgStore({ env });
 }
 
 exports.main = async function main(args) {
@@ -83,7 +62,10 @@ exports.main = async function main(args) {
     }
 
     try {
-        const store = getStore();
+        // Parse the signing key before touching persistence so deployment
+        // probes cannot pass while the runtime key is malformed.
+        const signingKey = createPrivateKey(privateKey);
+        const store = resolveStore();
         const existingFp = await store.lookup(license_key);
 
         if (existingFp === undefined) {
@@ -124,7 +106,7 @@ exports.main = async function main(args) {
             exp: now + ONE_YEAR_SECS,
         };
         // RS256 pinned — same algorithm/key path as activate (D-01).
-        const token = jwt.sign(payload, privateKey, { algorithm: 'RS256' });
+        const token = jwt.sign(payload, signingKey, { algorithm: 'RS256' });
         return { statusCode: 200, body: { token } };
     } catch (e) {
         // Generic SERVER_ERROR: never leak DB / key details.
@@ -139,3 +121,5 @@ exports.main = async function main(args) {
         };
     }
 };
+
+exports.resolveStore = resolveStore;

@@ -7,8 +7,8 @@
 // Response 409: { error: { code: "LICENSE_ALREADY_BOUND",  message } }  bind() lost the race (C-07)
 // Response 500: { error: { code: "CONFIG_ERROR" | "SERVER_ERROR", message } }
 //
-// Persistence: process.env.DATABASE_URL points to Postgres with table:
-//   licenses(license_key TEXT PRIMARY KEY,
+// Persistence: the shared pg adapter connects with an Aiven CA and uses:
+//   license_authority.licenses(license_key TEXT PRIMARY KEY,
 //            hardware_fingerprint TEXT,
 //            activated_at BIGINT,
 //            last_renewed_at BIGINT)
@@ -34,57 +34,25 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const { createPrivateKey } = require('node:crypto');
+const { existsSync } = require('node:fs');
+const { join } = require('node:path');
 
 const ONE_YEAR_SECS = 365 * 24 * 60 * 60;
 
-function getStore() {
-    if (process.env.TEST_STORE) {
+function resolveStore(env = process.env) {
+    if (env.TEST_STORE === '1') {
         // Test mode — in-memory store; no DB connection.
         return require('../shared-store');
     }
-    // Production mode — pg client lazily-loaded so test runs don't need it
-    // installed at the function-package level until DO Functions does its
-    // remote build.
-    const { Client } = require('pg');
-    return {
-        async lookup(licenseKey) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                const r = await client.query(
-                    'SELECT hardware_fingerprint FROM licenses WHERE license_key = $1',
-                    [licenseKey],
-                );
-                if (r.rows.length === 0) return undefined; // not found
-                return r.rows[0].hardware_fingerprint || null;
-            } finally {
-                await client.end();
-            }
-        },
-        async bind(licenseKey, fingerprint, now) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                // C-07: la guarda vive en el WHERE, no en un SELECT previo. Un
-                // UPDATE de una sola sentencia es atómico, así que de dos
-                // activaciones simultáneas exactamente una afecta la fila.
-                const r = await client.query(
-                    `UPDATE licenses
-                        SET hardware_fingerprint = $1,
-                            activated_at = COALESCE(activated_at, $2)
-                      WHERE license_key = $3
-                        AND (hardware_fingerprint IS NULL OR hardware_fingerprint = $1)`,
-                    [fingerprint, now, licenseKey],
-                );
-                return r.rowCount === 1;
-            } finally {
-                await client.end();
-            }
-        },
-    };
+    const runtimeAdapter = join(__dirname, 'pg-store.js');
+    const adapter = existsSync(runtimeAdapter)
+        ? require(runtimeAdapter)
+        : require('../../../lib/pg-store');
+    return adapter.createPgStore({ env });
 }
 
-function signJwt(licenseKey, hardwareFingerprint, privateKey) {
+function signJwt(licenseKey, hardwareFingerprint, signingKey) {
     const now = Math.floor(Date.now() / 1000);
     const payload = {
         license_key: licenseKey,
@@ -95,7 +63,7 @@ function signJwt(licenseKey, hardwareFingerprint, privateKey) {
     };
     // Algorithm pinned to RS256 (D-01). The Rust verifier (Plan 01) also pins
     // RS256 — defense in depth against alg=HS256 / alg=none confusion attacks.
-    return jwt.sign(payload, privateKey, { algorithm: 'RS256' });
+    return jwt.sign(payload, signingKey, { algorithm: 'RS256' });
 }
 
 exports.main = async function main(args) {
@@ -131,7 +99,10 @@ exports.main = async function main(args) {
     }
 
     try {
-        const store = getStore();
+        // Parse the signing key before touching persistence so deployment
+        // probes cannot pass while the runtime key is malformed.
+        const signingKey = createPrivateKey(privateKey);
+        const store = resolveStore();
         const existingFp = await store.lookup(license_key);
 
         if (existingFp === undefined) {
@@ -181,7 +152,7 @@ exports.main = async function main(args) {
             };
         }
 
-        const token = signJwt(license_key, hardware_fingerprint, privateKey);
+        const token = signJwt(license_key, hardware_fingerprint, signingKey);
         return { statusCode: 200, body: { token } };
     } catch (e) {
         // Never leak DB error details / stack traces / private key material.
@@ -198,3 +169,5 @@ exports.main = async function main(args) {
         };
     }
 };
+
+exports.resolveStore = resolveStore;

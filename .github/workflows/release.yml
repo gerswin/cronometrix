@@ -152,7 +152,7 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?per_page=100" \
             > check-runs.json
           jq -e '
-            ["Backend Coverage", "Frontend Coverage", "E2E Tests", "Container Smoke", "Release Gate"] as $required
+            ["Backend Coverage", "Frontend Coverage", "E2E Tests", "Container Smoke", "License Functions", "Release Gate"] as $required
             | .check_runs as $checks
             | all($required[]; . as $name
                 | any($checks[]; .name == $name and .conclusion == "success"))

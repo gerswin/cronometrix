@@ -78,6 +78,7 @@ for required in (
     "Frontend Coverage",
     "E2E Tests",
     "Container Smoke",
+    "License Functions",
     "Release Gate",
     "imagetools create",
     "org.opencontainers.image.revision",
