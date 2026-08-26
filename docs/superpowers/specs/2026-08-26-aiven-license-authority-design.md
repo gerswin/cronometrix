@@ -170,6 +170,8 @@ Se crea o selecciona un namespace dedicado `cronometrix` en `nyc1`; nunca se
 despliega sobre los namespaces existentes `tiquemax`, `somonexa` o
 `tiquemax-pdf-fn`. `project.yml` pasa las tres variables requeridas:
 `DATABASE_URL`, `DATABASE_CA_CERT_BASE64` y `LICENSE_PRIVATE_KEY`.
+También registra `SOURCE_SHA`, calculado desde un `origin/main` limpio, para
+conservar la cadena de custodia entre código, Functions y release.
 
 Después del despliegue se obtienen las URLs públicas de
 `licenses/activate` y `licenses/renew`, se ejecutan probes de entradas
@@ -192,9 +194,11 @@ fingerprint; nunca reinicia un vínculo existente.
 4. Ejecutar tests Node, Rust, release y secret scanning.
 5. Crear PR, esperar CI y fusionar a `main`.
 6. Publicar y verificar imágenes `linux/amd64` + `linux/arm64` por digest.
-7. Aprovisionar Aiven y desplegar las Functions desde el commit fusionado.
-8. Emitir la licencia y reanudar el instalador con URLs y secretos inyectados.
-9. Verificar licencia, contenedores, health, persistencia y acceso por túnel.
+7. Añadir `License Functions` a la protección de `main` sin retirar checks
+   existentes.
+8. Aprovisionar Aiven y desplegar las Functions desde el commit fusionado.
+9. Emitir la licencia y reanudar el instalador con URLs y secretos inyectados.
+10. Verificar licencia, contenedores, health, persistencia y acceso por túnel.
 
 El orden evita firmar con una clave privada cuya pública todavía no esté en una
 API aprobada y evita instalar una imagen no reproducible desde la rama local.
