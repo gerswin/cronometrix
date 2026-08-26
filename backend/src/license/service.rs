@@ -13,6 +13,11 @@
 //!   claim does not match the local fingerprint, BEFORE writing to disk.
 //! - load_and_validate_license re-checks at every startup.
 
+use std::fs::OpenOptions;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -36,6 +41,44 @@ pub struct LicenseClaims {
 const LICENSE_PUBLIC_KEY_PEM: &str = include_str!("pubkey.pem");
 
 static LICENSE_DECODING_KEY: OnceLock<DecodingKey> = OnceLock::new();
+
+fn persist_license_token(jwt_path: &Path, token: &str) -> std::io::Result<()> {
+    let parent = jwt_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = jwt_path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "license path must name a file",
+        )
+    })?;
+    let tmp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let result = (|| {
+        let mut file = options.open(&tmp_path)?;
+        file.write_all(token.as_bytes())?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+        drop(file);
+        std::fs::rename(&tmp_path, jwt_path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
 
 fn license_decoding_key() -> &'static DecodingKey {
     LICENSE_DECODING_KEY.get_or_init(|| {
@@ -260,12 +303,8 @@ pub async fn activate_license_with_key(
         return Err(AppError::Forbidden);
     }
 
-    // Atomically write to disk via temp + rename
-    let tmp = format!("{}.tmp", jwt_path);
-    std::fs::write(&tmp, token)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("write license tmp: {}", e)))?;
-    std::fs::rename(&tmp, jwt_path)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("rename license file: {}", e)))?;
+    persist_license_token(Path::new(jwt_path), token)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("persist license: {}", e)))?;
 
     Ok(claims)
 }
@@ -395,11 +434,8 @@ pub async fn try_renew_with_key(
         return Err(AppError::Forbidden);
     }
 
-    let tmp = format!("{}.tmp", jwt_path);
-    std::fs::write(&tmp, new_token)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("write tmp: {}", e)))?;
-    std::fs::rename(&tmp, jwt_path)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("rename: {}", e)))?;
+    persist_license_token(Path::new(jwt_path), new_token)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("persist renewed license: {}", e)))?;
     Ok(())
 }
 
@@ -428,5 +464,42 @@ mod evaluate_bypass_tests {
     #[test]
     fn neither_flag_normal_path() {
         assert_eq!(evaluate_bypass(false, false), BypassDecision::NormalPath);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod persist_license_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::persist_license_token;
+
+    fn assert_owner_only(path: &std::path::Path) {
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn persist_license_token_creates_owner_only_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("license.jwt");
+
+        persist_license_token(&path, "signed-token").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "signed-token");
+        assert_owner_only(&path);
+    }
+
+    #[test]
+    fn persist_license_token_replaces_permissive_file_with_owner_only_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("license.jwt");
+        std::fs::write(&path, "old-token").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        persist_license_token(&path, "renewed-token").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "renewed-token");
+        assert_owner_only(&path);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
 }
