@@ -160,6 +160,40 @@ test('never accepts a V2 token as fingerprint migration proof', async () => {
     assert.strictEqual(await store.lookup(licenseKey), 'FP-STABLE-A');
 });
 
+test('concurrent legacy migrations grant exactly one V2 binding', async () => {
+    const licenseKey = 'TEST-RACE-0000-0002';
+    store.__seedRow(licenseKey, 'FP-LEGACY');
+    const now = Math.floor(Date.now() / 1000);
+    const previousToken = jwt.sign({
+        license_key: licenseKey,
+        hardware_fingerprint: 'FP-LEGACY',
+        product: 'cronometrix',
+        iat: now,
+        exp: now + 3600,
+    }, privateKey, { algorithm: 'RS256' });
+
+    const [a, b] = await Promise.all([
+        handler({ body: {
+            license_key: licenseKey,
+            hardware_fingerprint: 'FP-STABLE-A',
+            previous_token: previousToken,
+        } }),
+        handler({ body: {
+            license_key: licenseKey,
+            hardware_fingerprint: 'FP-STABLE-B',
+            previous_token: previousToken,
+        } }),
+    ]);
+
+    const granted = [a, b].filter((response) => response.statusCode === 200);
+    const rejected = [a, b].filter((response) => response.statusCode === 409);
+    assert.strictEqual(granted.length, 1);
+    assert.strictEqual(rejected.length, 1);
+    assert.strictEqual(rejected[0].body.error.code, 'LICENSE_ALREADY_BOUND');
+    const claims = jwt.verify(granted[0].body.token, TEST_PUBKEY, { algorithms: ['RS256'] });
+    assert.strictEqual(await store.lookup(licenseKey), claims.hardware_fingerprint);
+});
+
 test('idempotent for same fingerprint (re-activation allowed)', async () => {
     store.__seedRow('TEST-1234-5678-9012', 'FP-A');
     const r = await handler({
