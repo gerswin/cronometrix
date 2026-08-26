@@ -9,7 +9,7 @@ const {
   decodeCa,
   buildPgConfig,
   createPgStore,
-} = require('./pg-store');
+} = require('../../lib/pg-store');
 
 const CA_PEM = [
   '-----BEGIN CERTIFICATE-----',

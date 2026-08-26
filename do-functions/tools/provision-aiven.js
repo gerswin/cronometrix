@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { buildPgConfig } = require('../packages/licenses/pg-store');
+const { buildPgConfig } = require('../lib/pg-store');
 const { buildDatabaseUrl, retargetDatabaseUrl } = require('./aiven-config');
 
 const DATABASE_NAME = 'cronometrix_licenses';

@@ -55,7 +55,7 @@ const {
   normalizeDatabaseUrl,
   buildPgConfig,
   createPgStore,
-} = require('../../../lib/pg-store');
+} = require('../../lib/pg-store');
 
 const CA = Buffer.from(
   '-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n',

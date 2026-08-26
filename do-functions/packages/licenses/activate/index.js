@@ -34,6 +34,8 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const { existsSync } = require('node:fs');
+const { join } = require('node:path');
 
 const ONE_YEAR_SECS = 365 * 24 * 60 * 60;
 
@@ -42,7 +44,11 @@ function resolveStore(env = process.env) {
         // Test mode — in-memory store; no DB connection.
         return require('../shared-store');
     }
-    return require('../pg-store').createPgStore({ env });
+    const runtimeAdapter = join(__dirname, 'pg-store.js');
+    const adapter = existsSync(runtimeAdapter)
+        ? require(runtimeAdapter)
+        : require('../../../lib/pg-store');
+    return adapter.createPgStore({ env });
 }
 
 function signJwt(licenseKey, hardwareFingerprint, privateKey) {

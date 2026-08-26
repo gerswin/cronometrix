@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { buildPgConfig } = require('../packages/licenses/pg-store');
+const { buildPgConfig } = require('../lib/pg-store');
 const { retargetDatabaseUrl } = require('./aiven-config');
 const { DATABASE_NAME } = require('./provision-aiven');
 
