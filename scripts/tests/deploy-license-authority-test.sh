@@ -53,13 +53,34 @@ cat >"${fake_bin}/curl" <<'FAKE_CURL'
 set -euo pipefail
 printf 'curl invoked\n' >>"${FAKE_CALLS}"
 output=''
+data=''
 while (($#)); do
-  if [[ "$1" == '--output' ]]; then output="$2"; shift 2; else shift; fi
+  case "$1" in
+    --output) output="$2"; shift 2 ;;
+    --data) data="$2"; shift 2 ;;
+    *) shift ;;
+  esac
 done
-printf '{"error":{"code":"%s"}}' "${FAKE_ERROR_CODE:-BAD_REQUEST}" >"${output}"
-printf '%s' "${FAKE_HTTP_STATUS:-400}"
+[[ "${data}" == *'license_key'* && "${data}" == *'hardware_fingerprint'* ]] || exit 10
+[[ "${data}" != '{}' ]] || exit 11
+printf 'curl data=%s\n' "${data}" >>"${FAKE_CALLS}"
+printf '{"error":{"code":"%s"}}' "${FAKE_ERROR_CODE:-LICENSE_NOT_FOUND}" >"${output}"
+printf '%s' "${FAKE_HTTP_STATUS:-404}"
 FAKE_CURL
-chmod +x "${fake_bin}/git" "${fake_bin}/npm" "${fake_bin}/doctl" "${fake_bin}/curl"
+
+cat >"${fake_bin}/openssl" <<'FAKE_OPENSSL'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'openssl %s\n' "$*" >>"${FAKE_CALLS}"
+[[ "${1:-}" == 'pkey' ]] || exit 12
+output=''
+while (($#)); do
+  if [[ "$1" == '-out' ]]; then output="$2"; shift 2; else shift; fi
+done
+printf '%s\n' '-----BEGIN PUBLIC KEY-----' 'test-public' '-----END PUBLIC KEY-----' >"${output}"
+FAKE_OPENSSL
+chmod +x "${fake_bin}/git" "${fake_bin}/npm" "${fake_bin}/doctl" \
+  "${fake_bin}/curl" "${fake_bin}/openssl"
 
 run_deploy() {
   PATH="${fake_bin}:${PATH}" \
@@ -78,6 +99,9 @@ grep -Fxq 'npm --prefix do-functions run --silent provision:aiven -- --print-run
 grep -Fxq 'doctl serverless namespaces create --label cronometrix --region nyc1' "${record}"
 grep -Fxq 'doctl serverless connect cronometrix' "${record}"
 grep -Fxq 'doctl serverless deploy do-functions --remote-build' "${record}"
+grep -Fq 'openssl pkey -pubout -out' "${record}"
+grep -Fq 'openssl pkey -pubin -in' "${record}"
+[[ "$(grep -c '^curl data=' "${record}")" -eq 2 ]]
 if grep -Eq 'runtime-secret|admin-url-secret|runtime-password-secret|ca-secret|private-key-secret' \
   "${success_output}"; then
   echo 'deployment output leaked injected credentials' >&2

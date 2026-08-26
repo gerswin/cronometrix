@@ -14,6 +14,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const { createPrivateKey } = require('node:crypto');
 const { existsSync } = require('node:fs');
 const { join } = require('node:path');
 
@@ -61,6 +62,9 @@ exports.main = async function main(args) {
     }
 
     try {
+        // Parse the signing key before touching persistence so deployment
+        // probes cannot pass while the runtime key is malformed.
+        const signingKey = createPrivateKey(privateKey);
         const store = resolveStore();
         const existingFp = await store.lookup(license_key);
 
@@ -102,7 +106,7 @@ exports.main = async function main(args) {
             exp: now + ONE_YEAR_SECS,
         };
         // RS256 pinned — same algorithm/key path as activate (D-01).
-        const token = jwt.sign(payload, privateKey, { algorithm: 'RS256' });
+        const token = jwt.sign(payload, signingKey, { algorithm: 'RS256' });
         return { statusCode: 200, body: { token } };
     } catch (e) {
         // Generic SERVER_ERROR: never leak DB / key details.

@@ -133,3 +133,17 @@ test('handles top-level args (no body wrapper)', async () => {
     });
     assert.strictEqual(r.statusCode, 200);
 });
+
+test('rejects a malformed private key before an unknown license can mask it', async () => {
+    const saved = process.env.LICENSE_PRIVATE_KEY;
+    process.env.LICENSE_PRIVATE_KEY = 'not-a-private-key';
+    try {
+        const r = await handler({
+            body: { license_key: 'NOPE-NOPE-NOPE-NOPE', hardware_fingerprint: 'FP-PROBE' },
+        });
+        assert.strictEqual(r.statusCode, 500);
+        assert.strictEqual(r.body.error.code, 'SERVER_ERROR');
+    } finally {
+        process.env.LICENSE_PRIVATE_KEY = saved;
+    }
+});

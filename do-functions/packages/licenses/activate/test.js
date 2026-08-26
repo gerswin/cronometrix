@@ -160,6 +160,20 @@ test('returns 500 when LICENSE_PRIVATE_KEY missing', async () => {
     }
 });
 
+test('rejects a malformed private key before an unknown license can mask it', async () => {
+    const saved = process.env.LICENSE_PRIVATE_KEY;
+    process.env.LICENSE_PRIVATE_KEY = 'not-a-private-key';
+    try {
+        const r = await handler({
+            body: { license_key: 'NOPE-NOPE-NOPE-NOPE', hardware_fingerprint: 'FP-PROBE' },
+        });
+        assert.strictEqual(r.statusCode, 500);
+        assert.strictEqual(r.body.error.code, 'SERVER_ERROR');
+    } finally {
+        process.env.LICENSE_PRIVATE_KEY = saved;
+    }
+});
+
 test('binds fingerprint on first activation (state mutation)', async () => {
     store.__seedRow('TEST-1234-5678-9012');
     assert.strictEqual(await store.lookup('TEST-1234-5678-9012'), null);

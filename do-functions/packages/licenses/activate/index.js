@@ -34,6 +34,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const { createPrivateKey } = require('node:crypto');
 const { existsSync } = require('node:fs');
 const { join } = require('node:path');
 
@@ -51,7 +52,7 @@ function resolveStore(env = process.env) {
     return adapter.createPgStore({ env });
 }
 
-function signJwt(licenseKey, hardwareFingerprint, privateKey) {
+function signJwt(licenseKey, hardwareFingerprint, signingKey) {
     const now = Math.floor(Date.now() / 1000);
     const payload = {
         license_key: licenseKey,
@@ -62,7 +63,7 @@ function signJwt(licenseKey, hardwareFingerprint, privateKey) {
     };
     // Algorithm pinned to RS256 (D-01). The Rust verifier (Plan 01) also pins
     // RS256 — defense in depth against alg=HS256 / alg=none confusion attacks.
-    return jwt.sign(payload, privateKey, { algorithm: 'RS256' });
+    return jwt.sign(payload, signingKey, { algorithm: 'RS256' });
 }
 
 exports.main = async function main(args) {
@@ -98,6 +99,9 @@ exports.main = async function main(args) {
     }
 
     try {
+        // Parse the signing key before touching persistence so deployment
+        // probes cannot pass while the runtime key is malformed.
+        const signingKey = createPrivateKey(privateKey);
         const store = resolveStore();
         const existingFp = await store.lookup(license_key);
 
@@ -148,7 +152,7 @@ exports.main = async function main(args) {
             };
         }
 
-        const token = signJwt(license_key, hardware_fingerprint, privateKey);
+        const token = signJwt(license_key, hardware_fingerprint, signingKey);
         return { statusCode: 200, body: { token } };
     } catch (e) {
         // Never leak DB error details / stack traces / private key material.
