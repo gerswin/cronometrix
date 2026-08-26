@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build-api-arm64-binary:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/codex/release-build-')
-    runs-on: [self-hosted, Linux, ARM64, caladan, cronometrix-release]
+    runs-on: self-hosted
     permissions:
       contents: read
     steps:
