@@ -34,7 +34,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
-const { createPrivateKey } = require('node:crypto');
+const { createPrivateKey, createPublicKey } = require('node:crypto');
 const { existsSync } = require('node:fs');
 const { join } = require('node:path');
 
@@ -57,6 +57,7 @@ function signJwt(licenseKey, hardwareFingerprint, signingKey) {
     const payload = {
         license_key: licenseKey,
         hardware_fingerprint: hardwareFingerprint,
+        fingerprint_version: 2,
         product: 'cronometrix',
         iat: now,
         exp: now + ONE_YEAR_SECS,
@@ -66,12 +67,26 @@ function signJwt(licenseKey, hardwareFingerprint, signingKey) {
     return jwt.sign(payload, signingKey, { algorithm: 'RS256' });
 }
 
+function verifiesLegacyMigrationProof(token, licenseKey, existingFingerprint, verificationKey) {
+    if (typeof token !== 'string' || token.trim() === '') return false;
+    try {
+        const claims = jwt.verify(token.trim(), verificationKey, { algorithms: ['RS256'] });
+        return claims.product === 'cronometrix'
+            && claims.license_key === licenseKey
+            && claims.hardware_fingerprint === existingFingerprint
+            && claims.fingerprint_version === undefined;
+    } catch {
+        return false;
+    }
+}
+
 exports.main = async function main(args) {
     // DO Functions parses JSON request bodies under args.body sometimes and
     // top-level on args other times (form-urlencoded path). Accept both.
     const body = args && args.body && typeof args.body === 'object' ? args.body : args;
     const license_key = body && body.license_key;
     const hardware_fingerprint = body && body.hardware_fingerprint;
+    const previous_token = body && body.previous_token;
 
     if (!license_key || !hardware_fingerprint) {
         return {
@@ -102,6 +117,7 @@ exports.main = async function main(args) {
         // Parse the signing key before touching persistence so deployment
         // probes cannot pass while the runtime key is malformed.
         const signingKey = createPrivateKey(privateKey);
+        const verificationKey = createPublicKey(signingKey);
         const store = resolveStore();
         const existingFp = await store.lookup(license_key);
 
@@ -119,15 +135,59 @@ exports.main = async function main(args) {
 
         // existingFp is now either null (unbound) or a fingerprint string.
         if (existingFp !== null && existingFp !== hardware_fingerprint) {
-            return {
-                statusCode: 409,
-                body: {
-                    error: {
-                        code: 'ALREADY_ACTIVATED',
-                        message: 'license already bound to different hardware',
+            if (!previous_token) {
+                return {
+                    statusCode: 409,
+                    body: {
+                        error: {
+                            code: 'ALREADY_ACTIVATED',
+                            message: 'license already bound to different hardware',
+                        },
                     },
-                },
-            };
+                };
+            }
+
+            // One-time V1 -> V2 migration. The caller must prove possession of
+            // both the original license key and its still-valid, signed legacy
+            // JWT. A V2 token can never authorize another move. rebind() guards
+            // the old fingerprint in one UPDATE, closing migration races and
+            // making the legacy proof non-replayable after the first success.
+            if (!verifiesLegacyMigrationProof(
+                previous_token,
+                license_key,
+                existingFp,
+                verificationKey,
+            )) {
+                return {
+                    statusCode: 403,
+                    body: {
+                        error: {
+                            code: 'MIGRATION_PROOF_INVALID',
+                            message: 'legacy license migration proof is invalid',
+                        },
+                    },
+                };
+            }
+            const now = Math.floor(Date.now() / 1000);
+            const rebound = await store.rebind(
+                license_key,
+                existingFp,
+                hardware_fingerprint,
+                now,
+            );
+            if (!rebound) {
+                return {
+                    statusCode: 409,
+                    body: {
+                        error: {
+                            code: 'LICENSE_ALREADY_BOUND',
+                            message: 'This license is already activated on different hardware.',
+                        },
+                    },
+                };
+            }
+            const token = signJwt(license_key, hardware_fingerprint, signingKey);
+            return { statusCode: 200, body: { token } };
         }
 
         // Bind (idempotent: existingFp === null OR === hardware_fingerprint).
@@ -171,3 +231,4 @@ exports.main = async function main(args) {
 };
 
 exports.resolveStore = resolveStore;
+exports.verifiesLegacyMigrationProof = verifiesLegacyMigrationProof;

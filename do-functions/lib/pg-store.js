@@ -10,6 +10,11 @@ const BIND_SQL = `UPDATE ${LICENSES_TABLE}
       activated_at = COALESCE(activated_at, $2)
   WHERE license_key = $3
     AND (hardware_fingerprint IS NULL OR hardware_fingerprint = $1)`;
+const REBIND_SQL = `UPDATE ${LICENSES_TABLE}
+  SET hardware_fingerprint = $1,
+      last_renewed_at = $4
+  WHERE license_key = $3
+    AND hardware_fingerprint = $2`;
 const TOUCH_SQL = `UPDATE ${LICENSES_TABLE}
   SET last_renewed_at = $1 WHERE license_key = $2`;
 
@@ -109,6 +114,18 @@ function createPgStore({ env = process.env, Client } = {}) {
           fingerprint,
           activatedAt,
           licenseKey,
+        ]);
+        return result.rowCount === 1;
+      });
+    },
+
+    async rebind(licenseKey, previousFingerprint, fingerprint, migratedAt) {
+      return withClient(PgClient, config, async (client) => {
+        const result = await client.query(REBIND_SQL, [
+          fingerprint,
+          previousFingerprint,
+          licenseKey,
+          migratedAt,
         ]);
         return result.rowCount === 1;
       });

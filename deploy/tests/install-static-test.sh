@@ -57,7 +57,17 @@ assert 'compose images --format json' in text
 assert 'chmod 0700 "${DOCKER_CONFIG}"' in text
 assert 'chmod 0600 "${ENV_FILE}"' in text
 assert 'client_max_body_size' in text
+assert 'existing license requires a one-time fingerprint migration' in text
+assert 'licensed") is True' in text
 PY
+
+for mount in \
+    '/proc/cpuinfo:/run/cronometrix-host/cpuinfo:ro' \
+    '/sys:/run/cronometrix-host/sys:ro' \
+    '/etc/machine-id:/run/cronometrix-host/machine-id:ro'; do
+    grep -Fq -- "${mount}" "${ROOT_DIR}/deploy/docker-compose.yml" || \
+        fail "missing read-only host identity mount: ${mount}"
+done
 
 run_embedded() {
     CRONOMETRIX_INSTALLER_LIBRARY=1 bash -c \

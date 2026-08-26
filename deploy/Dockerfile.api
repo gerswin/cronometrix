@@ -24,6 +24,19 @@ COPY backend/ ./
 # Re-touch main so cargo recompiles with real source
 RUN touch src/main.rs && cargo build --release --bin cronometrix
 
+# Caladan builds this export target natively on ARM64. The normal multi-arch
+# job downloads the artifact, avoiding a full Rust compile under QEMU.
+FROM scratch AS api-binary-export
+COPY --from=builder /app/target/release/cronometrix /cronometrix-arm64
+
+FROM builder AS binary-amd64
+
+FROM scratch AS binary-arm64
+COPY prebuilt/cronometrix-arm64 /app/target/release/cronometrix
+
+ARG TARGETARCH
+FROM binary-${TARGETARCH} AS selected-binary
+
 # Runner: debian-slim with CA certs (needed for Turso TLS + DO Functions HTTPS)
 FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runner
 RUN apt-get update && \
@@ -31,7 +44,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/cronometrix
-COPY --from=builder /app/target/release/cronometrix /usr/local/bin/cronometrix
+COPY --from=selected-binary /app/target/release/cronometrix /usr/local/bin/cronometrix
 
 # Data directory for SQLite + license.jwt; created by installer outside container
 # but ensured here so the binary's default paths work even without a volume mount.

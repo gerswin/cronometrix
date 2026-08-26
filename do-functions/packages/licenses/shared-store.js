@@ -36,6 +36,13 @@ module.exports = {
         rows.set(licenseKey, row);
         return true;
     },
+    async rebind(licenseKey, previousFp, fp, now) {
+        const row = rows.get(licenseKey);
+        if (!row || row.fp !== previousFp) return false;
+        row.fp = fp;
+        row.last_renewed_at = now;
+        return true;
+    },
     async touch(licenseKey, now) {
         const row = rows.get(licenseKey);
         if (row) row.last_renewed_at = now;

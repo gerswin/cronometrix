@@ -76,6 +76,7 @@ test('signs new jwt for matched fingerprint', async () => {
     const decoded = jwt.verify(r.body.token, TEST_PUBKEY, { algorithms: ['RS256'] });
     assert.strictEqual(decoded.license_key, 'TEST-1234-5678-9012');
     assert.strictEqual(decoded.hardware_fingerprint, 'FP-A');
+    assert.strictEqual(decoded.fingerprint_version, 2);
     assert.strictEqual(decoded.product, 'cronometrix');
     assert.ok(decoded.exp - decoded.iat >= 365 * 24 * 60 * 60 - 60);
 });

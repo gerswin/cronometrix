@@ -101,6 +101,7 @@ exports.main = async function main(args) {
         const payload = {
             license_key,
             hardware_fingerprint,
+            fingerprint_version: 2,
             product: 'cronometrix',
             iat: now,
             exp: now + ONE_YEAR_SECS,

@@ -363,11 +363,13 @@ activate_license() {
     if [[ -f "${DATA_DIR}/license.jwt" ]]; then
         [[ -f "${key_hash_file}" ]] || die "existing license cannot be matched to supplied key; contact support"
         [[ "$(cat "${key_hash_file}")" == "${supplied_hash}" ]] || die "supplied license does not match this installation"
-        curl -fsS http://127.0.0.1:8080/api/v1/setup/status | \
-            python3 -c 'import json,sys; assert json.load(sys.stdin).get("licensed") is True'
-        unset CRONOMETRIX_LICENSE_KEY
-        log "matching license already active"
-        return 0
+        if curl -fsS http://127.0.0.1:8080/api/v1/setup/status | \
+            python3 -c 'import json,sys; assert json.load(sys.stdin).get("licensed") is True'; then
+            unset CRONOMETRIX_LICENSE_KEY
+            log "matching license already active"
+            return 0
+        fi
+        log "existing license requires a one-time fingerprint migration"
     fi
 
     response="${INSTALL_DIR}/.activate-response"
@@ -452,11 +454,16 @@ main() {
     wait_api_internal || die "api failed internal health check"
     compose up -d web gateway
     wait_gateway || die "gateway/API failed health check"
-    activate_license
     initialize_admin
     verify_candidate_health
     compose up -d cloudflared
     compose ps --status running --services | grep -Fxq cloudflared || die "cloudflared is not running"
+    # License activation/migration is the final transactional mutation. Once
+    # the remote binding and local JWT move to V2, rolling software back to the
+    # legacy fingerprint algorithm cannot restore the old remote binding.
+    activate_license
+    curl -fsS http://127.0.0.1:8080/api/v1/setup/status | \
+        python3 -c 'import json,sys; assert json.load(sys.stdin).get("licensed") is True'
 
     TRANSACTION_ACTIVE=0
     trap - ERR

@@ -87,6 +87,24 @@ fn license_decoding_key() -> &'static DecodingKey {
     })
 }
 
+fn activation_request_body(
+    license_key: &str,
+    fingerprint: &str,
+    jwt_path: &Path,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "license_key": license_key,
+        "hardware_fingerprint": fingerprint,
+    });
+    if let Ok(previous_token) = std::fs::read_to_string(jwt_path) {
+        let previous_token = previous_token.trim();
+        if !previous_token.is_empty() {
+            body["previous_token"] = serde_json::Value::String(previous_token.to_string());
+        }
+    }
+    body
+}
+
 /// Verify a license JWT against the embedded RS256 public key.
 /// D-07 soft expiry: validate_exp = false so an expired JWT still verifies.
 /// Algorithm pinned to RS256 to defeat alg=HS256 confusion attacks.
@@ -119,7 +137,8 @@ pub fn verify_license_jwt_with_key(
 ) -> Result<LicenseClaims, AppError> {
     let mut validation = Validation::new(Algorithm::RS256);
     validation.validate_exp = false;
-    let data = decode::<LicenseClaims>(token, key, &validation).map_err(|_| AppError::Unlicensed)?;
+    let data =
+        decode::<LicenseClaims>(token, key, &validation).map_err(|_| AppError::Unlicensed)?;
     Ok(data.claims)
 }
 
@@ -252,10 +271,11 @@ pub async fn activate_license_with_key(
 
     let resp = client
         .post(do_functions_activate_url)
-        .json(&serde_json::json!({
-            "license_key": license_key,
-            "hardware_fingerprint": fp,
-        }))
+        .json(&activation_request_body(
+            license_key,
+            &fp,
+            Path::new(jwt_path),
+        ))
         .send()
         .await
         .map_err(|_| AppError::BadGateway {
@@ -441,7 +461,7 @@ pub async fn try_renew_with_key(
 
 #[cfg(test)]
 mod evaluate_bypass_tests {
-    use super::{evaluate_bypass, BypassDecision};
+    use super::{activation_request_body, evaluate_bypass, BypassDecision};
 
     #[test]
     fn both_flags_set_allows_bypass() {
@@ -464,6 +484,32 @@ mod evaluate_bypass_tests {
     #[test]
     fn neither_flag_normal_path() {
         assert_eq!(evaluate_bypass(false, false), BypassDecision::NormalPath);
+    }
+
+    #[test]
+    fn activation_request_carries_existing_jwt_as_private_migration_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("license.jwt");
+        std::fs::write(&path, "legacy-signed-token\n").unwrap();
+
+        let body = activation_request_body("AAAA-BBBB-CCCC-DDDD", "stable-v2", &path);
+
+        assert_eq!(body["license_key"], "AAAA-BBBB-CCCC-DDDD");
+        assert_eq!(body["hardware_fingerprint"], "stable-v2");
+        assert_eq!(body["previous_token"], "legacy-signed-token");
+    }
+
+    #[test]
+    fn activation_request_omits_missing_or_empty_migration_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.jwt");
+        let missing_body = activation_request_body("AAAA-BBBB-CCCC-DDDD", "stable-v2", &missing);
+        assert!(missing_body.get("previous_token").is_none());
+
+        let empty = directory.path().join("empty.jwt");
+        std::fs::write(&empty, " \n").unwrap();
+        let empty_body = activation_request_body("AAAA-BBBB-CCCC-DDDD", "stable-v2", &empty);
+        assert!(empty_body.get("previous_token").is_none());
     }
 }
 

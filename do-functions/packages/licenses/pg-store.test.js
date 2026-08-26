@@ -119,20 +119,23 @@ test('uses qualified parameterized SQL and preserves guarded binding', async () 
 
   assert.equal(await store.lookup('KEY1-KEY2-KEY3-KEY4'), null);
   assert.equal(await store.bind('KEY1-KEY2-KEY3-KEY4', 'FP-A', 123), true);
+  assert.equal(await store.rebind('KEY1-KEY2-KEY3-KEY4', 'FP-A', 'FP-B', 234), true);
   await store.touch('KEY1-KEY2-KEY3-KEY4', 456);
 
   const queries = calls.filter(([kind]) => kind === 'query');
   const sql = queries.map(([, statement]) => statement).join('\n');
   assert.match(sql, new RegExp(LICENSES_TABLE.replace('.', '\\.')));
   assert.match(sql, /hardware_fingerprint IS NULL OR hardware_fingerprint = \$1/);
+  assert.match(sql, /hardware_fingerprint = \$2/);
   assert.equal(sql.includes('KEY1-KEY2-KEY3-KEY4'), false);
   assert.deepEqual(queries.map(([, , values]) => values), [
     ['KEY1-KEY2-KEY3-KEY4'],
     ['FP-A', 123, 'KEY1-KEY2-KEY3-KEY4'],
+    ['FP-B', 'FP-A', 'KEY1-KEY2-KEY3-KEY4', 234],
     [456, 'KEY1-KEY2-KEY3-KEY4'],
   ]);
-  assert.equal(calls.filter(([kind]) => kind === 'connect').length, 3);
-  assert.equal(calls.filter(([kind]) => kind === 'end').length, 3);
+  assert.equal(calls.filter(([kind]) => kind === 'connect').length, 4);
+  assert.equal(calls.filter(([kind]) => kind === 'end').length, 4);
 });
 
 test('returns undefined for unknown licenses and false for rejected binds', async () => {
@@ -154,6 +157,7 @@ test('returns undefined for unknown licenses and false for rejected binds', asyn
 
   assert.equal(await store.lookup('UNKNOWN'), undefined);
   assert.equal(await store.bind('UNKNOWN', 'FP-A', 123), false);
+  assert.equal(await store.rebind('UNKNOWN', 'FP-A', 'FP-B', 234), false);
 });
 
 test('always closes the PostgreSQL client when a query fails', async () => {
