@@ -7,8 +7,8 @@
 // Response 409: { error: { code: "LICENSE_ALREADY_BOUND",  message } }  bind() lost the race (C-07)
 // Response 500: { error: { code: "CONFIG_ERROR" | "SERVER_ERROR", message } }
 //
-// Persistence: process.env.DATABASE_URL points to Postgres with table:
-//   licenses(license_key TEXT PRIMARY KEY,
+// Persistence: the shared pg adapter connects with an Aiven CA and uses:
+//   license_authority.licenses(license_key TEXT PRIMARY KEY,
 //            hardware_fingerprint TEXT,
 //            activated_at BIGINT,
 //            last_renewed_at BIGINT)
@@ -37,51 +37,12 @@ const jwt = require('jsonwebtoken');
 
 const ONE_YEAR_SECS = 365 * 24 * 60 * 60;
 
-function getStore() {
-    if (process.env.TEST_STORE) {
+function resolveStore(env = process.env) {
+    if (env.TEST_STORE === '1') {
         // Test mode — in-memory store; no DB connection.
         return require('../shared-store');
     }
-    // Production mode — pg client lazily-loaded so test runs don't need it
-    // installed at the function-package level until DO Functions does its
-    // remote build.
-    const { Client } = require('pg');
-    return {
-        async lookup(licenseKey) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                const r = await client.query(
-                    'SELECT hardware_fingerprint FROM licenses WHERE license_key = $1',
-                    [licenseKey],
-                );
-                if (r.rows.length === 0) return undefined; // not found
-                return r.rows[0].hardware_fingerprint || null;
-            } finally {
-                await client.end();
-            }
-        },
-        async bind(licenseKey, fingerprint, now) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                // C-07: la guarda vive en el WHERE, no en un SELECT previo. Un
-                // UPDATE de una sola sentencia es atómico, así que de dos
-                // activaciones simultáneas exactamente una afecta la fila.
-                const r = await client.query(
-                    `UPDATE licenses
-                        SET hardware_fingerprint = $1,
-                            activated_at = COALESCE(activated_at, $2)
-                      WHERE license_key = $3
-                        AND (hardware_fingerprint IS NULL OR hardware_fingerprint = $1)`,
-                    [fingerprint, now, licenseKey],
-                );
-                return r.rowCount === 1;
-            } finally {
-                await client.end();
-            }
-        },
-    };
+    return require('../pg-store').createPgStore({ env });
 }
 
 function signJwt(licenseKey, hardwareFingerprint, privateKey) {
@@ -131,7 +92,7 @@ exports.main = async function main(args) {
     }
 
     try {
-        const store = getStore();
+        const store = resolveStore();
         const existingFp = await store.lookup(license_key);
 
         if (existingFp === undefined) {
@@ -198,3 +159,5 @@ exports.main = async function main(args) {
         };
     }
 };
+
+exports.resolveStore = resolveStore;

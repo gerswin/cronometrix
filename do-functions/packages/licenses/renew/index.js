@@ -17,39 +17,11 @@ const jwt = require('jsonwebtoken');
 
 const ONE_YEAR_SECS = 365 * 24 * 60 * 60;
 
-function getStore() {
-    if (process.env.TEST_STORE) {
+function resolveStore(env = process.env) {
+    if (env.TEST_STORE === '1') {
         return require('../shared-store');
     }
-    const { Client } = require('pg');
-    return {
-        async lookup(licenseKey) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                const r = await client.query(
-                    'SELECT hardware_fingerprint FROM licenses WHERE license_key = $1',
-                    [licenseKey],
-                );
-                if (r.rows.length === 0) return undefined; // not found
-                return r.rows[0].hardware_fingerprint || null;
-            } finally {
-                await client.end();
-            }
-        },
-        async touch(licenseKey, now) {
-            const client = new Client({ connectionString: process.env.DATABASE_URL });
-            await client.connect();
-            try {
-                await client.query(
-                    'UPDATE licenses SET last_renewed_at = $1 WHERE license_key = $2',
-                    [now, licenseKey],
-                );
-            } finally {
-                await client.end();
-            }
-        },
-    };
+    return require('../pg-store').createPgStore({ env });
 }
 
 exports.main = async function main(args) {
@@ -83,7 +55,7 @@ exports.main = async function main(args) {
     }
 
     try {
-        const store = getStore();
+        const store = resolveStore();
         const existingFp = await store.lookup(license_key);
 
         if (existingFp === undefined) {
@@ -139,3 +111,5 @@ exports.main = async function main(args) {
         };
     }
 };
+
+exports.resolveStore = resolveStore;

@@ -13,8 +13,11 @@ and renewal endpoints. Consumed by the Rust API's
 | `/licenses/renew`         | POST   | `packages/licenses/renew/index.js`    | Daily silent renewal; refreshes JWT only when fingerprint matches the bound one (anti-cloning) |
 
 Both functions read the RSA private key from `process.env.LICENSE_PRIVATE_KEY`
-and persist license records in Postgres via `process.env.DATABASE_URL`. The
-private key NEVER appears in responses, logs, or repo files.
+and persist license records in Aiven PostgreSQL through the shared
+`pg-store.js` infrastructure adapter. `DATABASE_URL` uses a restricted runtime
+role and `DATABASE_CA_CERT_BASE64` supplies the Aiven CA; TLS certificate
+verification is mandatory. The private key and database credentials NEVER
+appear in responses, logs, or repo files.
 
 The Rust verifier (Plan 01) embeds the matching public key at compile time
 and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
@@ -37,9 +40,11 @@ and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
    - Store `license_private.pem` ONLY as a DO Functions env var. Do NOT commit.
      The repo's `.gitignore` excludes `*.private.pem` and `license_private.pem`.
 
-3. **Provision a license database** (DO Managed Postgres recommended):
+3. **Provision the isolated Aiven database and runtime role** with the
+   repository tooling documented below. The resulting table is:
    ```sql
-   CREATE TABLE licenses (
+   CREATE SCHEMA license_authority;
+   CREATE TABLE license_authority.licenses (
      license_key          TEXT PRIMARY KEY,
      hardware_fingerprint TEXT,
      activated_at         BIGINT,
@@ -48,15 +53,19 @@ and pins `Algorithm::RS256` — defense in depth against `alg=HS256` /
    ```
    Pre-seed each customer's license key BEFORE shipping their installer:
    ```sql
-   INSERT INTO licenses (license_key, hardware_fingerprint)
+   INSERT INTO license_authority.licenses (license_key, hardware_fingerprint)
    VALUES ('XXXX-XXXX-XXXX-XXXX', NULL);
    ```
    The fingerprint stays NULL until the customer's first activation.
 
-4. **Set deploy-time env vars** (operator's shell, never the repo):
+4. **Inject deploy-time env vars through `secretctl run`** (never paste them
+   into shell history or commit them):
    ```bash
-   export LICENSE_PRIVATE_KEY="$(cat license_private.pem)"
-   export DATABASE_URL="postgres://user:pass@host:5432/licenses?sslmode=require"
+   secretctl run \
+     -k cronometrix-license-private-key-pem \
+     -k cronometrix-license-runtime-url \
+     -k cronometrix-aiven-ca-base64 \
+     -- bash scripts/deploy-license-functions.sh
    ```
 
 5. **Deploy**:
@@ -87,16 +96,15 @@ fixture — see `docs/runbooks/rotacion-clave-licencia.md`).
 ```bash
 # 1. Install local-only test runtime (jsonwebtoken at the do-functions root).
 cd do-functions
-npm install --silent
+npm ci
 
 # 2. Each test file generates its own RSA keypair at module load
 #    (node:crypto generateKeyPairSync) and signs/verifies against it —
 #    these tests only prove that what the handler signs, it can verify.
 #    They do not and must not depend on the production signing key.
 
-# 3. Run the full suite (18 tests across both handlers).
-node --test packages/licenses/activate/test.js
-node --test packages/licenses/renew/test.js
+# 3. Run the full suite.
+npm test
 ```
 
 The tests cover:
@@ -128,9 +136,9 @@ The tests cover:
   `console.log` / `console.error` statements. The catch path returns a
   generic `SERVER_ERROR` body — no exception message, no stack trace
   (T-06-40 mitigation).
-- **Database credentials never logged.** Same hygiene: `DATABASE_URL` is
-  read once inside `getStore()`, the pg client closes the connection in
-  `finally`, and any pg error is collapsed to `SERVER_ERROR` (T-06-41
+- **Database credentials never logged.** Same hygiene: `DATABASE_URL` and the
+  CA are validated inside `resolveStore()`, the pg client closes the connection
+  in `finally`, and any pg error is collapsed to `SERVER_ERROR` (T-06-41
   mitigation).
 - **Single npm dep: `pg`.** Declared in each function's `package.json`.
   `jsonwebtoken` v9 is pre-installed in the DO Functions Node 22 runtime —
@@ -163,8 +171,9 @@ needs separate attention) is documented in
 
 ## Why pg over alternatives
 
-- DO Managed Postgres is the path of least resistance for DO Functions
-  deployments — same dashboard, same billing, same network.
+- Aiven is the selected managed PostgreSQL service. The runtime role is scoped
+  to `license_authority.licenses`; the Aiven administrator credential is used
+  only by the provisioning tool and never deployed to Functions.
 - `pg` (node-postgres) is the de-facto Node Postgres driver: stable since
   2010, no compiled deps, ships pure-JS.
 - Alternatives considered:

@@ -21,10 +21,50 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', {
 process.env.LICENSE_PRIVATE_KEY = privateKey;
 const TEST_PUBKEY = publicKey;
 
-const handler = require('./index.js').main;
+const renew = require('./index.js');
+const handler = renew.main;
 const store = require('../shared-store');
 
 test.beforeEach(() => store.__reset());
+
+test('production store fails closed when CA configuration is absent', async () => {
+    assert.throws(
+        () => renew.resolveStore({
+            DATABASE_URL: 'postgres://user:do-not-leak@db.example/licenses',
+        }),
+        /DATABASE_CA_CERT_BASE64 is missing or invalid/,
+    );
+
+    const saved = {
+        TEST_STORE: process.env.TEST_STORE,
+        DATABASE_URL: process.env.DATABASE_URL,
+        DATABASE_CA_CERT_BASE64: process.env.DATABASE_CA_CERT_BASE64,
+    };
+    delete process.env.TEST_STORE;
+    process.env.DATABASE_URL = 'postgres://user:do-not-leak@db.example/licenses';
+    delete process.env.DATABASE_CA_CERT_BASE64;
+    try {
+        const r = await handler({
+            body: { license_key: 'TEST-1234-5678-9012', hardware_fingerprint: 'FP-A' },
+        });
+        assert.strictEqual(r.statusCode, 500);
+        assert.strictEqual(r.body.error.code, 'SERVER_ERROR');
+        assert.strictEqual(JSON.stringify(r).includes('do-not-leak'), false);
+    } finally {
+        for (const [name, value] of Object.entries(saved)) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
+    }
+});
+
+test('only TEST_STORE=1 enables the in-memory adapter', () => {
+    assert.throws(
+        () => renew.resolveStore({ TEST_STORE: 'true' }),
+        /DATABASE_URL is missing or invalid/,
+    );
+    assert.strictEqual(renew.resolveStore({ TEST_STORE: '1' }), store);
+});
 
 test('signs new jwt for matched fingerprint', async () => {
     store.__seedRow('TEST-1234-5678-9012', 'FP-A');

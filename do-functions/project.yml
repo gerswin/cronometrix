@@ -2,7 +2,8 @@
 #
 # Deploy:  cd do-functions && doctl serverless deploy . --remote-build
 #
-# The operator MUST set LICENSE_PRIVATE_KEY and DATABASE_URL in their shell
+# The operator MUST inject the variables below through secretctl. The database
+# URL is the restricted runtime role, never Aiven's avnadmin URL.
 # (or via `doctl serverless functions update licenses/{activate,renew}
 # --env-file ...`) BEFORE running the deploy command. The `${VAR}` references
 # below are interpolated by doctl at deploy time — placeholders only, no
@@ -15,6 +16,8 @@ packages:
     environment:
       LICENSE_PRIVATE_KEY: "${LICENSE_PRIVATE_KEY}"
       DATABASE_URL: "${DATABASE_URL}"
+      DATABASE_CA_CERT_BASE64: "${DATABASE_CA_CERT_BASE64}"
+      SOURCE_SHA: "${SOURCE_SHA}"
     functions:
       - name: activate
         runtime: nodejs:22
