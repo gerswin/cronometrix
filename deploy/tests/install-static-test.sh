@@ -59,6 +59,12 @@ assert 'chmod 0600 "${ENV_FILE}"' in text
 assert 'client_max_body_size' in text
 assert 'existing license requires a one-time fingerprint migration' in text
 assert 'licensed") is True' in text
+assert 'wait_compose_healthy() {' in text
+candidate_health = text[text.index('verify_candidate_health() {'):text.index('prune_rollbacks() {')]
+assert 'wait_compose_healthy api' in candidate_health
+assert 'wait_compose_healthy gateway' in candidate_health
+assert 'compose ps --format json api' not in candidate_health
+assert 'compose ps --format json gateway' not in candidate_health
 PY
 
 for mount in \
