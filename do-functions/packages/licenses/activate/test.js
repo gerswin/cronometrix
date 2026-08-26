@@ -102,6 +102,64 @@ test('returns 409 for bound to different fingerprint', async () => {
     assert.strictEqual(r.body.error.code, 'ALREADY_ACTIVATED');
 });
 
+test('migrates a legacy binding exactly once with a valid previous JWT', async () => {
+    const licenseKey = 'TEST-1234-5678-9012';
+    store.__seedRow(licenseKey, 'FP-LEGACY');
+    const now = Math.floor(Date.now() / 1000);
+    const previousToken = jwt.sign({
+        license_key: licenseKey,
+        hardware_fingerprint: 'FP-LEGACY',
+        product: 'cronometrix',
+        iat: now,
+        exp: now + 3600,
+    }, privateKey, { algorithm: 'RS256' });
+
+    const migrated = await handler({ body: {
+        license_key: licenseKey,
+        hardware_fingerprint: 'FP-STABLE-V2',
+        previous_token: previousToken,
+    } });
+
+    assert.strictEqual(migrated.statusCode, 200);
+    assert.strictEqual(await store.lookup(licenseKey), 'FP-STABLE-V2');
+    const claims = jwt.verify(migrated.body.token, TEST_PUBKEY, { algorithms: ['RS256'] });
+    assert.strictEqual(claims.hardware_fingerprint, 'FP-STABLE-V2');
+    assert.strictEqual(claims.fingerprint_version, 2);
+
+    const replay = await handler({ body: {
+        license_key: licenseKey,
+        hardware_fingerprint: 'FP-CLONE',
+        previous_token: previousToken,
+    } });
+    assert.strictEqual(replay.statusCode, 403);
+    assert.strictEqual(replay.body.error.code, 'MIGRATION_PROOF_INVALID');
+    assert.strictEqual(await store.lookup(licenseKey), 'FP-STABLE-V2');
+});
+
+test('never accepts a V2 token as fingerprint migration proof', async () => {
+    const licenseKey = 'TEST-1234-5678-9012';
+    store.__seedRow(licenseKey, 'FP-STABLE-A');
+    const now = Math.floor(Date.now() / 1000);
+    const v2Token = jwt.sign({
+        license_key: licenseKey,
+        hardware_fingerprint: 'FP-STABLE-A',
+        fingerprint_version: 2,
+        product: 'cronometrix',
+        iat: now,
+        exp: now + 3600,
+    }, privateKey, { algorithm: 'RS256' });
+
+    const r = await handler({ body: {
+        license_key: licenseKey,
+        hardware_fingerprint: 'FP-STABLE-B',
+        previous_token: v2Token,
+    } });
+
+    assert.strictEqual(r.statusCode, 403);
+    assert.strictEqual(r.body.error.code, 'MIGRATION_PROOF_INVALID');
+    assert.strictEqual(await store.lookup(licenseKey), 'FP-STABLE-A');
+});
+
 test('idempotent for same fingerprint (re-activation allowed)', async () => {
     store.__seedRow('TEST-1234-5678-9012', 'FP-A');
     const r = await handler({

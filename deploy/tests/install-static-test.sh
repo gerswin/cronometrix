@@ -57,6 +57,8 @@ assert 'compose images --format json' in text
 assert 'chmod 0700 "${DOCKER_CONFIG}"' in text
 assert 'chmod 0600 "${ENV_FILE}"' in text
 assert 'client_max_body_size' in text
+assert 'existing license requires a one-time fingerprint migration' in text
+assert 'licensed") is True' in text
 PY
 
 for mount in \

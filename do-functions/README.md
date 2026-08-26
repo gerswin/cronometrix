@@ -129,6 +129,11 @@ The tests cover:
 - 403 on renew with mismatched OR unbound fingerprint (anti-cloning)
 - 404 on unknown license key (both endpoints)
 - 409 on activate with already-bound-to-different-fingerprint
+- A legacy V1 binding may migrate once to the stable V2 fingerprint only when
+  activation receives the original license key plus its valid, unexpired,
+  RS256-signed previous JWT. The PostgreSQL rebind is conditional on the old
+  fingerprint, and V2 JWTs carry `fingerprint_version: 2`, so migration proofs
+  cannot be replayed or used for later hardware transfers.
 - 500 on missing `LICENSE_PRIVATE_KEY` env var
 - RS256 algorithm pinning verified by inspecting the JWT header
 
